@@ -59,7 +59,7 @@
 | Discard (file, lines), reset a file to a revision | Partial | Discarding a file is built: it asks first and `Ctrl+Z` undoes it |
 | Hide untracked (remembered), show ignored files | M1 | |
 | Add to `.gitignore` (file, folder, pattern), template picker | Partial | Adding a file (`I`) is built |
-| Commit, amend (shows the last commit's changes), commit and push, push after commit | Partial | Commit and amend (fills the last message) are built |
+| Commit, amend (shows the last commit's changes), commit and push, push after commit | Partial | Commit and amend (fills the last message) are built; the **Push** checkbox under the message pushes after each commit (remembered) |
 | Subject length reminder and limit, wrap at ruler, auto-growing description | Partial | The length reminder (50, 72) is built |
 | Spell check of the message | M2 | |
 | Recent messages, commit templates, `prepare-commit-msg` draft | Partial | Recent messages (`Ctrl+R`, the last 20) are built |

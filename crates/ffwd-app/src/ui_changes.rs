@@ -26,6 +26,8 @@ pub enum CHit {
     Desc,
     Amend,
     SkipHooks,
+    /// Push after the commit (FF-35; remembered as `commit.push`).
+    PushAfter,
     StageLines,
     Commit,
     /// AI draft: a commit message from the staged changes (FF-50).
@@ -320,6 +322,11 @@ impl Ui {
         self.damage.rects.push(d);
     }
 
+    /// Whether a commit is followed by a push (`commit.push`).
+    pub(super) fn push_after_commit(&self) -> bool {
+        self.settings.get("commit.push") == Some("true")
+    }
+
     pub(super) fn on_changes_op(&mut self, commit: bool, r: Result<String, String>) {
         self.r.changes.busy = None;
         match r {
@@ -336,6 +343,10 @@ impl Ui {
                     self.set_notice(msg);
                     // History, refs and the sidebar changed.
                     self.reload_current();
+                    if self.push_after_commit() {
+                        // Commit and push: the push runs like the toolbar's.
+                        self.start_op(ffwd_core::ops::Op::Push);
+                    }
                     return;
                 }
                 if msg.starts_with("Discarded") && !self.r.changes.undo.is_empty() {
@@ -873,6 +884,10 @@ impl Ui {
             Some(CHit::Subject) => self.r.changes.focus = CFocus::Subject,
             Some(CHit::Desc) => self.r.changes.focus = CFocus::Desc,
             Some(CHit::SkipHooks) => self.r.changes.skip_hooks = !self.r.changes.skip_hooks,
+            Some(CHit::PushAfter) => {
+                let on = !self.push_after_commit();
+                self.settings.set_string("commit.push", if on { "true" } else { "false" });
+            }
             Some(CHit::Ai) => self.ai_draft(),
             Some(CHit::AiButton(h)) => self.ai_button(h),
             Some(CHit::StageLines) => self.stage_picked(),
@@ -1162,9 +1177,30 @@ impl Ui {
         let skip = self.r.changes.skip_hooks;
         let hb = self.checkbox(cv, ab.right() + self.px(4.0), by, "Skip hooks", skip, hot);
         hits.push((hb, CHit::SkipHooks));
+        // Push after committing.
+        let hot = self.change_hot(hits.len());
+        let push = self.push_after_commit();
+        let hb = self.checkbox(cv, hb.right() + self.px(4.0), by, "Push", push, hot);
+        hits.push((hb, CHit::PushAfter));
         // AI draft: a message from the staged changes.
         let hot = self.change_hot(hits.len());
-        let label = "AI draft";
+        // The commit button's width first: "AI draft" shortens to "AI"
+        // rather than run into it.
+        let staged_n = self.side_len(Side::Staged);
+        let commit_label = match self.r.changes.busy {
+            Some(v) => format!("{v}…"),
+            None if amend && push => "Amend and push".to_string(),
+            None if amend => "Amend commit".to_string(),
+            None if push => "Commit and push".to_string(),
+            None if staged_n == 1 => "Commit 1 file".to_string(),
+            None => format!("Commit {staged_n} files"),
+        };
+        let commit_w = self.te.measure(semi, self.pf(12.5), &commit_label)
+            + self.te.measure(ui, self.pf(10.5), "Ctrl ↵")
+            + self.pf(40.0);
+        let commit_x = r.right() as f32 - pad as f32 - commit_w;
+        let full = self.te.measure(semi, self.pf(12.0), "AI draft") + self.pf(20.0);
+        let label = if hb.right() as f32 + self.pf(6.0) + full + self.pf(8.0) <= commit_x { "AI draft" } else { "AI" };
         let aw = self.te.measure(semi, self.pf(12.0), label) + self.pf(20.0);
         let air = Rect::new(hb.right() + self.px(6.0), by, aw as i32, self.px(30.0));
         let (bg, border) = if hot { (CONTROL_HOVER, ACCENT_BORDER) } else { (BG_BAR, BORDER) };
@@ -1184,7 +1220,9 @@ impl Ui {
         let staged = self.side_len(Side::Staged);
         let label = match self.r.changes.busy {
             Some(v) => format!("{v}…"),
+            None if amend && push => "Amend and push".to_string(),
             None if amend => "Amend commit".to_string(),
+            None if push => "Commit and push".to_string(),
             None if staged == 1 => "Commit 1 file".to_string(),
             None => format!("Commit {staged} files"),
         };

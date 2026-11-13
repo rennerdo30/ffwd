@@ -7517,6 +7517,87 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Commit and push (FF-35): the Push checkbox under the message makes
+    /// a commit push afterwards; the commit lands on the remote (a local
+    /// bare repository, no network) and the choice is remembered.
+    #[test]
+    fn commit_and_push_from_the_checkbox() {
+        use std::sync::mpsc;
+        let mut te = TextEngine::new();
+        let Some(f) = load_fonts(&mut te) else { return };
+        let base = std::env::temp_dir().join(format!("ffwd-ui-cpush-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (dir, remote) = (base.join("work"), base.join("remote.git"));
+        std::fs::create_dir_all(&dir).unwrap();
+        Git { root: base.clone() }.output(&["init", "-q", "--bare", "-b", "main", "remote.git"]).unwrap();
+        let g = Git { root: dir.clone() };
+        for a in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.name", "ffwd test"],
+            &["config", "user.email", "test@example.invalid"],
+            &["config", "commit.gpgsign", "false"],
+            &["config", "core.autocrlf", "false"],
+        ] {
+            g.output(a).unwrap();
+        }
+        let url = remote.to_string_lossy().replace('\\', "/");
+        g.output(&["remote", "add", "origin", &url]).unwrap();
+        std::fs::write(dir.join("a.txt"), "a\n").unwrap();
+        g.output(&["add", "."]).unwrap();
+        g.output(&["commit", "-q", "-m", "first"]).unwrap();
+        g.output(&["push", "-q", "-u", "origin", "main"]).unwrap();
+        std::fs::write(dir.join("b.txt"), "b\n").unwrap();
+        let (tx, rx) = mpsc::channel::<(u64, Msg)>();
+        let tx = Arc::new(std::sync::Mutex::new(tx));
+        let sinks: SinkFactory = Arc::new(move |id| {
+            let tx = tx.clone();
+            Arc::new(move |m| {
+                if let Ok(t) = tx.lock() {
+                    let _ = t.send((id, m));
+                }
+            })
+        });
+        crate::work::start(dir.clone(), &sinks(1));
+        let empty = crate::settings::Settings::parse("");
+        let mut ui = Ui::new(te, f, empty.clone(), empty, Some((1, dir.clone())), sinks, 1280, 800, 1.0);
+        let pump = |ui: &mut Ui, what: &str, done: &dyn Fn(&Ui) -> bool| {
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while !done(ui) {
+                let left = until.saturating_duration_since(std::time::Instant::now());
+                assert!(!left.is_zero(), "timed out waiting for {what}; notice {:?}", ui.notice);
+                if let Ok((id, m)) = rx.recv_timeout(left) {
+                    ui.on_tab_msg(id, m);
+                }
+            }
+        };
+        pump(&mut ui, "the repository", &|u| u.r.git.is_some());
+        ui.enter_changes();
+        pump(&mut ui, "the change", &|u| u.side_len(changes_view_side(true)) == 1);
+        ui.key(Key::Char(' '));
+        pump(&mut ui, "staged", &|u| u.r.changes.busy.is_none() && u.side_len(changes_view_side(false)) == 1);
+        // Tick "Push" by clicking it.
+        let mut screen = vec![0u32; 1280 * 800];
+        ui.paint(&mut Canvas::new(&mut screen, 1280, 800), true);
+        let (r, _) = *ui.r.changes.hits.iter().find(|h| h.1 == changes_view::CHit::PushAfter).unwrap();
+        ui.click(r.x + 4, r.y + r.h / 2);
+        assert!(ui.push_after_commit());
+        assert_eq!(ui.settings.get("commit.push"), Some("true"), "remembered");
+        assert_partial_paint_is_full(&mut ui, &mut screen, "push ticked");
+        ui.r.changes.focus = changes_view::CFocus::Subject;
+        for c in "Add b".chars() {
+            ui.key(Key::Char(c));
+        }
+        ui.key(Key::CtrlEnter);
+        let remote_git = Git { root: remote.clone() };
+        let pushed = || {
+            remote_git
+                .output(&["log", "-1", "--format=%s", "main"])
+                .map(|o| String::from_utf8_lossy(&o).trim().to_string())
+        };
+        pump(&mut ui, "the commit and the push", &|u| u.r.op.is_none() && pushed().is_ok_and(|s| s == "Add b"));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     /// Find in the diff (FF-34): `Ctrl+F` with the diff focused searches
     /// the shown diff (case-insensitive), Enter steps through the matches
     /// and scrolls to them, the query stays for the next file, and Esc
