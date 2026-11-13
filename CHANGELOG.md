@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+## 0.2.0-beta.3
+
+The third beta: easier to read, more to click, and a stronger diff viewer.
+
+- **Readability:** clearer contrast for secondary text, borders that separate panes, a clearer selection, stronger diff colours, and menus and the palette on their own surface.
+- **Icons:** in every context menu, on the toolbar buttons and on branch, remote and tag labels.
+- **Everything has a button:**
+  - Install update, Discard and Undo in the status bar;
+  - Stash on the toolbar, and Find in the history header;
+  - previous and next change, find and the large view in the diff bar;
+  - Stage, Discard and Add to .gitignore in the Local Changes file menu.
+- **Conflicts:** ours and theirs are told apart by colour and labels, conflict headers are clearer, and the banner never clips (two rows when narrow).
+- **History:**
+  - compare two commits (Swap, Close);
+  - Space opens a large view of the selected commit;
+  - up to five lines of the commit message in the details.
+- **Diff viewer:**
+  - wrap long lines and scroll sideways (Shift+wheel, touchpad);
+  - code text size and tab width, and whitespace characters;
+  - JPEG in the image diff;
+  - right-click a line to open your editor there;
+  - each file's scroll position is remembered.
+- **Local Changes:**
+  - commit and push in one step;
+  - hide untracked and show ignored files;
+  - list heights follow their content.
+- **Branches:**
+  - set or change the upstream;
+  - a warning for a gone upstream, and Stop tracking;
+  - names are checked as you type.
+- **Fix:** on some fonts the diff bar drew into the pane next to it.
+
 ## 0.2.0-beta.2
 
 The second beta. ffwd now covers daily work end to end: staging and committing, branches and history operations, interactive rebase, conflicts, stashes, remotes, submodules, a find bar and a much richer diff viewer, and it starts faster.
