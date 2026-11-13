@@ -25,6 +25,7 @@
 - **Diff viewer** (FF-41): side by side or unified, syntax colours, word highlights within changed lines, context of 3 or 10 lines or the whole file, whitespace ignored or shown (remembered; `s`, `c`, `w` in the diff).
 - **Find bar** (`Ctrl+F`, FF-34): search messages, authors, SHAs, content (`-S`) and paths. Results stream in, non-matches are dimmed, matches are marked on the scroll track, and `↑`/`↓` jump between them.
 - **Fix:** the Settings backdrop no longer stays on screen after closing (FF-52).
+- **Fix:** the taskbar and Alt+Tab show the ffwd mark. The window now sets its big icon at the monitor's DPI (again on a scale change), and the Windows executable embeds the app icon, so Explorer, pinned buttons and shortcuts show it too.
 
 ## 0.2.0-beta.1
 

@@ -43,7 +43,39 @@ pub fn mark_rgba(n: usize) -> Vec<u8> {
     out
 }
 
-pub fn window_icon() -> Option<winit::window::Icon> {
-    const N: usize = 64;
-    winit::window::Icon::from_rgba(mark_rgba(N), N as u32, N as u32).ok()
+fn icon(n: usize) -> Option<winit::window::Icon> {
+    winit::window::Icon::from_rgba(mark_rgba(n), n as u32, n as u32).ok()
+}
+
+/// The pixel sizes of the small (title bar) and big (taskbar, Alt+Tab)
+/// icons at `scale`: 16 and 32 logical pixels, drawn at the real size so
+/// Windows never scales a bitmap.
+pub fn sizes(scale: f64) -> (usize, usize) {
+    let s = if scale.is_finite() { scale.clamp(1.0, 4.0) } else { 1.0 };
+    ((16.0 * s).round() as usize, (32.0 * s).round() as usize)
+}
+
+/// Gives the window its icons for `scale`. Without the big one, Windows
+/// shows the taskbar button with a scaled small icon or the exe default.
+pub fn apply(window: &winit::window::Window, scale: f64) {
+    let (small, big) = sizes(scale);
+    window.set_window_icon(icon(small));
+    #[cfg(windows)]
+    {
+        use winit::platform::windows::WindowExtWindows;
+        window.set_taskbar_icon(icon(big));
+    }
+    #[cfg(not(windows))]
+    let _ = big;
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn icon_sizes_follow_the_scale() {
+        assert_eq!(super::sizes(1.0), (16, 32));
+        assert_eq!(super::sizes(1.5), (24, 48));
+        assert_eq!(super::sizes(2.0), (32, 64));
+        assert_eq!(super::sizes(f64::NAN), (16, 32));
+    }
 }

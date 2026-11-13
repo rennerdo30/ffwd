@@ -210,6 +210,8 @@
 | Submodules: add, remove, update (on checkout by default), status on the sidebar, open the parent | M2 | |
 | Worktrees: list, create, delete, check out a remote branch as a worktree, remove with its branch | Partial | Listed on the sidebar; agents create them (FF-23) |
 | Git LFS: status dialog, locks (filter, unlock several), prune, progress, preview and download | M2 | |
+| *ffwd's own:* move a submodule (`git mv`, refuses or asks when it has uncommitted or unpushed work, optional rename) | Planned | FF-54 |
+| *ffwd's own:* automatic relative submodule URLs: propose `../lib.git` on add when the host and owner match the superproject's remote, convert existing absolute URLs in bulk (then `git submodule sync`), and make one absolute again | Planned | FF-54 |
 
 ## 14. Patches (FF-46)
 

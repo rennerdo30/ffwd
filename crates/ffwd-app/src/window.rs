@@ -396,7 +396,6 @@ impl ApplicationHandler<UserEvent> for App {
             use winit::platform::macos::WindowAttributesExtMacOS;
             attrs = attrs.with_titlebar_transparent(true).with_fullsize_content_view(true).with_title_hidden(true);
         }
-        attrs = attrs.with_window_icon(crate::icon::window_icon());
         let window = match el.create_window(attrs) {
             Ok(w) => Rc::new(w),
             Err(e) => {
@@ -407,6 +406,7 @@ impl ApplicationHandler<UserEvent> for App {
             }
         };
         trace(self.t0, "window created");
+        crate::icon::apply(&window, window.scale_factor());
         let surface = Context::new(window.clone()).and_then(|ctx| Surface::new(&ctx, window.clone()));
         let surface = match surface {
             Ok(s) => s,
@@ -584,6 +584,9 @@ impl ApplicationHandler<UserEvent> for App {
                 }
             }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                if let Some(g) = &self.gfx {
+                    crate::icon::apply(&g.window, scale_factor);
+                }
                 if let Some(ui) = &mut self.ui {
                     ui.resize(self.size.0, self.size.1, scale_factor as f32);
                 }
