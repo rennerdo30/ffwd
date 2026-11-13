@@ -30,7 +30,7 @@ This turns ffwd's AI plan from "suggest a commit message" into "delegate a task 
 ## What it needs first
 
 - **The operations layer must be trustworthy (FF-13).** The friend's warning applies to everything ffwd does: every Git command has to do exactly what it says and handle every failure cleanly. That comes before any agent feature. See the matrix below.
-- **Worktrees as a first-class view** (the full feature set, M2).
+- **Worktrees as a first-class view** (full feature set, M2).
 - **Local Changes and a commit view (FF-14),** to review an agent's work.
 
 ## Git operations: failures ffwd must handle

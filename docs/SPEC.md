@@ -104,7 +104,7 @@ Proposal, to be measured in M1 before deciding: read in-process with gitoxide (h
 
 ## 8. Open questions for the owner
 
-1. Your daily workflows in other clients that ffwd must make faster first.
+1. Your daily Git workflows that ffwd must make faster first.
 2. Typical repository sizes (commits, files, LFS, submodules), for the M1 benchmarks.
 3. GitHub integration (pull requests, CI status) in M1, or later?
 4. Keymap: common Git-client shortcuts by default, with a Vim-style preset?

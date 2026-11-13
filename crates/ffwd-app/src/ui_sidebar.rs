@@ -61,7 +61,7 @@ impl SideItem {
 }
 
 /// Adds `refs` as a tree: names with `/` group into folders (folders
-/// first, then branches, each sorted) `t3/…` folders.
+/// first, then branches, each sorted), as `t3/…` folders.
 #[allow(clippy::too_many_arguments)]
 fn tree(
     out: &mut Vec<SideItem>,

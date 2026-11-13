@@ -1,8 +1,6 @@
 # Feature inventory
 
-**Sources, read on 2026-11-13:**
-
-
+What a complete desktop Git client offers, grouped in 18 areas, with ffwd's status for each feature. Pair Desk FF-32 tracks the work, with one issue per area (FF-33 to FF-50).
 
 **Status in ffwd:**
 - **Built:** ffwd has it today.
@@ -102,7 +100,6 @@
 | Cherry-pick and revert, merge commits too | Partial | Single commits are built; merge commits come later |
 | Reset soft, mixed, hard | **Built** | Backup ref before every reset |
 | Revert one file's bad merge resolution | M2 | |
-| "Lean branching" (a branch model) | Skip | Opinionated; Git-flow comes first |
 | Git-flow (option to not merge a release into develop) | M3 | |
 | Bisect: good and bad marks in colour, clickable refs in the status bar | M2 | |
 
@@ -256,7 +253,7 @@
 | Commit messages and branch review with Claude Code, Codex or Cursor (if installed) | Partial | Commit messages are built: any OpenAI-compatible endpoint, local first, with the exact request shown before anything is sent. Branch review comes next; agents run in sandboxes (FF-23, FF-26) |
 | Editable AI requests (prompts) in the preferences | M2 | |
 
-## ffwd's own (ffwd's own)
+## ffwd's own
 
 - **Remote-desktop mode:** damage-only CPU presents, copy-scrolling, no animations.
 - **Undo for every operation**, from the reflog and backup refs.

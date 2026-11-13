@@ -1291,7 +1291,7 @@ impl Ui {
         let skip = self.r.changes.skip_hooks;
         let hb = self.checkbox(cv, ab.right() + self.px(4.0), by, "Skip hooks", skip, hot);
         hits.push((hb, CHit::SkipHooks));
-        // Push after committing.
+        // Push after committing ("commit and push").
         let hot = self.change_hot(hits.len());
         let push = self.push_after_commit();
         let hb = self.checkbox(cv, hb.right() + self.px(4.0), by, "Push", push, hot);

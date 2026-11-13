@@ -68,7 +68,7 @@ FFWD_TRACE=1 ffwd path/to/repo
 
 - [Specification and speed budgets](docs/SPEC.md)
 - [UI design](docs/UI-DESIGN.md)
-- [Feature plan, the feature plan](docs/FEATURES.md)
+- [Feature plan](docs/FEATURES.md)
 - [Building and fast iteration](docs/BUILD.md)
 - [Releasing and updates](docs/RELEASING.md)
 - [Architecture decisions](docs/decisions)

@@ -3088,7 +3088,7 @@ impl Ui {
         cv.stroke(&[(cx, cy - s), (cx, cy + s)], self.pf(1.5), TEXT_2);
     }
 
-    /// Middle click closes the tab under the pointer.
+    /// Middle click closes the tab under the pointer, as in browsers.
     pub fn middle_click(&mut self, x: i32, y: i32) {
         if let Some(i) = self.tab_at(x, y) {
             self.close_tab(i);

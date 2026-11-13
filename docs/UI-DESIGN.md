@@ -22,7 +22,7 @@ The capture above is the real PoC UI. `ffwd --snapshot` rendered it offscreen fr
 └───────────────────────────────────────────────────────────────────────────┘
 ```
 
-- **The top bar holds one input for everything:** branches, tags, SHAs and commands, with `Ctrl+K`, `Ctrl+P` or `/`. actions (Fetch, Pull, Push) stay visible with live ahead/behind counts. The AI button is the single entry point to AI features.
+- **The top bar holds one input for everything:** branches, tags, SHAs and commands, with `Ctrl+K`, `Ctrl+P` or `/`. The main actions (Fetch, Pull, Push) stay visible with live ahead/behind counts. The AI button is the single entry point to AI features.
 - **The sidebar is the map, not a second list.**
   - Local Changes shows a count badge.
   - The current branch is marked in the accent colour and shows its ahead/behind counts.
@@ -307,7 +307,7 @@ Settings has two pages, **General** and **Agents** (`Ctrl+Tab` switches between 
 
 ## Repository tabs
 
-Like other clients: one tab per repository under the top bar.
+One tab per repository under the top bar.
 - Click a tab to switch; × or a middle click closes it; `+` opens another repository.
 - **Open repository** (`Ctrl+O`, `Ctrl+T`, `+` or a click on the repository name): a picker listing recent repositories first, then repositories found next to the open ones (and in `repos.roots` in `settings.toml`, `;`-separated). Typing a folder path opens it directly.
 - Each tab keeps its own history, selection and loaders. Background tabs collect their updates and apply them when shown; saved tabs from the last session load only when first shown.
