@@ -152,6 +152,68 @@ pub fn set_clipboard(text: &str) {
     }
 }
 
+/// The installed WSL distributions (`wsl.exe -l -q`), at most five
+/// seconds; empty when WSL is missing or slow. Windows only.
+#[cfg(windows)]
+pub fn wsl_distros() -> Vec<String> {
+    use std::os::windows::process::CommandExt;
+    use std::process::{Command, Stdio};
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let Ok(mut child) = Command::new("wsl.exe")
+        .args(["-l", "-q"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn()
+    else {
+        return Vec::new();
+    };
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if std::time::Instant::now() < until => std::thread::sleep(std::time::Duration::from_millis(50)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Vec::new();
+            }
+        }
+    }
+    let mut out = Vec::new();
+    if let Some(mut s) = child.stdout.take() {
+        use std::io::Read;
+        let _ = s.by_ref().take(64 << 10).read_to_end(&mut out);
+    }
+    parse_wsl_list(&out)
+}
+
+#[cfg(not(windows))]
+pub fn wsl_distros() -> Vec<String> {
+    Vec::new()
+}
+
+/// `wsl -l -q` writes UTF-16LE, one distribution per line.
+pub fn parse_wsl_list(out: &[u8]) -> Vec<String> {
+    // A UTF-16LE byte-order mark, or zero high bytes: UTF-16; else UTF-8.
+    let (body, utf16) = match out.strip_prefix(&[0xFF, 0xFE]) {
+        Some(rest) => (rest, true),
+        None => (out, out.len() >= 2 && out.iter().skip(1).step_by(2).take(16).all(|&b| b == 0)),
+    };
+    let text = if utf16 {
+        let units: Vec<u16> = body.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes(*c)).collect();
+        String::from_utf16_lossy(&units)
+    } else {
+        String::from_utf8_lossy(body).into_owned()
+    };
+    text.lines()
+        .map(|l| l.trim_matches(|c: char| c.is_whitespace() || c == '\u{feff}' || c == '\0').to_string())
+        .filter(|l| !l.is_empty())
+        .take(64)
+        .collect()
+}
+
 /// Dark title bar on Windows 10/11 so the native caption matches the theme.
 #[cfg(windows)]
 pub fn dark_title_bar(hwnd: isize) {
@@ -258,4 +320,16 @@ pub fn show_file(p: std::path::PathBuf) {
             let _ = std::process::Command::new("xdg-open").arg(dir).spawn();
         }
     });
+}
+
+#[cfg(test)]
+mod wsl_tests {
+    #[test]
+    fn wsl_list_parses_utf16_and_utf8() {
+        let utf16: Vec<u8> =
+            "\u{feff}Ubuntu-24.04\r\nDebian\r\n".encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
+        assert_eq!(super::parse_wsl_list(&utf16), ["Ubuntu-24.04", "Debian"]);
+        assert_eq!(super::parse_wsl_list(b"Ubuntu\nkali-linux\n"), ["Ubuntu", "kali-linux"]);
+        assert!(super::parse_wsl_list(b"").is_empty());
+    }
 }

@@ -38,6 +38,8 @@ pub enum Msg {
     WorkerPanic(String),
     /// Repositories found for the "Open repository" picker.
     Repos(Vec<PathBuf>),
+    /// The installed WSL distributions (Windows; for the agents' sandbox).
+    WslDistros(Vec<String>),
     OpProgress(String),
     OpDone(ffwd_core::ops::Outcome),
     /// An agent run's progress (experimental agents).
