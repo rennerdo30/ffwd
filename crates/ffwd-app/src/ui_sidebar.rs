@@ -584,7 +584,7 @@ impl Ui {
                         (bw + self.pf(12.0)) as i32,
                         self.px(18.0),
                     );
-                    cv.fill_round(b, self.pf(9.0), 0x33290f);
+                    cv.fill_round(b, self.pf(9.0), ACCENT_SOFT);
                 }
                 self.te.draw(cv, semi, self.pf(11.0), bx, base - self.pf(0.5), &it.badge, color, bw + 2.0);
             }
@@ -594,7 +594,7 @@ impl Ui {
         if items.len() > vis {
             let th = ((l.h as f32 * vis as f32 / items.len() as f32) as i32).max(self.px(20.0));
             let ty = l.y + ((l.h - th) as f32 * self.r.side_top as f32 / (items.len() - vis) as f32) as i32;
-            cv.fill_round(Rect::new(l.right() - self.px(5.0), ty, self.px(3.0), th), self.pf(1.5), 0x2a2f38);
+            cv.fill_round(Rect::new(l.right() - self.px(5.0), ty, self.px(3.0), th), self.pf(1.5), BORDER_HOVER);
         }
         self.r.side = items;
         cv.set_clip(old);

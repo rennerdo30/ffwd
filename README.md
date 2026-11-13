@@ -1,4 +1,7 @@
-<p align="center"><img src="assets/logo/ffwd-wordmark.svg" alt="ffwd" width="380"></p>
+<p align="center"><picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/logo/ffwd-wordmark.svg">
+  <img src="assets/logo/ffwd-wordmark-light.svg" alt="ffwd" width="380">
+</picture></p>
 
 <p align="center"><b>A Git client that is fast at everything, everywhere, including over remote desktop.</b><br>
 Windows · macOS · Linux · written in Rust</p>

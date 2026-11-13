@@ -19,6 +19,10 @@ mod sidebar;
 use sidebar::SideItem;
 #[path = "ui_agents.rs"]
 mod agents_view;
+#[path = "ui_hover.rs"]
+mod hover;
+pub use hover::Cursor;
+use hover::Hot;
 #[path = "ui_settings.rs"]
 mod settings_view;
 use agents_view::{AgentRun, AgentView};
@@ -29,6 +33,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+/// See `load_fonts`.
+pub const TYPE_SCALE: f32 = 1.08;
 
 pub struct Fonts {
     pub ui: FontId,
@@ -65,6 +72,9 @@ pub fn load_fonts(te: &mut TextEngine) -> Option<Fonts> {
     let ui = te.add(a.join().ok().flatten()?);
     let semi = b.join().ok().flatten().map_or(ui, |f| te.add(f));
     let mono = c.join().ok().flatten().map_or(ui, |f| te.add(f));
+    // The type scale: the sizes in the code are design sizes; on screen
+    // they are 8 % larger, so the smallest text is about 12 px (FF-30).
+    te.set_size_boost(TYPE_SCALE);
     Some(Fonts { ui, semi, mono })
 }
 
@@ -414,6 +424,12 @@ pub struct Ui {
     top_buttons: Vec<(Rect, TopAction)>,
     search_rect: Rect,
     pub win_action: Option<WinAction>,
+    /// Under the pointer, held by the mouse button, the cursor to show and
+    /// the last pointer position (ui_hover.rs).
+    hot: Option<Hot>,
+    pressed: Option<Hot>,
+    cursor: Cursor,
+    pointer_at: Option<(i32, i32)>,
     pub damage: Damage,
 }
 
@@ -505,6 +521,10 @@ impl Ui {
             top_buttons: Vec::new(),
             search_rect: Rect::default(),
             win_action: None,
+            hot: None,
+            pressed: None,
+            cursor: Cursor::Default,
+            pointer_at: None,
             damage: Damage { full: true, ..Default::default() },
         };
         // Saved tabs, then the one ffwd was started with.
@@ -1308,6 +1328,7 @@ impl Ui {
         if n == 0 {
             return;
         }
+        self.pointer_at = Some((x, y));
         if self.settings_view.is_some() {
             self.settings_wheel(n);
         } else if self.agent_view.is_some() {
@@ -1319,9 +1340,12 @@ impl Ui {
         } else if self.diff_rect().contains(x, y) {
             self.scroll_diff(n);
         }
+        // The content moved under a resting pointer.
+        self.refresh_hot();
     }
 
     pub fn click(&mut self, x: i32, y: i32) {
+        self.press_at(x, y);
         if self.settings_view.is_some() {
             return self.settings_click(x, y);
         }
@@ -1333,6 +1357,14 @@ impl Ui {
                 self.cap_pressed = Some(b);
                 self.damage.rects.push(self.lay.caption);
             }
+            return;
+        }
+        if let Some(Hot::Palette(k)) = self.hot {
+            // A click on an entry chooses it, as Enter does.
+            if let Some(p) = &mut self.palette {
+                p.sel = k;
+            }
+            self.palette_key(Key::Enter);
             return;
         }
         if self.palette.is_some() {
@@ -1699,6 +1731,11 @@ impl Ui {
         if self.palette.is_some() && !clip.intersect(self.palette_rect(10)).is_empty() {
             self.paint_palette(cv);
         }
+        // A modal panel dims what is behind it, so the eye goes to the
+        // panel. Remote sessions get no translucency (performance rule 6).
+        if (self.agent_view.is_some() || self.settings_view.is_some()) && !self.remote {
+            cv.fill_alpha(clip, 0x000000, 100);
+        }
         if self.agent_view.is_some() && !clip.intersect(self.agents_rect()).is_empty() {
             self.paint_agents(cv);
         }
@@ -1720,18 +1757,25 @@ impl Ui {
         cv.fill(r, BG_BAR);
         cv.fill(Rect::new(r.x, r.bottom() - 1, r.w, 1), BORDER);
         let cy = r.y as f32 + r.h as f32 / 2.0;
-        // App mark: the logo's fast-forward chevrons, solid.
+        // App mark: the logo itself (icon.rs), the same as the window icon.
         // macOS keeps its traffic lights at the left of the bar.
         let left = if self.chrome == Chrome::MacInset { self.pf(80.0) } else { self.pf(14.0) };
         let mut controls = Vec::new();
         let mark = Rect::new(left as i32, (cy - self.pf(13.0)) as i32, self.px(26.0), self.px(26.0));
-        cv.fill_round(mark, self.pf(7.0), ACCENT);
-        self.chevrons(cv, mark.x as f32 + self.pf(6.5), cy, self.pf(10.0), ACCENT_TEXT);
+        crate::icon::draw_mark(cv, mark);
         let (ui, semi, mono) = (self.f.ui, self.f.semi, self.f.mono);
         let base = (cy + self.pf(5.0)).round();
         let mut buttons = Vec::new();
         let mut x = mark.right() as f32 + self.pf(12.0);
         let name_x = x;
+        if self.is_hot(Hot::Top(TopAction::Repo)) {
+            // The previous paint's hit area (the name's width is known then).
+            if let Some(&(nr, _)) = self.top_buttons.iter().find(|(_, a)| *a == TopAction::Repo) {
+                let (bg, _) = self.control_colors(Hot::Top(TopAction::Repo), BG_BAR, BORDER);
+                cv.fill_round(nr.inset(-self.px(4.0), 0), self.pf(8.0), bg);
+                crate::icon::draw_mark(cv, mark);
+            }
+        }
         x = self.te.draw(cv, semi, self.pf(14.5), x, base, &self.r.repo_name.clone(), TEXT, self.pf(220.0));
         // Clicking the name (or the mark) opens another repository.
         let name_r =
@@ -1750,7 +1794,8 @@ impl Ui {
             .to_string();
         let bw = self.te.measure(semi, self.pf(12.5), &branch) + self.pf(36.0);
         let pill = Rect::new(x as i32, (cy - self.pf(13.0)) as i32, bw as i32, self.px(26.0));
-        cv.round_border(pill, self.pf(13.0), BORDER, BG_INPUT);
+        let (pbg, pborder) = self.control_colors(Hot::Top(TopAction::Branch), BG_INPUT, BORDER);
+        cv.round_border(pill, self.pf(13.0), pborder, pbg);
         controls.push((pill.x, pill.right()));
         buttons.push((pill, TopAction::Branch));
         self.branch_icon(cv, pill.x as f32 + self.pf(14.0), cy, TEXT_2);
@@ -1758,7 +1803,8 @@ impl Ui {
         // Search / command field.
         let sw = self.px(460.0).min(r.w - self.px(760.0)).max(self.px(200.0));
         let search = Rect::new((r.w - sw) / 2, (cy - self.pf(15.0)) as i32, sw, self.px(30.0));
-        cv.round_border(search, self.pf(8.0), BORDER, BG_INPUT);
+        let sborder = if self.is_hot(Hot::Search) { BORDER_HOVER } else { BORDER };
+        cv.round_border(search, self.pf(8.0), sborder, BG_INPUT);
         controls.push((search.x, search.right()));
         self.search_rect = search;
         let sx = search.x as f32 + self.pf(14.0);
@@ -1786,8 +1832,10 @@ impl Ui {
         // Gear: settings.
         let gs = self.px(30.0);
         let gear = Rect::new((right as f32 - self.pf(10.0)) as i32 - gs, (cy - self.pf(15.0)) as i32, gs, gs);
-        cv.round_border(gear, self.pf(8.0), BORDER, BG_BAR);
-        self.gear_icon(cv, gear.x as f32 + gs as f32 / 2.0, cy, TEXT_2);
+        let (gbg, gborder) = self.control_colors(Hot::Top(TopAction::Settings), BG_BAR, BORDER);
+        cv.round_border(gear, self.pf(8.0), gborder, gbg);
+        let gc = if self.is_hot(Hot::Top(TopAction::Settings)) { TEXT } else { TEXT_2 };
+        self.gear_icon(cv, gear.x as f32 + gs as f32 / 2.0, cy, gc);
         buttons.push((gear, TopAction::Settings));
         let right = gear.x;
         let mut bx = right as f32 - self.pf(8.0);
@@ -1796,16 +1844,32 @@ impl Ui {
             |op: Op, idle: &'static str| if busy == Some(op) { format!("{}…", op.verb()) } else { idle.to_string() };
         let (row_y, row_h) = ((cy - self.pf(14.0)) as i32, self.px(28.0));
         let row = move |l: f32, r: f32| Rect::new(l as i32, row_y, (r - l) as i32, row_h);
-        let ai = self.button(cv, bx, cy, "AI", None, true);
+        let ai = self.button(cv, bx, cy, "AI", None, true, TopAction::Ai);
         buttons.push((row(ai, bx), TopAction::Ai));
         bx = ai - self.pf(8.0);
-        let push = self.button(cv, bx, cy, &label(Op::Push, "Push"), (ahead > 0).then(|| format!("↑{ahead}")), false);
+        let push = self.button(
+            cv,
+            bx,
+            cy,
+            &label(Op::Push, "Push"),
+            (ahead > 0).then(|| format!("↑{ahead}")),
+            false,
+            TopAction::Push,
+        );
         buttons.push((row(push, bx), TopAction::Push));
         bx = push - self.pf(8.0);
-        let pull = self.button(cv, bx, cy, &label(Op::Pull, "Pull"), (behind > 0).then(|| format!("↓{behind}")), false);
+        let pull = self.button(
+            cv,
+            bx,
+            cy,
+            &label(Op::Pull, "Pull"),
+            (behind > 0).then(|| format!("↓{behind}")),
+            false,
+            TopAction::Pull,
+        );
         buttons.push((row(pull, bx), TopAction::Pull));
         bx = pull - self.pf(8.0);
-        let fetch = self.button(cv, bx, cy, &label(Op::Fetch, "Fetch"), None, false);
+        let fetch = self.button(cv, bx, cy, &label(Op::Fetch, "Fetch"), None, false, TopAction::Fetch);
         buttons.push((row(fetch, bx), TopAction::Fetch));
         // Fetch to the gear's right edge: the gear is a control too, not
         // part of the title bar's drag area (FF-29).
@@ -1921,10 +1985,10 @@ impl Ui {
             };
             let idle = if self.active { TEXT } else { TEXT_3 };
             let (fill, glyph) = match (i, hover, pressed) {
-                (2, true, true) => (0x9e2a1f, 0xffffff),
-                (2, true, false) => (0xc42b1c, 0xffffff),
-                (_, true, true) => (0x262a31, TEXT),
-                (_, true, false) => (0x1f232a, TEXT),
+                (2, true, true) => (CLOSE_PRESS, 0xffffff),
+                (2, true, false) => (CLOSE_HOVER, 0xffffff),
+                (_, true, true) => (BG_PRESS, TEXT),
+                (_, true, false) => (BG_HOVER, TEXT),
                 _ => (BG_BAR, idle),
             };
             cv.fill(b, fill);
@@ -1961,6 +2025,7 @@ impl Ui {
 
     /// Pointer moved in the client area (hover for minimise and close).
     pub fn pointer(&mut self, x: i32, y: i32) {
+        self.update_hot(x, y);
         self.side_pointer(x, y);
         let th = self.tab_at(x, y);
         if th != self.tab_hover {
@@ -1975,6 +2040,7 @@ impl Ui {
     }
 
     pub fn pointer_left(&mut self) {
+        self.clear_hot();
         if self.tab_hover.take().is_some() {
             self.damage.rects.push(self.lay.tabs);
         }
@@ -1986,6 +2052,7 @@ impl Ui {
     /// Mouse button released: a caption button acts only if the press
     /// started on it and the pointer is still over it (as on Windows).
     pub fn release(&mut self, x: i32, y: i32) {
+        self.release_press();
         if let Some(b) = self.cap_pressed.take() {
             if self.caption_button_at(x, y) == Some(b) {
                 self.win_action = Some(if b == 0 { WinAction::Minimize } else { WinAction::Close });
@@ -2022,6 +2089,7 @@ impl Ui {
     }
 
     /// Right-aligned button ending at `right`; returns its left edge.
+    #[allow(clippy::too_many_arguments)]
     fn button(
         &mut self,
         cv: &mut Canvas,
@@ -2030,6 +2098,7 @@ impl Ui {
         label: &str,
         badge: Option<String>,
         accent: bool,
+        action: TopAction,
     ) -> f32 {
         let semi = self.f.semi;
         let size = self.pf(12.5);
@@ -2038,15 +2107,25 @@ impl Ui {
         let icon = if accent { self.pf(16.0) } else { 0.0 };
         let w = tw + bw_badge + icon + self.pf(24.0);
         let r = Rect::new((right - w) as i32, (cy - self.pf(14.0)) as i32, w as i32, self.px(28.0));
+        let h = Hot::Top(action);
         if accent {
-            cv.round_border(r, self.pf(8.0), 0x5a2a1c, 0x2a1712);
+            let bg = if self.is_pressed(h) {
+                ACCENT_SOFT
+            } else if self.is_hot(h) {
+                ACCENT_SOFT_HOVER
+            } else {
+                ACCENT_SOFT
+            };
+            let border = if self.is_hot(h) { ACCENT } else { ACCENT_BORDER };
+            cv.round_border(r, self.pf(8.0), border, bg);
             self.sparkle(cv, r.x as f32 + self.pf(16.0), cy, self.pf(5.5), ACCENT);
         } else {
-            cv.round_border(r, self.pf(8.0), BORDER, BG_BAR);
+            let (bg, border) = self.control_colors(h, BG_BAR, BORDER);
+            cv.round_border(r, self.pf(8.0), border, bg);
         }
         let base = (cy + self.pf(4.5)).round();
         let tx = r.x as f32 + self.pf(12.0) + icon;
-        let end = self.te.draw(cv, semi, size, tx, base, label, if accent { 0xffb79c } else { TEXT }, w);
+        let end = self.te.draw(cv, semi, size, tx, base, label, if accent { ACCENT_FG } else { TEXT }, w);
         if let Some(b) = badge {
             self.te.draw(cv, semi, self.pf(11.5), end + self.pf(6.0), base, &b, ACCENT, w);
         }
@@ -2152,7 +2231,7 @@ impl Ui {
             if n > vis {
                 let th = ((sb.h as f32 * vis as f32 / n as f32) as i32).max(self.px(24.0));
                 let ty = sb.y + ((sb.h - th) as f32 * self.r.top as f32 / (n - vis) as f32) as i32;
-                cv.fill_round(Rect::new(sb.x + self.px(2.0), ty, sb.w - self.px(4.0), th), self.pf(3.0), 0x2a2f38);
+                cv.fill_round(Rect::new(sb.x + self.px(2.0), ty, sb.w - self.px(4.0), th), self.pf(3.0), BORDER_HOVER);
             }
             // Selection marker on the scroll track.
             let my = sb.y + (sb.h as f32 * self.r.sel as f32 / n as f32) as i32;
@@ -2174,7 +2253,13 @@ impl Ui {
         semi: FontId,
     ) {
         let selected = row == self.r.sel;
-        let bg = if selected { if self.focus == Focus::List { BG_SELECT } else { BG_SELECT_DIM } } else { BG };
+        let bg = if selected {
+            if self.focus == Focus::List { BG_SELECT } else { BG_SELECT_DIM }
+        } else if self.is_hot(Hot::Row(row)) {
+            BG_HOVER
+        } else {
+            BG
+        };
         cv.fill(r, bg);
         if row >= self.r.commits.len() {
             if !self.r.log_done && row < self.r.top + self.visible_rows() {
@@ -2444,6 +2529,8 @@ impl Ui {
                     let row = Rect::new(d.x + self.px(10.0), ry, d.w - self.px(20.0), rh);
                     if k == self.r.sel_file {
                         cv.fill_round(row, self.pf(6.0), if focus_files { BG_SELECT } else { BG_SELECT_DIM });
+                    } else if self.is_hot(Hot::File(k)) {
+                        cv.fill_round(row, self.pf(6.0), BG_HOVER);
                     }
                     let cy = ry as f32 + rh as f32 / 2.0;
                     let base = (cy + self.pf(4.5)).round();
@@ -2585,8 +2672,8 @@ impl Ui {
             if bgc != BG {
                 cv.fill(Rect::new(gut.right(), y, body.w - gut.w, lh), bgc);
                 let gbg = match line.kind {
-                    LineKind::Add => 0x0f1d16,
-                    LineKind::Del => 0x221114,
+                    LineKind::Add => DIFF_ADD_LINE,
+                    LineKind::Del => DIFF_DEL_LINE,
                     _ => BG_SIDEBAR,
                 };
                 cv.fill(Rect::new(gut.x, y, gut.w, lh), gbg);
@@ -2605,8 +2692,8 @@ impl Ui {
                 continue;
             }
             let numc = match line.kind {
-                LineKind::Add => 0x3a7a5a,
-                LineKind::Del => 0x8a4a4f,
+                LineKind::Add => ADD_GUTTER,
+                LineKind::Del => DEL_GUTTER,
                 _ => TEXT_4,
             };
             if line.old > 0 {
@@ -2694,7 +2781,7 @@ impl Ui {
             .map(|i| (i.label.clone(), i.hint.clone(), i.kind, matches!(i.action, PAction::Command(_))))
             .collect();
         let old = cv.set_clip(clip.intersect(r));
-        cv.round_border(r, self.pf(12.0), 0x343a45, BG_INPUT);
+        cv.round_border(r, self.pf(12.0), BORDER_STRONG, BG_PANEL);
         let (ui, semi) = (self.f.ui, self.f.semi);
         let input = Rect::new(r.x, r.y, r.w, self.px(52.0));
         let base = (input.y as f32 + input.h as f32 / 2.0 + self.pf(5.5)).round();
@@ -2729,7 +2816,7 @@ impl Ui {
                         self.px(26.0),
                     ),
                     self.pf(4.0),
-                    0x2c4a78,
+                    BG_TEXT_SELECT,
                 );
             }
             self.te.draw(cv, ui, self.pf(15.0), qx, base, &query, TEXT, r.w as f32 - self.pf(80.0));
@@ -2754,6 +2841,8 @@ impl Ui {
             let row = Rect::new(r.x + self.px(6.0), y, r.w - self.px(12.0), self.px(34.0));
             if k == sel {
                 cv.fill_round(row, self.pf(7.0), BG_SELECT);
+            } else if self.is_hot(Hot::Palette(k)) {
+                cv.fill_round(row, self.pf(7.0), BG_HOVER);
             }
             let cy = y as f32 + self.pf(17.0);
             let b = (cy + self.pf(4.5)).round();

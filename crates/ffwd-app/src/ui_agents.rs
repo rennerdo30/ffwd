@@ -587,6 +587,15 @@ impl Ui {
         }
     }
 
+    /// The index of the panel element under the pointer (for hover).
+    pub(super) fn agent_hit_at(&self, x: i32, y: i32) -> Option<usize> {
+        self.agent_view.as_ref()?.hits.iter().position(|h| h.0.contains(x, y))
+    }
+
+    pub(super) fn agent_hit_is_field(&self, i: usize) -> bool {
+        self.agent_view.as_ref().is_some_and(|v| matches!(v.hits.get(i), Some((_, Hit::Field))))
+    }
+
     fn pill(&mut self, cv: &mut Canvas, x: f32, cy: f32, text: &str, bg: u32, fg: u32) -> f32 {
         let semi = self.f.semi;
         let size = self.pf(10.0);
@@ -597,14 +606,30 @@ impl Ui {
         x + w
     }
 
-    fn agent_btn(&mut self, cv: &mut Canvas, x: i32, y: i32, label: &str, enabled: bool, danger: bool) -> Rect {
+    /// A panel button; `hit` is its index in the hit list being built.
+    #[allow(clippy::too_many_arguments)]
+    fn agent_btn(
+        &mut self,
+        cv: &mut Canvas,
+        x: i32,
+        y: i32,
+        label: &str,
+        enabled: bool,
+        danger: bool,
+        hit: usize,
+    ) -> Rect {
         let semi = self.f.semi;
         let w = (self.te.measure(semi, self.pf(12.0), label) + self.pf(24.0)) as i32;
         let r = Rect::new(x, y, w, self.px(28.0));
+        let h = Hot::Agent(hit);
         let (border, bg, fg) = match (enabled, danger) {
             (false, _) => (BORDER_SOFT, BG_PANEL, TEXT_4),
-            (true, true) => (0x4a2228, DEL_BG, DEL_TEXT),
-            (true, false) => (BORDER, BG_BAR, TEXT),
+            (true, true) if self.is_hot(h) => (DEL, DEL_BG, DEL_TEXT),
+            (true, true) => (DANGER_BORDER, DEL_BG, DEL_TEXT),
+            (true, false) => {
+                let (bg, border) = self.control_colors(h, BG_BAR, BORDER);
+                (border, bg, TEXT)
+            }
         };
         cv.round_border(r, self.pf(7.0), border, bg);
         self.te.draw(cv, semi, self.pf(12.0), x as f32 + self.pf(12.0), y as f32 + self.pf(18.5), label, fg, w as f32);
@@ -615,7 +640,7 @@ impl Ui {
         let Some(mut view) = self.agent_view.take() else { return };
         let r = self.agents_rect();
         let old = cv.set_clip(cv.clip().intersect(r));
-        cv.round_border(r, self.pf(12.0), 0x343a45, BG_PANEL);
+        cv.round_border(r, self.pf(12.0), BORDER_STRONG, BG_PANEL);
         let (ui, semi, mono) = (self.f.ui, self.f.semi, self.f.mono);
         let pad = self.px(24.0);
         let x0 = r.x + pad;
@@ -667,7 +692,7 @@ impl Ui {
                 cv.fill_round(
                     Rect::new(fx as i32 - 2, fr.y + self.px(8.0), w as i32 + 4, fr.h - self.px(16.0)),
                     self.pf(3.0),
-                    0x2c4a78,
+                    BG_TEXT_SELECT,
                 );
             }
             self.te.draw(cv, ui, self.pf(13.0), fx, fb, view.input.text(), TEXT, fmax);
@@ -732,6 +757,8 @@ impl Ui {
             let rr = Rect::new(list.x + self.px(6.0), ry, list.w - self.px(12.0), row_h - self.px(4.0));
             if k == view.sel {
                 cv.fill_round(rr, self.pf(7.0), if view.field { BG_SELECT_DIM } else { BG_SELECT });
+            } else if self.is_hot(Hot::Agent(hits.len())) {
+                cv.fill_round(rr, self.pf(7.0), BG_HOVER);
             }
             let a = &self.agents[i];
             let (title, status, branch) = (a.rec.title.clone(), a.rec.status, a.rec.branch.clone());
@@ -822,7 +849,7 @@ impl Ui {
                 (Btn::Folder, "Open folder", !rec.worktree.as_os_str().is_empty(), false),
                 (Btn::Log, "Open log", !rec.worktree.as_os_str().is_empty(), false),
             ] {
-                let br = self.agent_btn(cv, bx, by, label, en, danger);
+                let br = self.agent_btn(cv, bx, by, label, en, danger, hits.len());
                 if en {
                     hits.push((br, Hit::Button(b)));
                 }
@@ -840,7 +867,7 @@ impl Ui {
                 cv.round_border(
                     cr,
                     self.pf(8.0),
-                    if danger { 0x4a2228 } else { 0x2a3a5c },
+                    if danger { DANGER_BORDER } else { HUNK_BORDER },
                     if danger { DEL_BG } else { HUNK_BG },
                 );
                 for (k, l) in lines.iter().enumerate() {
@@ -857,9 +884,9 @@ impl Ui {
                 }
                 let byy = cr.bottom() - self.px(38.0);
                 let yes = if danger { "Discard (Enter)" } else { "Merge (Enter)" };
-                let b1 = self.agent_btn(cv, cr.x + self.px(14.0), byy, yes, true, danger);
-                let b2 = self.agent_btn(cv, b1.right() + self.px(8.0), byy, "Keep it (Esc)", true, false);
+                let b1 = self.agent_btn(cv, cr.x + self.px(14.0), byy, yes, true, danger, hits.len());
                 hits.push((b1, Hit::Confirm(true)));
+                let b2 = self.agent_btn(cv, b1.right() + self.px(8.0), byy, "Keep it (Esc)", true, false, hits.len());
                 hits.push((b2, Hit::Confirm(false)));
                 ly = cr.bottom() + self.px(10.0);
             }

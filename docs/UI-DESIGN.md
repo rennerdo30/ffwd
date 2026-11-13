@@ -108,10 +108,30 @@ Planned M1 keys follow common Git-client conventions (for example `Ctrl+Shift+G`
 
 ## Visual language
 
-- **Dark by default, solid fills only.** Depth comes from value steps (sidebar `#0C0E11`, list `#111317`, panels `#13161A`, inputs `#1B1F25`), not from shadows or blur. This rule keeps remote sessions cheap, and it looks calm.
-- **One accent:** ffwd coral `#FF6A3D`, used for the current branch, focus, the selection bar and the logo. Graph lanes use ten distinct hues that are easy to tell apart on dark.
-- **Type:** Inter for the UI and Cascadia Mono for SHAs and diffs, falling back to the system fonts. Both are open-licensed and can be bundled later.
-- **Density:** 30 px rows at 100 %, scaled by the OS DPI factor. Text is never smaller than 11 px.
+- **Graphite and amber** (FF-30, `crates/ffwd-app/src/theme.rs`).
+  - Neutral, slightly warm greys carry everything: sidebar `#17181B`, list `#1C1D21`, bars `#202125`, panels `#222327`, inputs `#292A2F`.
+  - Depth comes from value steps, never from shadows, blur or gradients. That keeps remote sessions cheap and the screen calm.
+- **One accent:** amber `#E8A33E`. It marks only what is active: the current tab, focus, the selection bar, HEAD, the primary button and the logo.
+  - Graph lanes use ten hues at one muted saturation.
+  - Ref chips and diff colours are tinted, never neon.
+- **Text contrast:** four steps.
+  - `#ECEAE6` for primary text.
+  - `#C0BEB8` for secondary text.
+  - `#96948E` for metadata, about 5:1 against the list.
+  - `#706E69` only for placeholders and hints.
+- **Type:** Inter for the UI and Cascadia Mono for SHAs and diffs, falling back to the system fonts.
+  - Sizes in the code are design sizes; the type scale (`TYPE_SCALE`, 1.08) applies to all of them.
+  - The smallest text on screen is about 12 px.
+  - Glyph coverage gets a gamma boost so light text on dark keeps its weight.
+- **Feedback everywhere** (`ui_hover.rs`). Every clickable thing answers the pointer in the next frame:
+  - rows and list entries get a hover fill;
+  - buttons, fields and segments brighten their fill and border, and darken while pressed;
+  - the cursor turns into a hand over buttons and an I-beam over fields.
+
+  Only the element that changed is repainted.
+- **Modal panels** (Settings, Agents) dim what is behind them. In remote sessions they don't, because dimming would be translucency.
+- **One logo:** the same mark everywhere: the top bar, the window icon, the installer icon (`--icon-png`) and the README. It is a commit, its branch line and two fast-forward triangles, dark on a flat amber tile, drawn by `icon.rs` and `assets/logo/*.svg`.
+- **Density:** 30 px rows at 100 %, scaled by the OS DPI factor.
 - **No motion.** There are no animations. In local sessions, smooth scrolling may come later as an option, driven only while a scroll is running.
 
 ## Next design steps

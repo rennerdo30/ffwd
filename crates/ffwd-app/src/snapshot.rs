@@ -113,6 +113,11 @@ pub fn run(args: &Args, t0: Instant) -> i32 {
     }
     let mut px = vec![0u32; w * h];
     let mut cv = Canvas::new(&mut px, w, h);
+    if let Some((x, y)) = args.hover {
+        // Hit areas come from a paint; then the pointer rests at (x, y).
+        ui.paint(&mut cv, true);
+        ui.pointer(x, y);
+    }
     let t = Instant::now();
     ui.paint(&mut cv, true);
     let full_ms = t.elapsed().as_secs_f64() * 1000.0;

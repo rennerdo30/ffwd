@@ -20,9 +20,11 @@ struct Glyph {
 pub struct TextEngine {
     fonts: Vec<fontdue::Font>,
     cache: HashMap<(u8, u32, char), Glyph>,
-    /// Coverage lookup: a slight boost so light text on dark backgrounds
-    /// keeps its weight with linear blending.
+    /// Coverage lookup: a boost so light text on dark backgrounds keeps
+    /// its weight with linear blending (unboosted, it looks thin and grey).
     lut: [u8; 256],
+    /// Every size is multiplied by this (the app's type scale).
+    boost: f32,
 }
 
 impl Default for TextEngine {
@@ -35,9 +37,15 @@ impl TextEngine {
     pub fn new() -> TextEngine {
         let mut lut = [0u8; 256];
         for (i, v) in lut.iter_mut().enumerate() {
-            *v = ((i as f32 / 255.0).powf(0.82) * 255.0).round() as u8;
+            *v = ((i as f32 / 255.0).powf(0.74) * 255.0).round() as u8;
         }
-        TextEngine { fonts: Vec::new(), cache: HashMap::new(), lut }
+        TextEngine { fonts: Vec::new(), cache: HashMap::new(), lut, boost: 1.0 }
+    }
+
+    /// Scales every text size: the whole type scale in one place.
+    pub fn set_size_boost(&mut self, boost: f32) {
+        self.boost = boost.clamp(0.5, 2.0);
+        self.cache.clear();
     }
 
     /// Loads the first readable font among `paths`. Returns `None` when
@@ -68,6 +76,7 @@ impl TextEngine {
     }
 
     fn glyph(&mut self, f: FontId, size: f32, c: char) -> &Glyph {
+        let size = size * self.boost;
         let key = (f.0, (size * 64.0) as u32, c);
         let fonts = &self.fonts;
         self.cache.entry(key).or_insert_with(|| {
@@ -78,6 +87,7 @@ impl TextEngine {
     }
 
     pub fn ascent(&self, f: FontId, size: f32) -> f32 {
+        let size = size * self.boost;
         self.fonts[f.0 as usize].horizontal_line_metrics(size).map_or(size * 0.8, |m| m.ascent)
     }
 

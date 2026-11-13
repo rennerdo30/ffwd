@@ -48,6 +48,8 @@ struct App {
     t0: Instant,
     smoke: bool,
     ui: Option<Ui>,
+    /// The cursor last given to the window (set only when it changes).
+    shown_cursor: crate::ui::Cursor,
     font_thread: Option<std::thread::JoinHandle<Option<Loaded>>>,
     sinks: SinkFactory,
     pending: Vec<(u64, Msg)>,
@@ -119,6 +121,7 @@ pub fn run(args: &Args, t0: Instant) -> i32 {
         t0,
         smoke: args.smoke,
         ui: None,
+        shown_cursor: crate::ui::Cursor::Default,
         font_thread,
         sinks,
         pending: Vec::new(),
@@ -145,6 +148,24 @@ pub fn run(args: &Args, t0: Instant) -> i32 {
 }
 
 impl App {
+    /// Shows the cursor the UI asks for (pointer on buttons, I-beam on
+    /// fields), touching the window only when it changes.
+    fn sync_cursor(&mut self) {
+        let Some(want) = self.ui.as_ref().map(|u| u.cursor()) else { return };
+        if want == self.shown_cursor {
+            return;
+        }
+        if let Some(g) = &self.gfx {
+            use winit::window::CursorIcon;
+            g.window.set_cursor(match want {
+                crate::ui::Cursor::Default => CursorIcon::Default,
+                crate::ui::Cursor::Pointer => CursorIcon::Pointer,
+                crate::ui::Cursor::Text => CursorIcon::Text,
+            });
+            self.shown_cursor = want;
+        }
+    }
+
     fn request(&self) {
         if let (Some(g), Some(ui)) = (&self.gfx, &self.ui)
             && !ui.damage.is_empty()
@@ -588,6 +609,7 @@ impl ApplicationHandler<UserEvent> for App {
                 if let Some(ui) = &mut self.ui {
                     ui.pointer(self.cursor.0, self.cursor.1);
                 }
+                self.sync_cursor();
             }
             WindowEvent::CursorLeft { .. } => {
                 if let Some(ui) = &mut self.ui {
@@ -611,6 +633,7 @@ impl ApplicationHandler<UserEvent> for App {
                 if let Some(ui) = &mut self.ui {
                     ui.click(x, y);
                 }
+                self.sync_cursor();
             }
             WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Middle, .. } => {
                 let (x, y) = self.cursor;

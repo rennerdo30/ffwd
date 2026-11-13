@@ -1,26 +1,14 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 940 360" width="940" height="360">
-  <title>ffwd</title>
-  <defs>
-    <linearGradient id="tile" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#FF8A3D"/>
-      <stop offset="0.55" stop-color="#FF5A4E"/>
-      <stop offset="1" stop-color="#FF2E7E"/>
-    </linearGradient>
-    <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.18"/>
-      <stop offset="0.5" stop-color="#FFFFFF" stop-opacity="0"/>
-    </linearGradient>
-  </defs>  <g transform="translate(0 52) scale(0.5)">
-    <rect width="512" height="512" rx="116" fill="url(#tile)"/>
-    <rect width="512" height="512" rx="116" fill="url(#sheen)"/>
-    <g fill="#FFFFFF" stroke="#FFFFFF" stroke-linejoin="round" stroke-linecap="round" transform="translate(256 256) scale(1.12) translate(-260 -256)">
+  <title>ffwd</title>  <g transform="translate(0 52) scale(0.5)">
+    <rect width="512" height="512" rx="116" fill="#E8A33E"/>
+    <g fill="#1D1608" stroke="#1D1608" stroke-linejoin="round" stroke-linecap="round" transform="translate(256 256) scale(1.12) translate(-260 -256)">
       <circle cx="116" cy="256" r="30" stroke="none"/>
       <path d="M146 256 H190" stroke-width="26" fill="none"/>
       <path d="M196 162 L294 256 L196 350 Z" stroke-width="30"/>
       <path d="M306 162 L404 256 L306 350 Z" stroke-width="30"/>
     </g>  </g>
   <!-- Monoline lettering; the two f share one crossbar. -->
-  <g fill="none" stroke="#15181D" stroke-width="40" stroke-linecap="round" stroke-linejoin="round" transform="translate(-76 0)">
+  <g fill="none" stroke="#1C1D21" stroke-width="40" stroke-linecap="round" stroke-linejoin="round" transform="translate(-76 0)">
     <path d="M422 290 V132 Q422 74 480 74 H494"/>
     <path d="M542 290 V132 Q542 74 600 74 H614"/>
     <path d="M388 164 H612"/>

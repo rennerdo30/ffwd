@@ -1,0 +1,190 @@
+//! Pointer feedback: what is under the mouse (hover), what the mouse button
+//! is holding down (press), and which cursor the window shows. Every
+//! clickable thing answers the pointer in the next frame, and only the
+//! element that changed is repainted (damage, no animation: performance
+//! rules 2 and 5).
+
+use super::*;
+
+/// One interactive element.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Hot {
+    Top(TopAction),
+    Search,
+    /// A commit row (absolute index).
+    Row(usize),
+    /// A file of the selected commit.
+    File(usize),
+    Palette(usize),
+    /// An entry of the settings view's hit list (row, choice).
+    Setting(usize, usize),
+    SettingsPage(usize),
+    /// An entry of the agents panel's hit list.
+    Agent(usize),
+}
+
+/// The mouse cursor the window should show.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Cursor {
+    #[default]
+    Default,
+    /// A button, tab, segment or link.
+    Pointer,
+    /// A text field.
+    Text,
+}
+
+impl Ui {
+    pub(super) fn palette_item_rect(&self, k: usize) -> Rect {
+        let r = self.palette_rect(10);
+        Rect::new(
+            r.x + self.px(6.0),
+            r.y + self.px(57.0) + k as i32 * self.px(34.0),
+            r.w - self.px(12.0),
+            self.px(34.0),
+        )
+    }
+
+    pub(super) fn file_row_rect(&self, k: usize) -> Rect {
+        let fr = self.files_rect();
+        let rh = self.px(26.0);
+        let d = self.lay.info;
+        Rect::new(d.x + self.px(10.0), fr.y + (k as i32 - self.r.file_top as i32) * rh, d.w - self.px(20.0), rh)
+    }
+
+    /// The element under (x, y), topmost layer first.
+    pub(super) fn hot_at(&self, x: i32, y: i32) -> Option<Hot> {
+        if let Some(i) = self.agent_hit_at(x, y) {
+            return Some(Hot::Agent(i));
+        }
+        if self.agent_view.is_some() {
+            return None;
+        }
+        if let Some(h) = self.settings_hit_at(x, y) {
+            return Some(h);
+        }
+        if self.settings_view.is_some() {
+            return None;
+        }
+        if let Some(p) = &self.palette {
+            return (0..p.items.len()).find(|&k| self.palette_item_rect(k).contains(x, y)).map(Hot::Palette);
+        }
+        if let Some(&(_, a)) = self.top_buttons.iter().find(|(r, _)| r.contains(x, y)) {
+            return Some(Hot::Top(a));
+        }
+        if self.search_rect.contains(x, y) {
+            return Some(Hot::Search);
+        }
+        let b = self.lay.list_body;
+        if b.contains(x, y) {
+            let row = self.r.top + ((y - b.y) / self.lay.row_h.max(1)) as usize;
+            return (row < self.r.commits.len()).then_some(Hot::Row(row));
+        }
+        if self.files_rect().contains(x, y)
+            && let Some(d) = &self.r.details
+        {
+            let k = self.r.file_top + ((y - self.files_rect().y) / self.px(26.0).max(1)) as usize;
+            return (k < d.files.len()).then_some(Hot::File(k));
+        }
+        None
+    }
+
+    /// What to repaint when `h` changes state.
+    pub(super) fn hot_rect(&self, h: Hot) -> Rect {
+        match h {
+            Hot::Top(a) => {
+                self.top_buttons.iter().find(|(_, b)| *b == a).map_or(self.lay.top, |(r, _)| r.inset(-2, -2))
+            }
+            Hot::Search => self.search_rect.inset(-2, -2),
+            Hot::Row(r) => self.row_rect(r).unwrap_or_default(),
+            Hot::File(k) => self.file_row_rect(k),
+            Hot::Palette(_) => self.palette_rect(10),
+            Hot::Setting(..) | Hot::SettingsPage(_) => self.settings_rect(),
+            Hot::Agent(_) => self.agents_rect(),
+        }
+    }
+
+    pub(super) fn is_hot(&self, h: Hot) -> bool {
+        self.hot == Some(h)
+    }
+
+    pub(super) fn is_pressed(&self, h: Hot) -> bool {
+        self.pressed == Some(h) && self.hot == Some(h)
+    }
+
+    /// Background and border of a control in its current state.
+    pub(super) fn control_colors(&self, h: Hot, bg: u32, border: u32) -> (u32, u32) {
+        if self.is_pressed(h) {
+            (BG_PRESS, BORDER_HOVER)
+        } else if self.is_hot(h) {
+            (CONTROL_HOVER, BORDER_HOVER)
+        } else {
+            (bg, border)
+        }
+    }
+
+    /// Updates hover after the pointer moved (or the content under it).
+    pub(super) fn update_hot(&mut self, x: i32, y: i32) {
+        self.pointer_at = Some((x, y));
+        let h = self.hot_at(x, y);
+        if h != self.hot {
+            for old in [self.hot, h].into_iter().flatten() {
+                let r = self.hot_rect(old);
+                self.damage.rects.push(r);
+            }
+            self.hot = h;
+        }
+        self.cursor = match h {
+            None => Cursor::Default,
+            Some(Hot::Search) => Cursor::Text,
+            Some(Hot::Row(_) | Hot::File(_)) => Cursor::Default,
+            Some(Hot::Agent(i)) if self.agent_hit_is_field(i) => Cursor::Text,
+            Some(Hot::Setting(row, _)) if self.setting_is_text(row) => Cursor::Text,
+            Some(_) => Cursor::Pointer,
+        };
+        // Tabs, the sidebar and the caption buttons keep their own hover.
+        if self.cursor == Cursor::Default
+            && (self.tab_at(x, y).is_some() || self.caption_button_at(x, y).is_some_and(|b| b != 1))
+        {
+            self.cursor = Cursor::Pointer;
+        }
+    }
+
+    /// After a scroll or a layout change the element under a resting
+    /// pointer changes too.
+    pub(super) fn refresh_hot(&mut self) {
+        if let Some((x, y)) = self.pointer_at {
+            self.update_hot(x, y);
+        }
+    }
+
+    pub(super) fn clear_hot(&mut self) {
+        self.pointer_at = None;
+        if let Some(h) = self.hot.take() {
+            let r = self.hot_rect(h);
+            self.damage.rects.push(r);
+        }
+        self.cursor = Cursor::Default;
+    }
+
+    /// The mouse button went down on (x, y).
+    pub(super) fn press_at(&mut self, x: i32, y: i32) {
+        self.update_hot(x, y);
+        self.pressed = self.hot;
+        if let Some(h) = self.pressed {
+            let r = self.hot_rect(h);
+            self.damage.rects.push(r);
+        }
+    }
+
+    pub(super) fn release_press(&mut self) {
+        if let Some(h) = self.pressed.take() {
+            let r = self.hot_rect(h);
+            self.damage.rects.push(r);
+        }
+    }
+
+    pub fn cursor(&self) -> Cursor {
+        self.cursor
+    }
+}

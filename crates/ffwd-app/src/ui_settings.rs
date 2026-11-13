@@ -233,6 +233,19 @@ impl Ui {
         }
     }
 
+    /// The settings element under the pointer (for hover).
+    pub(super) fn settings_hit_at(&self, x: i32, y: i32) -> Option<Hot> {
+        let v = self.settings_view.as_ref()?;
+        if let Some(&(p, _)) = v.page_hits.iter().find(|h| h.1.contains(x, y)) {
+            return Some(Hot::SettingsPage(p));
+        }
+        v.hits.iter().find(|h| h.2.contains(x, y)).map(|h| Hot::Setting(h.0, h.1))
+    }
+
+    pub(super) fn setting_is_text(&self, row: usize) -> bool {
+        self.rows().get(row).is_some_and(|r| r.key().is_some())
+    }
+
     fn rows(&self) -> &'static [Row] {
         PAGES[self.settings_view.as_ref().map_or(0, |v| v.page)].1
     }
@@ -537,7 +550,7 @@ impl Ui {
         let Some(view) = self.settings_view.take() else { return };
         let r = self.settings_rect();
         let old = cv.set_clip(cv.clip().intersect(r));
-        cv.round_border(r, self.pf(12.0), 0x343a45, BG_PANEL);
+        cv.round_border(r, self.pf(12.0), BORDER_STRONG, BG_PANEL);
         let (ui, semi, mono) = (self.f.ui, self.f.semi, self.f.mono);
         let pad = self.pf(28.0);
         let x0 = r.x as f32 + pad;
@@ -558,7 +571,9 @@ impl Ui {
             let extra = if p == PAGE_AGENTS { self.pf(98.0) } else { 0.0 };
             let tr = Rect::new(tx as i32 - self.px(10.0), tab_y, (w + extra) as i32 + self.px(20.0), self.px(32.0));
             if on {
-                cv.fill_round(tr, self.pf(7.0), 0x2a3346);
+                cv.fill_round(tr, self.pf(7.0), BG_CHOSEN);
+            } else if self.is_hot(Hot::SettingsPage(p)) {
+                cv.fill_round(tr, self.pf(7.0), BG_HOVER);
             }
             let base = (tab_y as f32 + self.pf(21.0)).round();
             let e = self.te.draw(cv, semi, self.pf(13.0), tx, base, name, if on { TEXT } else { TEXT_3 }, w + 2.0);
@@ -636,13 +651,21 @@ impl Ui {
                     let label = if *row == Row::CheckUpdates { "Check for updates now" } else { "Open settings.toml" };
                     let w = self.te.measure(semi, self.pf(12.5), label) + self.pf(28.0);
                     let b = Rect::new(ctrl.x, ctrl.y, w as i32, ctrl.h);
-                    cv.round_border(b, self.pf(8.0), BORDER, BG_BAR);
+                    let (bg, border) = self.control_colors(Hot::Setting(i, 0), BG_BAR, BORDER);
+                    cv.round_border(b, self.pf(8.0), border, bg);
                     self.te.draw(cv, semi, self.pf(12.5), b.x as f32 + self.pf(14.0), base, label, TEXT, w);
                     hits.push((i, 0, b));
                 }
                 r2 if r2.key().is_some() => {
                     let editing = view.edit.as_ref().filter(|(j, _)| *j == i).map(|(_, f)| f.clone());
-                    cv.round_border(ctrl, self.pf(7.0), if editing.is_some() { ACCENT } else { BORDER }, BG_INPUT);
+                    let border = if editing.is_some() {
+                        ACCENT
+                    } else if self.is_hot(Hot::Setting(i, 0)) {
+                        BORDER_HOVER
+                    } else {
+                        BORDER
+                    };
+                    cv.round_border(ctrl, self.pf(7.0), border, BG_INPUT);
                     let tx = ctrl.x as f32 + self.pf(12.0);
                     let maxw = ctrl.w as f32 - self.pf(24.0);
                     match editing {
@@ -657,7 +680,7 @@ impl Ui {
                                         ctrl.h - self.px(12.0),
                                     ),
                                     self.pf(3.0),
-                                    0x2c4a78,
+                                    BG_TEXT_SELECT,
                                 );
                             }
                             self.te.draw(cv, ui, self.pf(12.5), tx, base, f.text(), TEXT, maxw);
@@ -700,7 +723,9 @@ impl Ui {
                     for (c, name) in choices.iter().enumerate() {
                         let s = Rect::new(ctrl.x + c as i32 * seg_w, ctrl.y, seg_w, ctrl.h);
                         if c == now {
-                            cv.fill_round(s.inset(self.px(3.0), self.px(3.0)), self.pf(5.0), 0x2a3346);
+                            cv.fill_round(s.inset(self.px(3.0), self.px(3.0)), self.pf(5.0), BG_CHOSEN);
+                        } else if self.is_hot(Hot::Setting(i, c)) {
+                            cv.fill_round(s.inset(self.px(3.0), self.px(3.0)), self.pf(5.0), CONTROL_HOVER);
                         }
                         let tw = self.te.measure(if c == now { semi } else { ui }, self.pf(12.5), name);
                         let col = if c == now { TEXT } else { TEXT_3 };
