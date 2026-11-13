@@ -21,8 +21,10 @@
 - **Patches** (FF-46): copy or save a commit (or a stash, or the working changes) as a patch; apply one from the clipboard or a file, checked first, with a 3-way fallback.
 - **File menus and external tools** (FF-47): right-click files to open them in your editor or the default app, show them in the folder, or open the external diff or merge tool from your Git config; choose the Git binary (`git.path`, `FFWD_GIT`).
 - **Diff:** `n` and `p` jump to the next and previous change (FF-41).
+- **CI status** (FF-24): GitHub Actions results as a dot on each commit, and "Open the CI run" in its menu.
 - **Pull requests** (FF-40): open GitHub pull requests in the sidebar (via the GitHub CLI), check one out as `pr/<n>`, open it in the browser, and create one for the current branch.
 - **Reflog** (FF-43): a view of where HEAD has been; commits on no branch are marked lost, and a branch from the menu brings one back.
+- **Remote branches and tags** (FF-36): push a branch or a tag from its menu; delete a branch or tag on the remote (asks first, names the way back).
 - **AI commit messages** (FF-50): **AI draft** in Local Changes, against any OpenAI-compatible endpoint (local servers such as Ollama first). It shows exactly what will be sent and where before anything leaves, never sends secret-looking files, streams the reply, and only fills the message box. Off until an endpoint is set.
 - **Repositories and tabs** (FF-44): clone with progress and cancel, create a new repository, and a tab menu (close others, open in the file manager or a terminal, copy path).
 - **Submodules** (FF-45, FF-54):

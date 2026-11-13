@@ -162,6 +162,38 @@ pub fn delete_tag(git: &Git, name: &str) -> R {
     Ok(format!("Deleted tag {name}. To restore it: git tag {name} {}", &tip[..tip.len().min(12)]))
 }
 
+/// Pushes tag `name` to `remote`.
+pub fn push_tag(git: &Git, remote: &str, name: &str) -> R {
+    run(git, &["push", remote, &format!("refs/tags/{name}:refs/tags/{name}")])?;
+    Ok(format!("Pushed tag {name} to {remote}"))
+}
+
+/// Deletes tag `name` on `remote` (the local tag stays).
+pub fn delete_remote_tag(git: &Git, remote: &str, name: &str) -> R {
+    run(git, &["push", remote, &format!(":refs/tags/{name}")])?;
+    Ok(format!("Deleted tag {name} on {remote}; the local tag stays, so git push {remote} {name} brings it back"))
+}
+
+/// Pushes local branch `name` to `remote` and makes it its upstream.
+pub fn push_branch(git: &Git, remote: &str, name: &str) -> R {
+    run(git, &["push", "--set-upstream", remote, &format!("refs/heads/{name}:refs/heads/{name}")])?;
+    Ok(format!("Pushed {name} to {remote}"))
+}
+
+/// Deletes `branch` (without the remote prefix) on `remote`. Names the
+/// command that restores it from the remote-tracking ref's last value.
+pub fn delete_remote_branch(git: &Git, remote: &str, branch: &str) -> R {
+    let tip = run(git, &["rev-parse", "--verify", "--quiet", &format!("refs/remotes/{remote}/{branch}")]).ok();
+    run(git, &["push", remote, "--delete", branch])?;
+    Ok(match tip {
+        Some(t) => format!(
+            "Deleted {branch} on {remote}. To restore it: git push {remote} {}:refs/heads/{branch}",
+            &t[..t.len().min(12)]
+        ),
+        None => format!("Deleted {branch} on {remote}"),
+    })
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MergeMode {
     /// Fast-forward when possible, else a merge commit (Git's default).
@@ -399,6 +431,34 @@ mod tests {
         assert_eq!(in_progress(&g), Some("merge"));
         g.output(&["merge", "--abort"]).unwrap();
         assert_eq!(in_progress(&g), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn remote_tags_and_branches() {
+        let (dir, g) = repo("remote-refs");
+        commit(&dir, &g, "a.txt", "a", "first");
+        let hub = dir.with_extension("hub.git");
+        let _ = std::fs::remove_dir_all(&hub);
+        Git { root: dir.parent().unwrap().to_path_buf() }
+            .output(&["init", "-q", "--bare", &hub.to_string_lossy()])
+            .unwrap();
+        g.output(&["remote", "add", "origin", &hub.to_string_lossy()]).unwrap();
+        let on_hub = |r: &str| Git { root: hub.clone() }.output(&["rev-parse", "--verify", "--quiet", r]).is_ok();
+        create_tag(&g, "v1", "HEAD", None).unwrap();
+        push_tag(&g, "origin", "v1").unwrap();
+        assert!(on_hub("refs/tags/v1"));
+        create_branch(&g, "topic", "HEAD", false).unwrap();
+        push_branch(&g, "origin", "topic").unwrap();
+        assert!(on_hub("refs/heads/topic"));
+        let up = String::from_utf8(g.output(&["rev-parse", "--abbrev-ref", "topic@{u}"]).unwrap()).unwrap();
+        assert_eq!(up.trim(), "origin/topic");
+        let msg = delete_remote_branch(&g, "origin", "topic").unwrap();
+        assert!(!on_hub("refs/heads/topic"));
+        assert!(msg.contains("git push origin "), "{msg}");
+        delete_remote_tag(&g, "origin", "v1").unwrap();
+        assert!(!on_hub("refs/tags/v1"));
+        let _ = std::fs::remove_dir_all(&hub);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

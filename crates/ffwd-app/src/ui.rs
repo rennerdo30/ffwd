@@ -454,6 +454,8 @@ pub struct RepoState {
     /// Open pull requests (GitHub through gh); `Err` holds why not (or
     /// "loading").
     pub prs: Option<Result<Vec<ffwd_core::hosting::PullRequest>, String>>,
+    /// CI status by commit, with the deciding run's URL (FF-24).
+    pub ci: HashMap<Oid, (ffwd_core::hosting::Ci, String)>,
     /// Commits to push and to pull (marked in the list).
     pub ahead_ids: HashSet<Oid>,
     pub behind_ids: HashSet<Oid>,
@@ -1295,6 +1297,13 @@ impl Ui {
             Msg::PatchMade(r) => self.on_patch_made(r),
             Msg::PatchChecked { patch, result } => self.on_patch_checked(patch, result),
             Msg::ToolDone { merge, result } => self.on_tool_done(merge, result),
+            Msg::CiRuns(runs) => {
+                self.r.ci = runs
+                    .into_iter()
+                    .filter_map(|(sha, st, url)| Oid::from_hex(sha.as_bytes()).map(|id| (id, (st, url))))
+                    .collect();
+                self.damage.rects.push(self.lay.list);
+            }
             Msg::PullRequests(r) => {
                 self.r.prs = Some(r);
                 self.rebuild_side();
@@ -3029,6 +3038,15 @@ impl Ui {
         let when = fmt::relative(c.time, self.now, self.r.tz);
         self.te.draw(cv, ui, self.pf(12.5), date_x, base, &when, dim, sha_x - date_x - self.pf(10.0));
         self.te.draw(cv, self.f.mono, self.pf(12.0), sha_x, base, &c.id.short(8), dim, self.pf(80.0));
+        // CI status before the SHA: green passed, amber running, red failed.
+        if let Some((st, _)) = self.r.ci.get(&c.id) {
+            let color = match st {
+                ffwd_core::hosting::Ci::Passed => ADD,
+                ffwd_core::hosting::Ci::Running => MOD,
+                ffwd_core::hosting::Ci::Failed => DEL,
+            };
+            cv.fill_circle(sha_x - self.pf(9.0), base - self.pf(4.0), self.pf(3.2), color);
+        }
     }
 
     fn paint_graph(&self, cv: &mut Canvas, row: usize, r: Rect, bg: u32) {
@@ -5348,6 +5366,144 @@ mod tests {
         let tip = String::from_utf8(g.output(&["rev-parse", "rescue"]).unwrap()).unwrap();
         assert_eq!(tip.trim(), lost);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// CI status (FF-24): runs by commit (fed in as the GitHub CLI would
+    /// answer) mark the history row and add "Open the CI run" to the
+    /// commit menu; the repaint is partial and correct.
+    #[test]
+    fn ci_status_marks_commits() {
+        use std::sync::mpsc;
+        let mut te = TextEngine::new();
+        let Some(f) = load_fonts(&mut te) else { return };
+        let dir = std::env::temp_dir().join(format!("ffwd-ui-ci-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = Git { root: dir.clone() };
+        for a in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.name", "ffwd test"],
+            &["config", "user.email", "test@example.invalid"],
+            &["config", "commit.gpgsign", "false"],
+        ] {
+            g.output(a).unwrap();
+        }
+        std::fs::write(dir.join("a.txt"), "a").unwrap();
+        g.output(&["add", "."]).unwrap();
+        g.output(&["commit", "-q", "-m", "first"]).unwrap();
+        let head = String::from_utf8(g.output(&["rev-parse", "HEAD"]).unwrap()).unwrap().trim().to_string();
+        let (tx, rx) = mpsc::channel::<(u64, Msg)>();
+        let tx = Arc::new(std::sync::Mutex::new(tx));
+        let sinks: SinkFactory = Arc::new(move |id| {
+            let tx = tx.clone();
+            Arc::new(move |m| {
+                if let Ok(t) = tx.lock() {
+                    let _ = t.send((id, m));
+                }
+            })
+        });
+        crate::work::start(dir.clone(), &sinks(1));
+        let empty = crate::settings::Settings::parse("");
+        let mut ui = Ui::new(te, f, empty.clone(), empty, Some((1, dir.clone())), sinks, 1280, 800, 1.0);
+        let pump = |ui: &mut Ui, what: &str, done: &dyn Fn(&Ui) -> bool| {
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while !done(ui) {
+                let left = until.saturating_duration_since(std::time::Instant::now());
+                assert!(!left.is_zero(), "timed out waiting for {what}; notice: {:?}", ui.notice);
+                if let Ok((id, m)) = rx.recv_timeout(left) {
+                    ui.on_tab_msg(id, m);
+                }
+            }
+        };
+        pump(&mut ui, "history", &|u| u.r.log_done && u.r.commits.len() == 1);
+        let mut screen = vec![0u32; 1280 * 800];
+        ui.paint(&mut Canvas::new(&mut screen, 1280, 800), true);
+        ui.on_msg(Msg::CiRuns(vec![(head, ffwd_core::hosting::Ci::Failed, "https://example.invalid/run/1".into())]));
+        assert_partial_paint_is_full(&mut ui, &mut screen, "CI status");
+        let labels: Vec<String> = ui.commit_menu(0).iter().map(|i| i.label.clone()).collect();
+        assert!(labels.iter().any(|l| l == "Open the CI run (failed)"), "{labels:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Remote branches and tags (FF-36): push a branch and a tag from their
+    /// menus; deleting a branch on the remote asks first and names the way
+    /// back.
+    #[test]
+    fn push_and_delete_on_the_remote_from_menus() {
+        use std::sync::mpsc;
+        let mut te = TextEngine::new();
+        let Some(f) = load_fonts(&mut te) else { return };
+        let base = std::env::temp_dir().join(format!("ffwd-ui-rrefs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let g = Git { root: base.join("work") };
+        std::fs::create_dir_all(&g.root).unwrap();
+        for a in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.name", "ffwd test"],
+            &["config", "user.email", "test@example.invalid"],
+            &["config", "commit.gpgsign", "false"],
+        ] {
+            g.output(a).unwrap();
+        }
+        std::fs::write(g.root.join("a.txt"), "a").unwrap();
+        g.output(&["add", "."]).unwrap();
+        g.output(&["commit", "-q", "-m", "first"]).unwrap();
+        g.output(&["branch", "topic"]).unwrap();
+        g.output(&["tag", "v1"]).unwrap();
+        let hub = base.join("hub.git");
+        Git { root: base.clone() }.output(&["init", "-q", "--bare", "hub.git"]).unwrap();
+        g.output(&["remote", "add", "origin", &hub.to_string_lossy()]).unwrap();
+        let on_hub = |r: &str| Git { root: hub.clone() }.output(&["rev-parse", "--verify", "--quiet", r]).is_ok();
+        let (tx, rx) = mpsc::channel::<(u64, Msg)>();
+        let tx = Arc::new(std::sync::Mutex::new(tx));
+        let sinks: SinkFactory = Arc::new(move |id| {
+            let tx = tx.clone();
+            Arc::new(move |m| {
+                if let Ok(t) = tx.lock() {
+                    let _ = t.send((id, m));
+                }
+            })
+        });
+        crate::work::start(g.root.clone(), &sinks(1));
+        let empty = crate::settings::Settings::parse("");
+        let mut ui = Ui::new(te, f, empty.clone(), empty, Some((1, g.root.clone())), sinks, 1280, 800, 1.0);
+        let pump = |ui: &mut Ui, what: &str, done: &dyn Fn(&Ui) -> bool| {
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while !done(ui) {
+                let left = until.saturating_duration_since(std::time::Instant::now());
+                assert!(!left.is_zero(), "timed out waiting for {what}; notice: {:?}", ui.notice);
+                if let Ok((id, m)) = rx.recv_timeout(left) {
+                    ui.on_tab_msg(id, m);
+                }
+            }
+        };
+        let run = |ui: &mut Ui, key: &str, label: &str| {
+            let items = ui.ref_menu(key);
+            let k = items.iter().position(|i| i.label.starts_with(label)).unwrap_or_else(|| {
+                panic!("{label} missing: {:?}", items.iter().map(|i| i.label.clone()).collect::<Vec<_>>())
+            });
+            ui.open_menu(100, 100, items);
+            ui.menu_activate(k);
+        };
+        pump(&mut ui, "refs", &|u| u.r.log_done && !u.r.refs.remotes.is_empty());
+        run(&mut ui, "b:topic", "Push topic to origin");
+        pump(&mut ui, "the branch push", &|u| u.notice.as_deref() == Some("Pushed topic to origin"));
+        assert!(on_hub("refs/heads/topic"));
+        // The reload after an operation brings the remotes back first.
+        pump(&mut ui, "refs again", &|u| u.r.log_done && !u.r.refs.remotes.is_empty());
+        run(&mut ui, "t:v1", "Push tag v1 to origin");
+        pump(&mut ui, "the tag push", &|u| u.notice.as_deref() == Some("Pushed tag v1 to origin"));
+        assert!(on_hub("refs/tags/v1"));
+        pump(&mut ui, "the remote branch", &|u| u.r.side.iter().any(|i| i.key == "r:origin/topic"));
+        run(&mut ui, "r:origin/topic", "Delete topic on origin");
+        assert!(ui.dialog.as_ref().is_some_and(|d| matches!(d.kind, DialogKind::Ask(_))), "it asks first");
+        ui.key(Key::Enter);
+        pump(&mut ui, "the remote delete", &|u| {
+            u.notice.as_deref().is_some_and(|n| n.starts_with("Deleted topic on origin"))
+        });
+        assert!(!on_hub("refs/heads/topic"));
+        assert!(ui.notice.as_deref().is_some_and(|n| n.contains("git push origin ")));
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     /// The find bar from the keyboard: message search selects the match,

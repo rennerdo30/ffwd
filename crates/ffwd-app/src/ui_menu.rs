@@ -204,6 +204,14 @@ impl Ui {
         }
         v.push(item("Copy as patch", MenuAct::CopyPatch(PatchSrc::Commit(sha.clone()))));
         v.push(item("Save as patch…", MenuAct::Name(NameAct::SavePatch { src: PatchSrc::Commit(sha.clone()) })));
+        if let Some((state, url)) = self.r.ci.get(&c.id) {
+            let what = match state {
+                ffwd_core::hosting::Ci::Passed => "Open the CI run (passed)",
+                ffwd_core::hosting::Ci::Running => "Open the CI run (running)",
+                ffwd_core::hosting::Ci::Failed => "Open the CI run (failed)",
+            };
+            v.push(item(what, MenuAct::OpenUrl(url.clone())));
+        }
         v.push(item("Copy SHA", MenuAct::Copy(sha.clone())));
         v.push(item("Copy subject", MenuAct::Copy(c.subject.to_string())));
         v
@@ -236,12 +244,17 @@ impl Ui {
                 MenuAct::Name(NameAct::CreateBranch { at: name.into() }),
             ));
             v.push(item("Rename…", MenuAct::Name(NameAct::Rename { old: name.into() })));
+            if let Some(rm) = self.default_remote() {
+                v.push(item(format!("Push {name} to {rm}"), MenuAct::Run(RefOp::PushBranch(rm, name.into()))));
+            }
             if !is_head {
                 v.push(danger(format!("Delete {name}…"), MenuAct::Ask(Box::new(self.delete_ask(name)))));
             }
             v.push(sep());
             v.push(item("Copy name", MenuAct::Copy(name.into())));
         } else if let Some(name) = key.strip_prefix("r:").filter(|n| !n.ends_with('/')) {
+            let (rm, branch) =
+                name.split_once('/').map_or((String::new(), name.to_string()), |(a, b)| (a.to_string(), b.to_string()));
             v.push(item(
                 format!("Checkout {name} (local tracking branch)"),
                 MenuAct::Run(RefOp::Checkout(name.into())),
@@ -252,6 +265,19 @@ impl Ui {
                 format!("Create branch from {name}…"),
                 MenuAct::Name(NameAct::CreateBranch { at: name.into() }),
             ));
+            if !rm.is_empty() && branch != "HEAD" {
+                v.push(sep());
+                v.push(danger(
+                    format!("Delete {branch} on {rm}…"),
+                    MenuAct::Ask(Box::new(Ask {
+                        title: format!("Delete {branch} on {rm}?"),
+                        text: format!(
+                            "The branch {branch} is removed from the remote {rm} for everyone. ffwd names the command that pushes it back from your copy ({name})."
+                        ),
+                        choices: vec![(format!("Delete on {rm}"), RefOp::DeleteRemoteBranch(rm.clone(), branch.clone()), true)],
+                    })),
+                ));
+            }
             v.push(item("Copy name", MenuAct::Copy(name.into())));
         } else if let Some(name) = key.strip_prefix("r:").and_then(|n| n.strip_suffix('/')) {
             let url = self.r.refs.remotes.iter().find(|r| &*r.name == name).map(|r| r.fetch_url.to_string());
@@ -354,6 +380,17 @@ impl Ui {
                 format!("Create branch from {name}…"),
                 MenuAct::Name(NameAct::CreateBranch { at: name.into() }),
             ));
+            if let Some(rm) = self.default_remote() {
+                v.push(item(format!("Push tag {name} to {rm}"), MenuAct::Run(RefOp::PushTag(rm.clone(), name.into()))));
+                v.push(danger(
+                    format!("Delete tag {name} on {rm}…"),
+                    MenuAct::Ask(Box::new(Ask {
+                        title: format!("Delete tag {name} on {rm}?"),
+                        text: "The tag is removed from the remote for everyone; your local tag stays, so pushing it again brings it back.".into(),
+                        choices: vec![(format!("Delete on {rm}"), RefOp::DeleteRemoteTag(rm, name.into()), true)],
+                    })),
+                ));
+            }
             v.push(danger(
                 format!("Delete tag {name}…"),
                 MenuAct::Ask(Box::new(Ask {
@@ -1068,6 +1105,10 @@ impl Ui {
         let sink = (self.sinks)(t.id);
         crate::work::spawn("pull-requests", &sink, move |sink| {
             sink(Msg::PullRequests(ffwd_core::hosting::pull_requests(&g)));
+            // CI status per commit; nothing to show when it fails.
+            if let Ok(runs) = ffwd_core::hosting::ci_runs(&g) {
+                sink(Msg::CiRuns(runs));
+            }
         });
     }
 
@@ -1079,6 +1120,12 @@ impl Ui {
         crate::work::spawn("pr-create", &sink, move |sink| {
             sink(Msg::PrCreate(ffwd_core::hosting::create_web(&g)));
         });
+    }
+
+    /// The remote pushes go to: origin, else the first one.
+    fn default_remote(&self) -> Option<String> {
+        let r = &self.r.refs.remotes;
+        r.iter().find(|x| &*x.name == "origin").or(r.first()).map(|x| x.name.to_string())
     }
 
     pub(super) fn run_refop(&mut self, op: RefOp) {

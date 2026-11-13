@@ -90,6 +90,7 @@ The capture above is the real PoC UI. `ffwd --snapshot` rendered it offscreen fr
 - **Test connection** runs `git ls-remote --heads` with a 30 s limit and reports how many branches answered.
 - **Cancel:** while a fetch, pull or push runs, its button reads "Fetching…" and shows **Cancel** on hover; clicking it (or the palette command) ends git and every helper it started.
 - **Diverged pull:** when both sides have new commits and Git's settings don't decide, a dialog offers **Merge** or **Rebase**.
+- **Branches and tags on the remote:** a branch's menu has "Push <branch> to origin" (sets the upstream); a tag's menu has "Push tag" and "Delete tag on origin…"; a remote branch's menu has "Delete <branch> on <remote>…". Deleting asks first and names the command that pushes it back.
 
 ## Activity log (FF-48)
 
@@ -169,6 +170,7 @@ The capture above is the real PoC UI. `ffwd --snapshot` rendered it offscreen fr
 - **Source:** the GitHub CLI (`gh`), signed in by the user; ffwd never sees a token. With a GitHub remote, ffwd lists the open pull requests (up to 50) on a worker after the refs load. A reload after a fetch lists them again. Setting `hosting.enabled = false` (or `FFWD_NO_HOSTING`) turns it off.
 - **Sidebar:** a Pull requests section with "#<n> <title>", "draft" marked. Its menu: Check out as `pr/<n>` (fetches GitHub's `pull/<n>/head`, no `gh` needed), Open in the browser, Copy link, Copy branch name.
 - **Create:** the section header's menu or the palette, "Create pull request on GitHub", runs `gh pr create --web`. GitHub's page opens with the repository's template. If the branch is not pushed yet, ffwd says so.
+- **CI status** (FF-24): with the pull requests, ffwd reads the newest GitHub Actions runs (up to 100). A dot before a commit's SHA shows them, worst first: red failed, amber running, green passed. The commit menu opens the deciding run.
 
 ## Reflog (FF-43)
 

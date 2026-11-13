@@ -84,7 +84,7 @@
 | Change the tracking branch; track a remote branch (stash and re-apply) | M1 | |
 | Fast-forward a branch without checking it out; several at once | M2 | |
 | Select stale local branches | M2 | |
-| Tags: create (`Ctrl+Shift+G`), delete, push one or many | Partial | Create and delete are built; push comes with FF-39 |
+| Tags: create (`Ctrl+Shift+G`), delete, push one or many | Partial | Create, delete, push one and delete on the remote are built; several at once come later |
 | Delete remote branches; create and delete remote repositories | M1 | |
 | Remember which sidebar items are expanded, per repository | **Built** | |
 
@@ -124,7 +124,7 @@
 | Cancel a running operation | **Built** | The busy button (or the palette) cancels; git and every helper it started end (job object on Windows) |
 | Automatic fetch; prune on fetch | M1 | Fetch already prunes |
 | Ahead and behind badges on the toolbar | **Built** | |
-| Push several branches or tags; push to a branch of another name | M1 | |
+| Push several branches or tags; push to a branch of another name | Partial | Push any branch (with upstream) or tag from its menu; delete a branch or tag on the remote (asks, names the restore command); several at once and other names come later |
 | Set an upstream on the first push | **Built** | |
 | Multiple remotes; add, edit, remove; test the connection | **Built** | Add (URL, then a suggested name, then a fetch), edit URL, rename, remove (asks, names the way back), fetch one, test |
 | Filter branches in the Push, Pull and Track dropdowns | M1 | |
@@ -141,7 +141,7 @@
 | Pull request and issue tabs with author and assignee filters | Partial | GitHub: open pull requests in the sidebar (open in the browser, check out as `pr/<n>`); filters and issues come later |
 | GitHub notifications (unread marks, menu bar on Mac) | M3 | |
 | Avatars from GitHub, including anonymous addresses | M1 | |
-| CI and pipeline status | M3 | Not in other clients; FF-24 |
+| CI and pipeline status | Partial | GitHub Actions through the GitHub CLI: a dot before the SHA (green passed, amber running, red failed) and "Open the CI run" in the commit menu; GitLab pipelines come later (FF-24) |
 
 ## 9. Diff viewer (FF-41)
 

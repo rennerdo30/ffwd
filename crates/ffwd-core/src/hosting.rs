@@ -75,6 +75,74 @@ fn parse(json: &str) -> Result<Vec<PullRequest>, String> {
         .unwrap_or_default())
 }
 
+/// The state of a commit's CI runs (FF-24).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ci {
+    Passed,
+    Running,
+    Failed,
+}
+
+/// The newest GitHub Actions runs (at most 100) by commit: failed if any
+/// run failed, else running if any runs, else passed; with the URL of the
+/// run that decided it.
+pub fn ci_runs(git: &Git) -> Result<Vec<(String, Ci, String)>, String> {
+    let mut cmd = std::process::Command::new("gh");
+    cmd.args(["run", "list", "--limit", "100", "--json", "headSha,status,conclusion,url"])
+        .current_dir(&git.root)
+        .env("GH_PROMPT_DISABLED", "1")
+        .env("NO_COLOR", "1")
+        .stdin(std::process::Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    let out = cmd.output().map_err(|_| "The GitHub CLI (gh) is not installed".to_string())?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).lines().next().unwrap_or("gh failed").to_string());
+    }
+    parse_runs(&String::from_utf8_lossy(&out.stdout))
+}
+
+fn parse_runs(json: &str) -> Result<Vec<(String, Ci, String)>, String> {
+    let v: serde_json::Value =
+        serde_json::from_str(json).map_err(|e| format!("gh answered something unexpected: {e}"))?;
+    let mut by: Vec<(String, Ci, String)> = Vec::new();
+    for r in v.as_array().into_iter().flatten() {
+        let (Some(sha), Some(status)) =
+            (r.get("headSha").and_then(|x| x.as_str()), r.get("status").and_then(|x| x.as_str()))
+        else {
+            continue;
+        };
+        let conclusion = r.get("conclusion").and_then(|x| x.as_str()).unwrap_or("");
+        let url = r.get("url").and_then(|x| x.as_str()).unwrap_or("").to_string();
+        let state = if status != "completed" {
+            Ci::Running
+        } else if matches!(conclusion, "success" | "skipped" | "neutral") {
+            Ci::Passed
+        } else {
+            Ci::Failed
+        };
+        match by.iter_mut().find(|x| x.0 == sha) {
+            // Worst wins: failed, then running, then passed.
+            Some(x) => {
+                let rank = |c: Ci| match c {
+                    Ci::Failed => 2,
+                    Ci::Running => 1,
+                    Ci::Passed => 0,
+                };
+                if rank(state) > rank(x.1) {
+                    x.1 = state;
+                    x.2 = url;
+                }
+            }
+            None => by.push((sha.to_string(), state, url)),
+        }
+    }
+    Ok(by)
+}
+
 /// Whether the repository has a GitHub remote (origin, else any).
 pub fn has_github_remote(remotes: &[crate::remotes::Remote]) -> bool {
     remotes.iter().any(|r| crate::web::host(&r.fetch_url).is_some_and(|h| h == "github.com"))
@@ -118,6 +186,20 @@ pub fn checkout(git: &Git, remote: &str, number: u32) -> Result<String, crate::r
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ci_runs_by_commit_worst_wins() {
+        let j = r#"[
+            {"headSha":"aaa","status":"completed","conclusion":"success","url":"u1"},
+            {"headSha":"aaa","status":"completed","conclusion":"failure","url":"u2"},
+            {"headSha":"bbb","status":"in_progress","conclusion":"","url":"u3"},
+            {"headSha":"ccc","status":"completed","conclusion":"skipped","url":"u4"}
+        ]"#;
+        let r = parse_runs(j).unwrap();
+        assert_eq!(r[0], ("aaa".into(), Ci::Failed, "u2".into()));
+        assert_eq!(r[1].1, Ci::Running);
+        assert_eq!(r[2].1, Ci::Passed);
+    }
 
     #[test]
     fn parses_gh_output() {

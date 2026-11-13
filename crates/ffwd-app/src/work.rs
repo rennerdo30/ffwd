@@ -113,6 +113,8 @@ pub enum Msg {
         merge: bool,
         result: Result<String, String>,
     },
+    /// CI runs by commit (GitHub Actions through gh, FF-24).
+    CiRuns(Vec<(String, ffwd_core::hosting::Ci, String)>),
     /// The open pull requests from the GitHub CLI, or why there are none.
     PullRequests(Result<Vec<ffwd_core::hosting::PullRequest>, String>),
     /// `gh pr create --web` finished (it opens the browser).
@@ -172,6 +174,12 @@ pub enum RefOp {
     RemoteTest(String),
     /// A fetch, pull or push chosen in a dialog (the UI starts it itself).
     Sync(ffwd_core::ops::Op),
+    /// remote, tag
+    PushTag(String, String),
+    DeleteRemoteTag(String, String),
+    /// remote, branch
+    PushBranch(String, String),
+    DeleteRemoteBranch(String, String),
     /// Apply a patch to the working tree; 3-way leaves conflict markers.
     ApplyPatch(String, bool),
     /// Check out a GitHub pull request (remote, number) as `pr/<n>`.
@@ -217,6 +225,10 @@ impl RefOp {
             RefOp::RemoteFetch(n) => format!("Fetch {n}"),
             RefOp::RemoteTest(n) => format!("Test {n}"),
             RefOp::Sync(op) => op.name().to_string(),
+            RefOp::PushTag(r, t) => format!("Push tag {t} to {r}"),
+            RefOp::DeleteRemoteTag(r, t) => format!("Delete tag {t} on {r}"),
+            RefOp::PushBranch(r, b) => format!("Push {b} to {r}"),
+            RefOp::DeleteRemoteBranch(r, b) => format!("Delete {b} on {r}"),
             RefOp::ApplyPatch(_, false) => "Apply a patch".into(),
             RefOp::ApplyPatch(_, true) => "Apply a patch (3-way)".into(),
             RefOp::PrCheckout(_, n) => format!("Check out pull request #{n}"),
@@ -255,6 +267,8 @@ impl RefOp {
             RefOp::RemoteFetch(_) => "Fetching",
             RefOp::RemoteTest(_) => "Testing the connection",
             RefOp::Sync(op) => op.verb(),
+            RefOp::PushTag(..) | RefOp::PushBranch(..) => "Pushing",
+            RefOp::DeleteRemoteTag(..) | RefOp::DeleteRemoteBranch(..) => "Deleting on the remote",
             RefOp::ApplyPatch(..) => "Applying the patch",
             RefOp::PrCheckout(..) => "Checking out the pull request",
             RefOp::RebaseInteractive(..) => "Rebasing",
@@ -296,6 +310,10 @@ pub fn refop(git: Git, op: RefOp, sink: &Sink) {
                 ffwd_core::remotes::test(&git, n, std::time::Duration::from_secs(30), Default::default())
             }
             RefOp::Sync(_) => Err(r::OpError::Failed("internal: a sync runs through start_op".into())),
+            RefOp::PushTag(rm, t) => r::push_tag(&git, rm, t),
+            RefOp::DeleteRemoteTag(rm, t) => r::delete_remote_tag(&git, rm, t),
+            RefOp::PushBranch(rm, b) => r::push_branch(&git, rm, b),
+            RefOp::DeleteRemoteBranch(rm, b) => r::delete_remote_branch(&git, rm, b),
             RefOp::ApplyPatch(p, three) => ffwd_core::patches::apply(&git, p, *three),
             RefOp::PrCheckout(remote, n) => ffwd_core::hosting::checkout(&git, remote, *n),
             RefOp::RebaseInteractive(base, steps) => ffwd_core::rebase::run_plan(&git, base.as_deref(), steps),
