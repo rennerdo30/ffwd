@@ -194,7 +194,9 @@ pub fn wsl_distros() -> Vec<String> {
     Vec::new()
 }
 
-/// `wsl -l -q` writes UTF-16LE, one distribution per line.
+/// `wsl -l -q` writes UTF-16LE, one distribution per line. Used on
+/// Windows (and tested everywhere).
+#[cfg_attr(not(windows), allow(dead_code))]
 pub fn parse_wsl_list(out: &[u8]) -> Vec<String> {
     // A UTF-16LE byte-order mark, or zero high bytes: UTF-16; else UTF-8.
     let (body, utf16) = match out.strip_prefix(&[0xFF, 0xFE]) {
