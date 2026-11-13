@@ -135,6 +135,15 @@ pub enum RefOp {
     Sync(ffwd_core::ops::Op),
     /// Interactive rebase onto a base (`None`: the root), steps oldest first.
     RebaseInteractive(Option<String>, Vec<ffwd_core::rebase::Step>),
+    /// Init and update one submodule path, or all.
+    SubUpdate(Option<String>),
+    /// URL (maybe relative), folder.
+    SubAdd(String, String),
+    /// path, new path
+    SubMove(String, String),
+    /// Make the URLs relative: one submodule (by name) or all.
+    SubRelative(Option<String>),
+    SubAbsolute(String),
 }
 
 impl RefOp {
@@ -166,6 +175,13 @@ impl RefOp {
             RefOp::RemoteTest(n) => format!("Test {n}"),
             RefOp::Sync(op) => op.name().to_string(),
             RefOp::RebaseInteractive(_, steps) => format!("Interactive rebase of {} commits", steps.len()),
+            RefOp::SubUpdate(Some(p)) => format!("Update submodule {p}"),
+            RefOp::SubUpdate(None) => "Update all submodules".into(),
+            RefOp::SubAdd(_, p) => format!("Add submodule {p}"),
+            RefOp::SubMove(p, n) => format!("Move submodule {p} to {n}"),
+            RefOp::SubRelative(Some(n)) => format!("Make the URL of {n} relative"),
+            RefOp::SubRelative(None) => "Make submodule URLs relative".into(),
+            RefOp::SubAbsolute(n) => format!("Make the URL of {n} absolute"),
         }
     }
 
@@ -194,6 +210,10 @@ impl RefOp {
             RefOp::RemoteTest(_) => "Testing the connection",
             RefOp::Sync(op) => op.verb(),
             RefOp::RebaseInteractive(..) => "Rebasing",
+            RefOp::SubUpdate(_) => "Updating submodules",
+            RefOp::SubAdd(..) => "Adding the submodule",
+            RefOp::SubMove(..) => "Moving the submodule",
+            RefOp::SubRelative(_) | RefOp::SubAbsolute(_) => "Rewriting submodule URLs",
         }
     }
 }
@@ -229,6 +249,11 @@ pub fn refop(git: Git, op: RefOp, sink: &Sink) {
             }
             RefOp::Sync(_) => Err(r::OpError::Failed("internal: a sync runs through start_op".into())),
             RefOp::RebaseInteractive(base, steps) => ffwd_core::rebase::run_plan(&git, base.as_deref(), steps),
+            RefOp::SubUpdate(p) => ffwd_core::submodules::update(&git, p.as_deref()),
+            RefOp::SubAdd(u, p) => ffwd_core::submodules::add(&git, u, p),
+            RefOp::SubMove(p, n) => ffwd_core::submodules::move_to(&git, p, n),
+            RefOp::SubRelative(n) => ffwd_core::submodules::make_relative(&git, n.as_deref()),
+            RefOp::SubAbsolute(n) => ffwd_core::submodules::make_absolute(&git, n),
         });
         let (ok, summary) = match &res {
             Ok(m) => (true, m.clone()),

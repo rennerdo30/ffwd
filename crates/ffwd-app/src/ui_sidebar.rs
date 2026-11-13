@@ -40,6 +40,7 @@ pub(super) enum SideKind {
     Tag,
     Stash,
     Worktree,
+    Submodule,
 }
 
 impl SideItem {
@@ -220,6 +221,21 @@ impl Ui {
                 }
             }
         }
+        let subs: Vec<&ffwd_core::submodules::Submodule> =
+            self.r.refs.submodules.iter().filter(|s| matches(&s.path)).collect();
+        if !subs.is_empty() && header(&mut v, "Submodules", "h:submodules", fmt::num(subs.len())) {
+            use ffwd_core::submodules::State;
+            for s in subs {
+                let mut it = SideItem::new(0, SideKind::Submodule, &s.path, format!("m:{}", s.name));
+                it.badge = match s.state {
+                    State::Clean => String::new(),
+                    State::Uninitialized => "not set up".into(),
+                    State::Moved => "moved".into(),
+                    State::Conflict => "conflict".into(),
+                };
+                v.push(it);
+            }
+        }
         if self.r.refs.worktrees.len() > 1 {
             let n = fmt::num(self.r.refs.worktrees.len());
             if header(&mut v, "Worktrees", "h:worktrees", n) {
@@ -318,6 +334,7 @@ impl Ui {
             SideKind::Header | SideKind::Folder | SideKind::Remote => self.toggle_side(i),
             SideKind::Changes => self.enter_changes(),
             SideKind::Files => self.enter_files(),
+            SideKind::Submodule => self.open_submodule(it.key.trim_start_matches("m:")),
             SideKind::Activity => self.enter_activity(),
             SideKind::All => {
                 self.leave_changes();
@@ -551,7 +568,7 @@ impl Ui {
                 SideKind::Stash => (STASH_FG, TEXT_2),
                 SideKind::Changes => (MOD, TEXT),
                 SideKind::All | SideKind::Files | SideKind::Activity => (TEXT_2, TEXT),
-                SideKind::Worktree => (TEXT_3, TEXT_2),
+                SideKind::Worktree | SideKind::Submodule => (TEXT_3, TEXT_2),
                 SideKind::Header => (TEXT_3, TEXT_3),
             };
             let text = if selected { TEXT } else { text };
@@ -598,6 +615,16 @@ impl Ui {
                         let yy = cy - self.pf(4.0) + j as f32 * self.pf(4.0);
                         cv.stroke(&[(ix - self.pf(5.0), yy), (ix + self.pf(5.0), yy)], self.pf(1.5), icon);
                     }
+                }
+                SideKind::Submodule => {
+                    // A box inside a box: a repository in the repository.
+                    let o =
+                        Rect::new((ix - self.pf(5.0)) as i32, (cy - self.pf(5.0)) as i32, self.px(10.0), self.px(10.0));
+                    cv.round_border(o, self.pf(2.0), icon, BG_SIDEBAR);
+                    cv.fill(
+                        Rect::new((ix - self.pf(1.5)) as i32, (cy - self.pf(1.5)) as i32, self.px(3.0), self.px(3.0)),
+                        icon,
+                    );
                 }
                 SideKind::Worktree => {
                     let b =

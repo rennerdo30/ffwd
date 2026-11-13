@@ -113,6 +113,17 @@ The capture above is the real PoC UI. `ffwd --snapshot` rendered it offscreen fr
   - conflicts stop the rebase, and the Local Changes banner continues or aborts it;
   - ranges with merge commits are refused (history stays linear).
 
+## Submodules (FF-45, FF-54)
+
+- **Sidebar:** a Submodules section lists each submodule by path, with "not set up", "moved" or "conflict" when it is not clean. Clicking one opens it in a new tab.
+- **Submodule menu:** Open in a new tab, Update, Move…, Make the URL relative (or absolute), Add submodule…, Copy path, Copy URL.
+- **Header menu:** Update all submodules, Make all URLs relative, Add submodule….
+- **Add:** URL, then the folder (suggested from the URL).
+  - When the URL is on the same host as this repository's remote, ffwd offers the relative URL (`../lib.git`), which keeps working for forks, mirrors and ssh or https clones.
+  - Setting `submodules.relative_urls` (user or repository): `ask` (default), `always`, `never`.
+- **Move:** `git mv`, so `.gitmodules`, the index and the checkout follow, and missing folders are created. It refuses while the submodule has uncommitted or unpushed work, or while `.gitmodules` has unstaged edits, and says which.
+- **Relative and absolute URLs:** rewritten in `.gitmodules`, then `git submodule sync --recursive`. The `.gitmodules` change waits in Local Changes to be committed.
+
 ## Stashes (FF-38)
 
 - **Save:** `Ctrl+Shift+S` (or the palette's "Stash changes") opens a dialog with an optional message. Untracked files are included by default; `Tab` toggles that.

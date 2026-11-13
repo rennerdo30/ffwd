@@ -282,6 +282,7 @@ const CMD_TAG: &str = "Create tag here";
 const CMD_PICK: &str = "Cherry-pick this commit";
 const CMD_REVERT: &str = "Revert this commit";
 const CMD_STASH: &str = "Stash changes";
+const CMD_ADD_SUBMODULE: &str = "Add submodule…";
 const CMD_ACTIVITY: &str = "Activity log";
 const CMD_REBASE_I: &str = "Interactive rebase from here";
 const CMD_ADD_REMOTE: &str = "Add remote…";
@@ -306,6 +307,7 @@ const WORKING: &[&str] = &[
     CMD_PICK,
     CMD_REVERT,
     CMD_STASH,
+    CMD_ADD_SUBMODULE,
     CMD_ACTIVITY,
     CMD_REBASE_I,
     CMD_ADD_REMOTE,
@@ -342,6 +344,7 @@ const COMMANDS: &[(&str, &str)] = &[
     (CMD_REVERT, ""),
     (CMD_REBASE_I, "Ctrl Shift R"),
     (CMD_STASH, "Ctrl Shift S"),
+    (CMD_ADD_SUBMODULE, ""),
     (CMD_ACTIVITY, ""),
     (CMD_ADD_REMOTE, ""),
     (CMD_CANCEL_OP, ""),
@@ -1914,6 +1917,11 @@ impl Ui {
             CMD_SEARCH => self.open_search(),
             CMD_BRANCH | CMD_TAG | CMD_PICK | CMD_REVERT => self.selected_commit_command(c),
             CMD_STASH => self.open_stash_dialog(),
+            CMD_ADD_SUBMODULE => self.open_dialog(DialogKind::Name {
+                act: NameAct::AddSubmoduleUrl,
+                field: TextField::default(),
+                checkout: false,
+            }),
             CMD_ACTIVITY => self.enter_activity(),
             CMD_REBASE_I => self.rebase_from_selection(),
             CMD_ADD_REMOTE => self.open_dialog(DialogKind::Name {
@@ -4266,6 +4274,122 @@ mod tests {
         ui.key(Key::Esc);
         assert!(ui.r.rebase.is_none());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Submodules (FF-45, FF-54): the sidebar lists them; Move… moves one
+    /// into a new folder; "Make the URL relative" rewrites .gitmodules;
+    /// adding one on the same host as the remote offers a relative URL.
+    #[test]
+    fn submodules_move_relative_and_add_question() {
+        use std::sync::mpsc;
+        let mut te = TextEngine::new();
+        let Some(f) = load_fonts(&mut te) else { return };
+        let base = std::env::temp_dir().join(format!("ffwd-ui-submodules-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let mk = |name: &str| {
+            let g = Git { root: base.join(name) };
+            std::fs::create_dir_all(&g.root).unwrap();
+            for a in [
+                &["init", "-q", "-b", "main"][..],
+                &["config", "user.name", "ffwd test"],
+                &["config", "user.email", "test@example.invalid"],
+                &["config", "commit.gpgsign", "false"],
+            ] {
+                g.output(a).unwrap();
+            }
+            std::fs::write(g.root.join("f.txt"), name).unwrap();
+            g.output(&["add", "."]).unwrap();
+            g.output(&["commit", "-q", "-m", "first"]).unwrap();
+            g
+        };
+        let lib = mk("lib");
+        let app = mk("app");
+        let lib_url = lib.root.to_string_lossy().replace('\\', "/");
+        app.run_with(
+            &["-c", "protocol.file.allow=always", "submodule", "add", "--", &lib_url, "libs/lib"],
+            None,
+            &[],
+            1 << 20,
+        )
+        .unwrap();
+        app.output(&["commit", "-q", "-m", "add lib"]).unwrap();
+        app.output(&["remote", "add", "origin", "https://example.invalid/team/app.git"]).unwrap();
+        app.output(&["config", "-f", ".gitmodules", "submodule.libs/lib.url", "https://example.invalid/team/lib.git"])
+            .unwrap();
+        app.output(&["commit", "-q", "-am", "absolute URL"]).unwrap();
+        let (tx, rx) = mpsc::channel::<(u64, Msg)>();
+        let tx = Arc::new(std::sync::Mutex::new(tx));
+        let sinks: SinkFactory = Arc::new(move |id| {
+            let tx = tx.clone();
+            Arc::new(move |m| {
+                if let Ok(t) = tx.lock() {
+                    let _ = t.send((id, m));
+                }
+            })
+        });
+        crate::work::start(app.root.clone(), &sinks(1));
+        let empty = crate::settings::Settings::parse("");
+        let mut ui = Ui::new(te, f, empty.clone(), empty, Some((1, app.root.clone())), sinks, 1280, 800, 1.0);
+        let pump = |ui: &mut Ui, what: &str, done: &dyn Fn(&Ui) -> bool| {
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while !done(ui) {
+                let left = until.saturating_duration_since(std::time::Instant::now());
+                assert!(!left.is_zero(), "timed out waiting for {what}; notice: {:?}", ui.notice);
+                if let Ok((id, m)) = rx.recv_timeout(left) {
+                    ui.on_tab_msg(id, m);
+                }
+            }
+        };
+        let pick = |ui: &mut Ui, label: &str| {
+            for _ in 0..40 {
+                ui.key(Key::Down);
+                let m = ui.menu.as_ref().unwrap();
+                if m.sel.is_some_and(|s| m.items[s].label.starts_with(label)) {
+                    ui.key(Key::Enter);
+                    return;
+                }
+            }
+            panic!("no menu item {label}");
+        };
+        let path = |u: &Ui| u.r.refs.submodules.first().map(|s| s.path.to_string()).unwrap_or_default();
+        pump(&mut ui, "refs", &|u| u.r.log_done && !u.r.refs.submodules.is_empty());
+        assert!(ui.r.side.iter().any(|i| i.key == "m:libs/lib"), "the sidebar lists the submodule");
+        // Move it into a folder that does not exist yet.
+        let items = ui.ref_menu("m:libs/lib");
+        ui.open_menu(100, 100, items);
+        pick(&mut ui, "Move");
+        ui.key(Key::Ctrl('a'));
+        for c in "vendor/lib".chars() {
+            ui.key(Key::Char(c));
+        }
+        ui.key(Key::Enter);
+        pump(&mut ui, "the move", &|u| u.dialog.is_none() && path(u) == "vendor/lib");
+        assert!(app.root.join("vendor/lib/f.txt").exists());
+        // Make its URL relative to the remote.
+        let items = ui.ref_menu("m:libs/lib");
+        ui.open_menu(100, 100, items);
+        pick(&mut ui, "Make the URL relative");
+        pump(&mut ui, "the relative URL", &|u| u.r.refs.submodules.first().is_some_and(|s| &*s.url == "../lib.git"));
+        // Adding one on the same host asks about a relative URL.
+        let items = ui.ref_menu("h:submodules");
+        ui.open_menu(100, 100, items);
+        pick(&mut ui, "Add submodule");
+        for c in "https://example.invalid/team/other.git".chars() {
+            ui.key(Key::Char(c));
+        }
+        ui.key(Key::Enter);
+        let folder = match &ui.dialog.as_ref().unwrap().kind {
+            DialogKind::Name { act: NameAct::AddSubmodulePath { .. }, field, .. } => field.text().to_string(),
+            _ => panic!("the folder step follows the URL"),
+        };
+        assert_eq!(folder, "other");
+        ui.key(Key::Enter);
+        match &ui.dialog.as_ref().unwrap().kind {
+            DialogKind::Ask(a) => assert!(a.choices[0].0.contains("../other.git"), "{:?}", a.choices[0].0),
+            _ => panic!("a relative URL is offered"),
+        }
+        ui.key(Key::Esc);
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     /// The find bar from the keyboard: message search selects the match,

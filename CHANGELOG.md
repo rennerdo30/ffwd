@@ -16,6 +16,10 @@
   - merge (four modes), rebase, cherry-pick, revert, reset (soft, mixed, hard), each with a backup ref where commits could be lost;
   - double-click checkout; `Ctrl+B` and `Ctrl+Shift+G`.
 - **Interactive rebase** (FF-37): a plan view to pick, reword, squash, fixup, drop and reorder commits (`Ctrl+Shift+R`); no editor ever opens, a backup ref keeps the old tip, and conflicts stop in Local Changes.
+- **Submodules** (FF-45, FF-54):
+  - a sidebar section with each submodule's state; open one in a new tab; update one or all; add;
+  - **move a submodule** to another folder (refuses while it has unsaved work);
+  - **automatic relative submodule URLs**: offered on add when the host matches, convert all or one, and back (setting `submodules.relative_urls`).
 - **Activity log** (FF-48): every operation with the exact git commands it ran, their exit codes, times and output; a sidebar badge counts new failures.
 - **Remotes and sync** (FF-39):
   - add (with a suggested name and a first fetch), edit the URL, rename, remove (asks first), fetch one, test the connection;

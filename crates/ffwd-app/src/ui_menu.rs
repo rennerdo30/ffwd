@@ -17,6 +17,8 @@ pub enum MenuAct {
     Copy(String),
     /// Interactive rebase from this commit (FF-37).
     RebaseFrom(String),
+    /// Open a submodule (by name) in a new tab.
+    OpenSubmodule(String),
 }
 
 #[derive(Clone, Debug)]
@@ -62,6 +64,15 @@ pub enum NameAct {
     },
     RenameRemote {
         old: String,
+    },
+    /// Add a submodule: its URL, then its folder.
+    AddSubmoduleUrl,
+    AddSubmodulePath {
+        url: String,
+    },
+    /// Move a submodule to another folder.
+    MoveSubmodule {
+        path: String,
     },
 }
 
@@ -223,6 +234,28 @@ impl Ui {
             if let Some(u) = url {
                 v.push(item("Copy URL", MenuAct::Copy(u)));
             }
+        } else if let Some(name) = key.strip_prefix("m:") {
+            let Some(s) = self.r.refs.submodules.iter().find(|s| &*s.name == name).cloned() else { return v };
+            let path = s.path.to_string();
+            if s.state != ffwd_core::submodules::State::Uninitialized {
+                v.push(item("Open in a new tab", MenuAct::OpenSubmodule(name.into())));
+            }
+            v.push(item(format!("Update {path}"), MenuAct::Run(RefOp::SubUpdate(Some(path.clone())))));
+            v.push(sep());
+            v.push(item("Move…", MenuAct::Name(NameAct::MoveSubmodule { path: path.clone() })));
+            if s.url.starts_with("../") || s.url.starts_with("./") {
+                v.push(item("Make the URL absolute", MenuAct::Run(RefOp::SubAbsolute(name.into()))));
+            } else {
+                v.push(item("Make the URL relative", MenuAct::Run(RefOp::SubRelative(Some(name.into())))));
+            }
+            v.push(sep());
+            v.push(item("Add submodule…", MenuAct::Name(NameAct::AddSubmoduleUrl)));
+            v.push(item("Copy path", MenuAct::Copy(path)));
+            v.push(item("Copy URL", MenuAct::Copy(s.url.to_string())));
+        } else if key == "h:submodules" {
+            v.push(item("Update all submodules", MenuAct::Run(RefOp::SubUpdate(None))));
+            v.push(item("Make all URLs relative", MenuAct::Run(RefOp::SubRelative(None))));
+            v.push(item("Add submodule…", MenuAct::Name(NameAct::AddSubmoduleUrl)));
         } else if key == "h:remotes" {
             v.push(item("Add remote…", MenuAct::Name(NameAct::AddRemoteUrl)));
             v.push(item("Fetch all remotes", MenuAct::Run(RefOp::Sync(ffwd_core::ops::Op::Fetch))));
@@ -363,13 +396,15 @@ impl Ui {
         match act {
             Some(MenuAct::Run(op)) => self.run_refop(op),
             Some(MenuAct::RebaseFrom(sha)) => self.open_rebase(sha),
+            Some(MenuAct::OpenSubmodule(name)) => self.open_submodule(&name),
             Some(MenuAct::Ask(a)) => self.open_dialog(DialogKind::Ask(*a)),
             Some(MenuAct::Name(n)) => {
                 let field = match &n {
                     NameAct::Rename { old }
                     | NameAct::StashRename { old, .. }
                     | NameAct::RemoteUrl { old, .. }
-                    | NameAct::RenameRemote { old } => TextField::new(old),
+                    | NameAct::RenameRemote { old }
+                    | NameAct::MoveSubmodule { path: old } => TextField::new(old),
                     _ => TextField::default(),
                 };
                 let checkout = matches!(n, NameAct::CreateBranch { .. } | NameAct::StashSave);
@@ -431,7 +466,11 @@ impl Ui {
         let w = self.px(560.0).min(self.w as i32 - self.px(40.0));
         let h = match self.dialog.as_ref().map(|d| &d.kind) {
             // The stash dialog has a line of text above its field.
-            Some(DialogKind::Name { act: NameAct::StashSave | NameAct::AddRemoteUrl, .. }) => self.px(250.0),
+            Some(DialogKind::Name {
+                act:
+                    NameAct::StashSave | NameAct::AddRemoteUrl | NameAct::AddSubmoduleUrl | NameAct::MoveSubmodule { .. },
+                ..
+            }) => self.px(250.0),
             Some(DialogKind::Name { .. }) => self.px(210.0),
             _ => self.px(230.0),
         };
@@ -442,6 +481,34 @@ impl Ui {
         let Some(d) = &mut self.dialog else { return };
         if d.busy {
             return;
+        }
+        // Adding a submodule asks for the URL, then the folder; then, when
+        // the URL can be relative to this repository's remote, maybe asks.
+        if let DialogKind::Name { act: NameAct::AddSubmoduleUrl, field, .. } = &d.kind {
+            let url = field.text().trim().to_string();
+            if url.is_empty() {
+                d.error = Some("Type the URL first.".into());
+                let r = self.dialog_rect();
+                self.damage.rects.push(r);
+                return;
+            }
+            let folder = url
+                .trim_end_matches('/')
+                .rsplit(['/', ':', '\\'])
+                .next()
+                .unwrap_or("")
+                .trim_end_matches(".git")
+                .to_string();
+            self.open_dialog(DialogKind::Name {
+                act: NameAct::AddSubmodulePath { url },
+                field: TextField::new(&folder),
+                checkout: false,
+            });
+            return;
+        }
+        if let DialogKind::Name { act: NameAct::AddSubmodulePath { url }, field, .. } = &d.kind {
+            let (url, path) = (url.clone(), field.text().trim().to_string());
+            return self.add_submodule(url, path);
         }
         // Adding a remote asks for the URL first, then a name it suggests.
         if let DialogKind::Name { act: NameAct::AddRemoteUrl, field, .. } = &d.kind {
@@ -481,6 +548,8 @@ impl Ui {
                         NameAct::AddRemoteName { url } => RefOp::RemoteAdd(n, url.clone()),
                         NameAct::RemoteUrl { name, .. } => RefOp::RemoteSetUrl(name.clone(), n),
                         NameAct::RenameRemote { old } => RefOp::RemoteRename(old.clone(), n),
+                        NameAct::AddSubmoduleUrl | NameAct::AddSubmodulePath { .. } => unreachable!("handled above"),
+                        NameAct::MoveSubmodule { path } => RefOp::SubMove(path.clone(), n),
                     })
                 }
             }
@@ -557,6 +626,51 @@ impl Ui {
                 self.damage.rects.push(r);
             }
             _ => {}
+        }
+    }
+
+    /// Opens submodule `name` in a new tab.
+    pub(super) fn open_submodule(&mut self, name: &str) {
+        let Some(s) = self.r.refs.submodules.iter().find(|s| &*s.name == name).cloned() else { return };
+        let Some(root) = self.r.git.as_ref().map(|g| g.root.clone()) else { return };
+        if s.state == ffwd_core::submodules::State::Uninitialized {
+            return self.set_notice(format!("{} is not set up yet: choose Update in its menu first.", s.path));
+        }
+        self.open_tab(root.join(&*s.path));
+    }
+
+    /// Adds a submodule, proposing a relative URL when it can be one
+    /// (setting `submodules.relative_urls`: ask, always or never).
+    fn add_submodule(&mut self, url: String, path: String) {
+        if path.is_empty() {
+            if let Some(d) = &mut self.dialog {
+                d.error = Some("Type the folder first.".into());
+            }
+            let r = self.dialog_rect();
+            self.damage.rects.push(r);
+            return;
+        }
+        let mode = self
+            .current_repo_settings()
+            .and_then(|r| r.get("submodules.relative_urls"))
+            .or_else(|| self.settings.get("submodules.relative_urls"))
+            .unwrap_or("ask")
+            .to_string();
+        let base = self.r.refs.remotes.iter().find(|r| &*r.name == "origin").or(self.r.refs.remotes.first());
+        let rel = base.and_then(|b| ffwd_core::submodules::relative_url(&b.fetch_url, &url));
+        match (rel, mode.as_str()) {
+            (Some(rel), "always") => self.run_refop(RefOp::SubAdd(rel, path)),
+            (Some(rel), "ask") => self.open_dialog(DialogKind::Ask(Ask {
+                title: "Use a relative URL?".into(),
+                text: format!(
+                    "{url} lives on the same host as this repository's remote. The relative URL {rel} keeps working for forks, mirrors and ssh or https clones. (Setting submodules.relative_urls: ask, always, never.)"
+                ),
+                choices: vec![
+                    (format!("Add with {rel}"), RefOp::SubAdd(rel.clone(), path.clone()), false),
+                    ("Add with the URL as typed".into(), RefOp::SubAdd(url.clone(), path.clone()), false),
+                ],
+            })),
+            _ => self.run_refop(RefOp::SubAdd(url, path)),
         }
     }
 
@@ -719,6 +833,16 @@ impl Ui {
                 NameAct::AddRemoteName { url } => (format!("Name the remote for {url}"), String::new()),
                 NameAct::RemoteUrl { name, .. } => (format!("URL of {name}"), String::new()),
                 NameAct::RenameRemote { old } => (format!("Rename the remote {old}"), String::new()),
+                NameAct::AddSubmoduleUrl => (
+                    "Add a submodule".to_string(),
+                    "The URL of the repository to include. When it lives next to this one, ffwd offers a relative URL."
+                        .to_string(),
+                ),
+                NameAct::AddSubmodulePath { url } => (format!("Folder for {url}"), String::new()),
+                NameAct::MoveSubmodule { path } => (
+                    format!("Move {path}"),
+                    "The new folder, inside the repository. .gitmodules and the index follow.".to_string(),
+                ),
             },
         };
         self.te.draw(cv, semi, self.pf(15.5), x0, r.y as f32 + self.pf(36.0), &title, TEXT, inner);
@@ -745,6 +869,8 @@ impl Ui {
                     NameAct::StashRename { .. } => "Stash message",
                     NameAct::AddRemoteUrl | NameAct::RemoteUrl { .. } => "https://github.com/owner/repo.git",
                     NameAct::AddRemoteName { .. } | NameAct::RenameRemote { .. } => "origin",
+                    NameAct::AddSubmoduleUrl => "https://github.com/owner/library.git",
+                    NameAct::AddSubmodulePath { .. } | NameAct::MoveSubmodule { .. } => "vendor/library",
                     _ => "feature/my-change",
                 };
                 self.te.draw(cv, ui, self.pf(13.0), tx, fb, ph, TEXT_4, inner);
@@ -800,6 +926,9 @@ impl Ui {
                     NameAct::AddRemoteName { .. } => "Add and fetch".into(),
                     NameAct::RemoteUrl { .. } => "Save URL".into(),
                     NameAct::RenameRemote { .. } => "Rename".into(),
+                    NameAct::AddSubmoduleUrl => "Next".into(),
+                    NameAct::AddSubmodulePath { .. } => "Add submodule".into(),
+                    NameAct::MoveSubmodule { .. } => "Move".into(),
                 },
                 false,
             )],

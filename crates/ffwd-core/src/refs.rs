@@ -33,6 +33,8 @@ pub struct Refs {
     pub worktrees: Vec<Box<str>>,
     /// The configured remotes with their URLs.
     pub remotes: Vec<crate::remotes::Remote>,
+    /// The submodules (only read when `.gitmodules` exists).
+    pub submodules: Vec<crate::submodules::Submodule>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -101,6 +103,9 @@ pub fn load(git: &Git) -> Result<Refs, GitError> {
         }
     }
     refs.remotes = crate::remotes::list(git);
+    if git.root.join(".gitmodules").exists() {
+        refs.submodules = crate::submodules::list(git);
+    }
     if let Ok(w) = git.output_limited(&["worktree", "list", "--porcelain"], 1 << 20) {
         for line in w.split(|&b| b == b'\n') {
             if let Some(p) = line.strip_prefix(b"worktree ") {
