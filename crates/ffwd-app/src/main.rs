@@ -14,6 +14,7 @@ mod icon;
 mod platform;
 mod settings;
 mod snapshot;
+mod text_field;
 mod theme;
 mod ui;
 mod update;
@@ -39,6 +40,10 @@ pub struct Args {
     pub layout: Option<String>,
     /// Snapshot with the repository picker open on this query.
     pub picker: Option<String>,
+    /// Snapshot with the settings view open.
+    pub settings: bool,
+    /// Snapshot: click this sidebar ref (`main`, `t3/x`) first.
+    pub side: Option<String>,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -54,6 +59,8 @@ fn parse_args() -> Result<Args, String> {
         palette: None,
         layout: None,
         picker: None,
+        settings: false,
+        side: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -83,6 +90,8 @@ fn parse_args() -> Result<Args, String> {
             "--focus" => a.focus = Some(val("--focus")?),
             "--palette" => a.palette = Some(val("--palette")?),
             "--layout" => a.layout = Some(val("--layout")?),
+            "--settings" => a.settings = true,
+            "--side" => a.side = Some(val("--side")?),
             "--picker" => a.picker = Some(val("--picker")?),
             "--tab" => a.tabs.push(PathBuf::from(val("--tab")?)),
             "-h" | "--help" => {

@@ -245,6 +245,10 @@ impl App {
         let k = match &ev.logical_key {
             WKey::Named(n) => match n {
                 NamedKey::ArrowUp => Some(Key::Up),
+                NamedKey::ArrowLeft => Some(Key::Left),
+                NamedKey::ArrowRight => Some(Key::Right),
+                NamedKey::Delete => Some(Key::Delete),
+                NamedKey::Backspace if ctrl => Some(Key::CtrlBackspace),
                 NamedKey::ArrowDown => Some(Key::Down),
                 NamedKey::PageUp => Some(Key::PageUp),
                 NamedKey::PageDown => Some(Key::PageDown),

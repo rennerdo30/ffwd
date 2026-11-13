@@ -6,13 +6,22 @@
 //! press repaints a few rows, never the window.
 
 use crate::fmt;
+use crate::text_field::TextField;
 use crate::theme::*;
 use crate::work::{DetailWorker, Msg, Sink};
 use ffwd_core::diff::{Details, FileDiff, LineKind};
 use ffwd_core::ops::Op;
-use ffwd_core::refs::{RefKind, Refs, StatusSummary};
+use ffwd_core::refs::{Ref, RefKind, Refs, StatusSummary};
+use std::collections::HashSet;
+
+#[path = "ui_sidebar.rs"]
+mod sidebar;
+use sidebar::SideItem;
+#[path = "ui_settings.rs"]
+mod settings_view;
 use ffwd_core::{Commit, Git, Graph, Oid};
 use ffwd_render::{Canvas, FontId, Rect, TextEngine};
+use settings_view::SettingsView;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -58,6 +67,9 @@ pub fn load_fonts(te: &mut TextEngine) -> Option<Fonts> {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Focus {
+    Side,
+    /// Typing into the sidebar's filter field.
+    SideFilter,
     List,
     Files,
     Diff,
@@ -81,6 +93,10 @@ pub enum Key {
     /// Ctrl (Cmd on macOS) with a lowercase letter or digit.
     Ctrl(char),
     CtrlShift(char),
+    CtrlBackspace,
+    Left,
+    Right,
+    Delete,
     NextTab,
     PrevTab,
 }
@@ -184,29 +200,6 @@ pub struct Stats {
     pub last_damage_px: u64,
 }
 
-struct SideItem {
-    indent: u8,
-    kind: SideKind,
-    label: String,
-    badge: String,
-    active: bool,
-    target: Option<Oid>,
-}
-
-#[derive(Clone, Copy, PartialEq)]
-enum SideKind {
-    Header,
-    Changes,
-    All,
-    Branch,
-    Remote,
-    RemoteBranch,
-    Tag,
-    Stash,
-    Worktree,
-    More,
-}
-
 struct PItem {
     label: String,
     hint: String,
@@ -217,6 +210,8 @@ struct PItem {
 #[derive(Clone)]
 enum PAction {
     Goto(Oid),
+    /// A branch or tag: the history jumps to it and the sidebar selects it.
+    GotoRef(Oid, String, RefKind),
     Command(&'static str),
     InstallUpdate,
     OpenRepo(PathBuf),
@@ -231,7 +226,7 @@ enum PMode {
 }
 
 pub struct Palette {
-    pub query: String,
+    pub input: TextField,
     items: Vec<PItem>,
     sel: usize,
     mode: PMode,
@@ -244,11 +239,22 @@ const CMD_OPEN: &str = "Open repository…";
 const CMD_CLOSE: &str = "Close tab";
 const CMD_REOPEN: &str = "Reopen closed tab";
 const CMD_UPDATES: &str = "Check for updates";
+const CMD_SETTINGS: &str = "Settings…";
 
 /// Commands that work today; the rest of COMMANDS are listed so the
 /// palette shows the plan, and say so when chosen.
-const WORKING: &[&str] =
-    &[CMD_FETCH, CMD_PULL, CMD_PUSH, CMD_OPEN, CMD_CLOSE, CMD_REOPEN, CMD_UPDATES, LAYOUT_BELOW, LAYOUT_BESIDE];
+const WORKING: &[&str] = &[
+    CMD_SETTINGS,
+    CMD_FETCH,
+    CMD_PULL,
+    CMD_PUSH,
+    CMD_OPEN,
+    CMD_CLOSE,
+    CMD_REOPEN,
+    CMD_UPDATES,
+    LAYOUT_BELOW,
+    LAYOUT_BESIDE,
+];
 
 const COMMANDS: &[(&str, &str)] = &[
     (CMD_FETCH, "Ctrl Shift F"),
@@ -258,6 +264,7 @@ const COMMANDS: &[(&str, &str)] = &[
     (CMD_CLOSE, "Ctrl W"),
     (CMD_REOPEN, "Ctrl Shift T"),
     (CMD_UPDATES, ""),
+    (CMD_SETTINGS, "Ctrl ,"),
     ("Commit staged changes", "Ctrl Enter"),
     ("Create branch here", "Ctrl B"),
     ("Create tag here", "Ctrl Shift G"),
@@ -292,6 +299,9 @@ pub struct RepoState {
     pub refs: Refs,
     chips: HashMap<Oid, Vec<u32>>,
     side: Vec<SideItem>,
+    /// The sidebar's own selection (an item key), separate from the history.
+    side_sel: String,
+    side_top: usize,
     pub status: Option<StatusSummary>,
     pub log_done: bool,
     pub log_ms: f64,
@@ -338,6 +348,7 @@ enum TopAction {
     Pull,
     Push,
     Ai,
+    Settings,
 }
 
 pub struct Ui {
@@ -355,6 +366,9 @@ pub struct Ui {
     next_tab_id: u64,
     closed_tabs: Vec<PathBuf>,
     tab_hover: Option<usize>,
+    side_collapsed: HashSet<String>,
+    side_filter: String,
+    side_hover: Option<usize>,
     sinks: SinkFactory,
     /// Recent repositories first, then ones found next to open ones.
     known_repos: Vec<PathBuf>,
@@ -362,6 +376,7 @@ pub struct Ui {
     pub title_dirty: bool,
     pub focus: Focus,
     pub palette: Option<Palette>,
+    settings_view: Option<SettingsView>,
     pub notice: Option<String>,
     update_available: bool,
     update_requested: bool,
@@ -427,12 +442,16 @@ impl Ui {
             next_tab_id: first.as_ref().map_or(1, |f| f.0 + 1),
             closed_tabs: Vec::new(),
             tab_hover: None,
+            side_collapsed: state.get_list("sidebar.collapsed").into_iter().collect(),
+            side_filter: String::new(),
+            side_hover: None,
             sinks,
             known_repos: state.get_list("recent.repos").into_iter().map(PathBuf::from).collect(),
             state,
             title_dirty: true,
             focus: Focus::List,
             palette: None,
+            settings_view: None,
             update_available: false,
             update_requested: false,
             update_check_requested: false,
@@ -527,6 +546,9 @@ impl Ui {
         tab.started = true;
         if self.r.repo_name.is_empty() {
             self.r.repo_name = tab.name.clone();
+        }
+        if self.r.side_sel.is_empty() {
+            self.r.side_sel = "all".into();
         }
         let sink = (self.sinks)(id);
         if start {
@@ -744,13 +766,14 @@ impl Ui {
             TopAction::Pull => self.start_op(Op::Pull),
             TopAction::Push => self.start_op(Op::Push),
             TopAction::Ai => self.open_palette_with("AI: "),
+            TopAction::Settings => self.open_settings(),
             TopAction::Branch => self.open_palette(),
             TopAction::Repo => self.open_repo_picker(),
         }
     }
 
     pub fn open_repo_picker(&mut self) {
-        self.palette = Some(Palette { query: String::new(), items: Vec::new(), sel: 0, mode: PMode::Repos });
+        self.palette = Some(Palette { input: TextField::default(), items: Vec::new(), sel: 0, mode: PMode::Repos });
         self.filter_palette();
     }
 
@@ -1025,80 +1048,6 @@ impl Ui {
         }
     }
 
-    fn rebuild_side(&mut self) {
-        let mut v = Vec::new();
-        let item = |indent, kind, label: &str, badge: String, active, target| SideItem {
-            indent,
-            kind,
-            label: label.to_string(),
-            badge,
-            active,
-            target,
-        };
-        v.push(item(0, SideKind::Header, "Workspace", String::new(), false, None));
-        let changes = self
-            .r
-            .status
-            .map_or(String::new(), |s| if s.total() > 0 { fmt::num(s.total() as usize) } else { String::new() });
-        v.push(item(0, SideKind::Changes, "Local Changes", changes, false, None));
-        v.push(item(0, SideKind::All, "All Commits", String::new(), true, None));
-        let refs = &self.r.refs.refs;
-        let locals: Vec<_> = refs.iter().filter(|r| r.kind == RefKind::Local).collect();
-        v.push(item(0, SideKind::Header, "Branches", fmt::num(locals.len()), false, None));
-        for r in locals.iter().take(14) {
-            let mut badge = String::new();
-            if r.ahead > 0 {
-                badge.push_str(&format!("↑{}", r.ahead));
-            }
-            if r.behind > 0 {
-                if !badge.is_empty() {
-                    badge.push(' ');
-                }
-                badge.push_str(&format!("↓{}", r.behind));
-            }
-            v.push(item(0, SideKind::Branch, &r.name, badge, r.is_head, Some(r.target)));
-        }
-        if locals.len() > 14 {
-            v.push(item(0, SideKind::More, &format!("{} more", locals.len() - 14), String::new(), false, None));
-        }
-        let remotes: Vec<_> = refs.iter().filter(|r| r.kind == RefKind::Remote).collect();
-        if !remotes.is_empty() {
-            v.push(item(0, SideKind::Header, "Remotes", String::new(), false, None));
-            let mut names: Vec<&str> = remotes.iter().filter_map(|r| r.name.split('/').next()).collect();
-            names.dedup();
-            for n in names {
-                let rs: Vec<_> = remotes.iter().filter(|r| r.name.split('/').next() == Some(n)).collect();
-                v.push(item(0, SideKind::Remote, n, fmt::num(rs.len()), false, None));
-                for r in rs.iter().take(6) {
-                    let short = r.name.split_once('/').map_or(&*r.name, |x| x.1);
-                    v.push(item(1, SideKind::RemoteBranch, short, String::new(), false, Some(r.target)));
-                }
-                if rs.len() > 6 {
-                    v.push(item(1, SideKind::More, &format!("{} more", rs.len() - 6), String::new(), false, None));
-                }
-            }
-        }
-        let tags: Vec<_> = refs.iter().filter(|r| r.kind == RefKind::Tag).collect();
-        if !tags.is_empty() {
-            v.push(item(0, SideKind::Header, "Tags", fmt::num(tags.len()), false, None));
-            for r in tags.iter().rev().take(5) {
-                v.push(item(0, SideKind::Tag, &r.name, String::new(), false, Some(r.target)));
-            }
-        }
-        v.push(item(0, SideKind::Header, "Stashes", fmt::num(self.r.refs.stashes.len()), false, None));
-        for (_, msg) in self.r.refs.stashes.iter().take(4) {
-            v.push(item(0, SideKind::Stash, msg, String::new(), false, None));
-        }
-        if self.r.refs.worktrees.len() > 1 {
-            v.push(item(0, SideKind::Header, "Worktrees", fmt::num(self.r.refs.worktrees.len()), false, None));
-            for w in self.r.refs.worktrees.iter().take(4) {
-                let name = w.rsplit(['/', '\\']).next().unwrap_or(w);
-                v.push(item(0, SideKind::Worktree, name, String::new(), false, None));
-            }
-        }
-        self.r.side = v;
-    }
-
     fn select_head_or_first(&mut self) {
         let head = self.r.refs.head.and_then(|h| self.r.by_id.get(&h).copied());
         self.select(head.map_or(0, |i| i as usize));
@@ -1198,6 +1147,28 @@ impl Ui {
     // ---------------------------------------------------------------- input
 
     pub fn key(&mut self, k: Key) {
+        if matches!(k, Key::Ctrl(',')) && self.settings_view.is_none() {
+            return self.open_settings();
+        }
+        if self.settings_view.is_some() {
+            return self.settings_key(k);
+        }
+        // Text editing keys belong to the palette while it is open.
+        if self.palette.is_some()
+            && matches!(
+                k,
+                Key::Ctrl('a' | 'c' | 'v' | 'x')
+                    | Key::CtrlBackspace
+                    | Key::Left
+                    | Key::Right
+                    | Key::Home
+                    | Key::End
+                    | Key::Delete
+            )
+        {
+            self.palette_key(k);
+            return;
+        }
         // Global shortcuts work everywhere, also with the palette open.
         let n = self.tabs.len();
         match k {
@@ -1220,6 +1191,9 @@ impl Ui {
         }
         if self.palette.is_some() {
             self.palette_key(k);
+            return;
+        }
+        if self.side_key(k) {
             return;
         }
         let page = self.visible_rows().saturating_sub(1).max(1);
@@ -1246,7 +1220,7 @@ impl Ui {
             (_, Key::Esc) => {
                 if self.focus != Focus::List {
                     self.focus = Focus::List;
-                    self.damage.rects.push(self.lay.details);
+                    self.damage.rects.extend([self.lay.details, self.lay.side]);
                     self.damage.rows.push(self.r.sel);
                 }
             }
@@ -1256,10 +1230,11 @@ impl Ui {
     }
 
     fn cycle_focus(&mut self, dir: i32) {
-        let order = [Focus::List, Focus::Files, Focus::Diff];
-        let i = order.iter().position(|f| *f == self.focus).unwrap_or(0) as i32;
-        self.focus = order[((i + dir).rem_euclid(3)) as usize];
-        self.damage.rects.push(self.lay.details);
+        let order = [Focus::Side, Focus::List, Focus::Files, Focus::Diff];
+        let cur = if self.focus == Focus::SideFilter { Focus::Side } else { self.focus };
+        let i = order.iter().position(|f| *f == cur).unwrap_or(1) as i32;
+        self.focus = order[((i + dir).rem_euclid(order.len() as i32)) as usize];
+        self.damage.rects.extend([self.lay.details, self.lay.side]);
         self.damage.rows.push(self.r.sel);
     }
 
@@ -1277,7 +1252,9 @@ impl Ui {
         if n == 0 {
             return;
         }
-        if self.lay.list.contains(x, y) {
+        if self.lay.side.contains(x, y) {
+            self.side_wheel(n);
+        } else if self.lay.list.contains(x, y) {
             self.set_top((self.r.top as i64 + n).max(0) as usize);
         } else if self.diff_rect().contains(x, y) {
             self.scroll_diff(n);
@@ -1285,6 +1262,9 @@ impl Ui {
     }
 
     pub fn click(&mut self, x: i32, y: i32) {
+        if self.settings_view.is_some() {
+            return self.settings_click(x, y);
+        }
         if let Some(b) = self.caption_button_at(x, y) {
             if b != 1 {
                 self.cap_pressed = Some(b);
@@ -1319,7 +1299,7 @@ impl Ui {
             if row < self.r.commits.len() {
                 if self.focus != Focus::List {
                     self.focus = Focus::List;
-                    self.damage.rects.push(self.lay.details);
+                    self.damage.rects.extend([self.lay.details, self.lay.side]);
                 }
                 self.select(row);
             }
@@ -1335,19 +1315,8 @@ impl Ui {
             return;
         }
         if self.lay.side.contains(x, y) {
-            let mut yy = self.lay.side.y + self.px(8.0);
-            for it in &self.r.side {
-                let h = if it.kind == SideKind::Header { self.px(32.0) } else { self.px(28.0) };
-                if y >= yy && y < yy + h {
-                    if let Some(t) = it.target
-                        && let Some(&row) = self.r.by_id.get(&t)
-                    {
-                        self.select(row as usize);
-                    }
-                    return;
-                }
-                yy += h;
-            }
+            self.side_click(x, y);
+            return;
         }
         if self.search_rect.contains(x, y) {
             self.open_palette();
@@ -1357,14 +1326,14 @@ impl Ui {
     // -------------------------------------------------------------- palette
 
     pub fn open_palette(&mut self) {
-        self.palette = Some(Palette { query: String::new(), items: Vec::new(), sel: 0, mode: PMode::Jump });
+        self.palette = Some(Palette { input: TextField::default(), items: Vec::new(), sel: 0, mode: PMode::Jump });
         self.filter_palette();
     }
 
     pub fn open_palette_with(&mut self, q: &str) {
         self.open_palette();
         if let Some(p) = &mut self.palette {
-            p.query = q.into();
+            p.input = TextField::new(q);
         }
         self.filter_palette();
     }
@@ -1377,7 +1346,7 @@ impl Ui {
 
     fn filter_palette(&mut self) {
         let Some(p) = &mut self.palette else { return };
-        let q = p.query.to_lowercase();
+        let q = p.input.text().to_lowercase();
         let mut scored: Vec<(i32, PItem)> = Vec::new();
         if p.mode == PMode::Repos {
             // Recent repositories rank first; open ones are marked.
@@ -1398,7 +1367,8 @@ impl Ui {
             }
             // A typed folder path opens directly (checked when opened, so no
             // file system call happens per key press).
-            let raw = p.query.trim();
+            let raw = p.input.text().trim().to_string();
+            let raw = raw.as_str();
             if raw.contains(['\\', '/']) || raw.contains(':') {
                 scored.push((
                     1000,
@@ -1431,7 +1401,7 @@ impl Ui {
                         label: r.name.to_string(),
                         hint: hint.into(),
                         kind: r.kind,
-                        action: PAction::Goto(r.target),
+                        action: PAction::GotoRef(r.target, r.name.to_string(), r.kind),
                     },
                 ));
             }
@@ -1489,6 +1459,7 @@ impl Ui {
             CMD_CLOSE => self.close_tab(self.cur_tab),
             CMD_REOPEN => self.reopen_closed_tab(),
             CMD_UPDATES => self.request_update_check(),
+            CMD_SETTINGS => self.open_settings(),
             LAYOUT_BELOW => self.set_layout(DetailsLayout::Below),
             LAYOUT_BESIDE => self.set_layout(DetailsLayout::Beside),
             c if c.starts_with("AI:") || c.starts_with("Settings: AI") => self.set_notice(
@@ -1513,12 +1484,43 @@ impl Ui {
                 self.damage.rects.push(r);
             }
             Key::Backspace => {
-                p.query.pop();
+                p.input.backspace();
+                self.filter_palette();
+            }
+            Key::CtrlBackspace => {
+                p.input.delete_word();
+                self.filter_palette();
+            }
+            Key::Delete => {
+                p.input.delete();
                 self.filter_palette();
             }
             Key::Char(c) => {
-                p.query.push(c);
+                p.input.insert(c.encode_utf8(&mut [0; 4]));
                 self.filter_palette();
+            }
+            Key::Left | Key::Right | Key::Home | Key::End | Key::Ctrl('a') => {
+                match k {
+                    Key::Left => p.input.left(),
+                    Key::Right => p.input.right(),
+                    Key::Home => p.input.home(),
+                    Key::End => p.input.end(),
+                    _ => p.input.select_all(),
+                }
+                let r = self.palette_rect(10);
+                self.damage.rects.push(r);
+            }
+            Key::Ctrl('c') => crate::platform::set_clipboard(p.input.copy_text()),
+            Key::Ctrl('x') => {
+                let t = p.input.cut();
+                crate::platform::set_clipboard(&t);
+                self.filter_palette();
+            }
+            Key::Ctrl('v') => {
+                if let Some(t) = crate::platform::clipboard() {
+                    p.input.insert(&t);
+                    self.filter_palette();
+                }
             }
             Key::Enter => {
                 let action = p.items.get(p.sel).map(|i| i.action.clone());
@@ -1528,6 +1530,13 @@ impl Ui {
                         Some(&row) => self.select(row as usize),
                         None => self.set_notice("That commit is not loaded yet.".into()),
                     },
+                    Some(PAction::GotoRef(id, name, kind)) => {
+                        self.side_select_ref(&name, kind);
+                        match self.r.by_id.get(&id) {
+                            Some(&row) => self.select(row as usize),
+                            None => self.set_notice("That commit is not loaded yet.".into()),
+                        }
+                    }
                     Some(PAction::Command(c)) => self.run_command(c),
                     Some(PAction::InstallUpdate) => self.request_update_install(),
                     Some(PAction::OpenRepo(path)) => self.open_tab(path),
@@ -1626,6 +1635,9 @@ impl Ui {
         if self.palette.is_some() && !clip.intersect(self.palette_rect(10)).is_empty() {
             self.paint_palette(cv);
         }
+        if self.settings_view.is_some() && !clip.intersect(self.settings_rect()).is_empty() {
+            self.paint_settings(cv);
+        }
     }
 
     fn chevrons(&self, cv: &mut Canvas, x: f32, cy: f32, size: f32, color: u32) {
@@ -1704,7 +1716,14 @@ impl Ui {
         let head = self.r.refs.refs.iter().find(|r| r.is_head);
         let (ahead, behind) = head.map_or((0, 0), |h| (h.ahead, h.behind));
         let right = if self.lay.caption.is_empty() { r.right() } else { self.lay.caption.x };
-        let mut bx = right as f32 - self.pf(12.0);
+        // Gear: settings.
+        let gs = self.px(30.0);
+        let gear = Rect::new((right as f32 - self.pf(10.0)) as i32 - gs, (cy - self.pf(15.0)) as i32, gs, gs);
+        cv.round_border(gear, self.pf(8.0), BORDER, BG_BAR);
+        self.gear_icon(cv, gear.x as f32 + gs as f32 / 2.0, cy, TEXT_2);
+        buttons.push((gear, TopAction::Settings));
+        let right = gear.x;
+        let mut bx = right as f32 - self.pf(8.0);
         let busy = self.r.op;
         let label =
             |op: Op, idle: &'static str| if busy == Some(op) { format!("{}…", op.verb()) } else { idle.to_string() };
@@ -1869,6 +1888,7 @@ impl Ui {
 
     /// Pointer moved in the client area (hover for minimise and close).
     pub fn pointer(&mut self, x: i32, y: i32) {
+        self.side_pointer(x, y);
         let th = self.tab_at(x, y);
         if th != self.tab_hover {
             self.tab_hover = th;
@@ -1960,6 +1980,16 @@ impl Ui {
         r.x as f32
     }
 
+    fn gear_icon(&self, cv: &mut Canvas, cx: f32, cy: f32, color: u32) {
+        let (ro, ri) = (self.pf(6.5), self.pf(4.2));
+        for k in 0..8 {
+            let a = k as f32 * std::f32::consts::FRAC_PI_4;
+            let (s, c) = a.sin_cos();
+            cv.stroke(&[(cx + c * ri, cy + s * ri), (cx + c * ro, cy + s * ro)], self.pf(2.2), color);
+        }
+        cv.ring(cx, cy, self.pf(4.6), self.pf(1.6), color);
+    }
+
     fn sparkle(&self, cv: &mut Canvas, cx: f32, cy: f32, r: f32, color: u32) {
         let w = self.pf(1.8);
         cv.stroke(&[(cx, cy - r), (cx, cy + r)], w, color);
@@ -1983,143 +2013,6 @@ impl Ui {
         cv.round_border(r, self.pf(5.0), BORDER, if dim { BG_BAR } else { BG_INPUT });
         self.te.draw(cv, ui, size, r.x as f32 + self.pf(6.0), (cy + self.pf(4.0)).round(), label, TEXT_3, w);
         r.x as f32
-    }
-
-    fn paint_side(&mut self, cv: &mut Canvas) {
-        let r = self.lay.side;
-        cv.fill(r, BG_SIDEBAR);
-        cv.fill(Rect::new(r.right() - 1, r.y, 1, r.h), BORDER);
-        let (ui, semi) = (self.f.ui, self.f.semi);
-        let mut y = r.y + self.px(8.0);
-        let items = std::mem::take(&mut self.r.side);
-        for it in &items {
-            let h = if it.kind == SideKind::Header { self.px(32.0) } else { self.px(28.0) };
-            if y > r.bottom() {
-                break;
-            }
-            let row = Rect::new(r.x + self.px(8.0), y, r.w - self.px(16.0), h);
-            if cv.clip().intersect(row).is_empty() {
-                y += h;
-                continue;
-            }
-            let base = (y as f32 + h as f32 / 2.0 + self.pf(4.5)).round();
-            let cy = y as f32 + h as f32 / 2.0;
-            if it.kind == SideKind::Header {
-                let base = (y as f32 + h as f32 - self.pf(9.0)).round();
-                self.te.draw(
-                    cv,
-                    semi,
-                    self.pf(11.0),
-                    row.x as f32 + self.pf(10.0),
-                    base,
-                    &it.label.to_uppercase(),
-                    TEXT_3,
-                    row.w as f32,
-                );
-                if !it.badge.is_empty() {
-                    let bw = self.te.measure(ui, self.pf(11.0), &it.badge);
-                    self.te.draw(
-                        cv,
-                        ui,
-                        self.pf(11.0),
-                        row.right() as f32 - bw - self.pf(10.0),
-                        base,
-                        &it.badge,
-                        TEXT_4,
-                        bw + 2.0,
-                    );
-                }
-                y += h;
-                continue;
-            }
-            if it.active {
-                cv.fill_round(row, self.pf(6.0), if it.kind == SideKind::All { BG_SELECT } else { BG_HOVER });
-            }
-            let ix = row.x as f32 + self.pf(16.0) + it.indent as f32 * self.pf(14.0);
-            let (icon_color, text_color) = match it.kind {
-                SideKind::Branch if it.active => (ACCENT, TEXT),
-                SideKind::Branch => (LOCAL_FG, TEXT_2),
-                SideKind::Remote => (REMOTE_FG, TEXT_2),
-                SideKind::RemoteBranch => (TEXT_4, TEXT_3),
-                SideKind::Tag => (TAG_FG, TEXT_2),
-                SideKind::Stash => (STASH_FG, TEXT_2),
-                SideKind::Changes => (MOD, TEXT),
-                SideKind::All => (TEXT_2, TEXT),
-                SideKind::Worktree => (TEXT_3, TEXT_2),
-                SideKind::More => (TEXT_4, TEXT_4),
-                SideKind::Header => (TEXT_3, TEXT_3),
-            };
-            match it.kind {
-                SideKind::Branch | SideKind::RemoteBranch => self.branch_icon(cv, ix, cy, icon_color),
-                SideKind::Tag => {
-                    let s = self.pf(4.0);
-                    cv.stroke(
-                        &[(ix - s, cy), (ix, cy - s), (ix + s, cy), (ix, cy + s), (ix - s, cy)],
-                        self.pf(1.5),
-                        icon_color,
-                    );
-                }
-                SideKind::Remote => {
-                    cv.ring(ix, cy, self.pf(5.0), self.pf(1.5), icon_color);
-                    cv.stroke(&[(ix - self.pf(5.0), cy), (ix + self.pf(5.0), cy)], self.pf(1.2), icon_color);
-                }
-                SideKind::Stash => {
-                    let b =
-                        Rect::new((ix - self.pf(5.0)) as i32, (cy - self.pf(4.0)) as i32, self.px(10.0), self.px(8.0));
-                    cv.round_border(b, self.pf(2.0), icon_color, BG_SIDEBAR);
-                }
-                SideKind::Changes => cv.fill_circle(ix, cy, self.pf(4.0), icon_color),
-                SideKind::All => {
-                    for k in 0..3 {
-                        let yy = cy - self.pf(4.0) + k as f32 * self.pf(4.0);
-                        cv.stroke(&[(ix - self.pf(5.0), yy), (ix + self.pf(5.0), yy)], self.pf(1.5), icon_color);
-                    }
-                }
-                SideKind::Worktree => {
-                    let b =
-                        Rect::new((ix - self.pf(5.0)) as i32, (cy - self.pf(5.0)) as i32, self.px(10.0), self.px(10.0));
-                    cv.round_border(b, self.pf(2.5), icon_color, BG_SIDEBAR);
-                }
-                _ => {}
-            }
-            let font = if it.active { semi } else { ui };
-            let tx = ix + self.pf(14.0);
-            let badge_w =
-                if it.badge.is_empty() { 0.0 } else { self.te.measure(semi, self.pf(11.0), &it.badge) + self.pf(14.0) };
-            self.te.draw(
-                cv,
-                font,
-                self.pf(13.0),
-                tx,
-                base,
-                &it.label,
-                text_color,
-                row.right() as f32 - tx - badge_w - self.pf(6.0),
-            );
-            if !it.badge.is_empty() {
-                let bw = badge_w - self.pf(14.0);
-                let bx = row.right() as f32 - bw - self.pf(10.0);
-                let color = if it.kind == SideKind::Changes {
-                    MOD
-                } else if it.kind == SideKind::Branch {
-                    ACCENT
-                } else {
-                    TEXT_3
-                };
-                if it.kind == SideKind::Changes {
-                    let b = Rect::new(
-                        (bx - self.pf(6.0)) as i32,
-                        (cy - self.pf(9.0)) as i32,
-                        (bw + self.pf(12.0)) as i32,
-                        self.px(18.0),
-                    );
-                    cv.fill_round(b, self.pf(9.0), 0x33290f);
-                }
-                self.te.draw(cv, semi, self.pf(11.0), bx, base - self.pf(0.5), &it.badge, color, bw + 2.0);
-            }
-            y += h;
-        }
-        self.r.side = items;
     }
 
     fn lane_w(&self) -> f32 {
@@ -2720,7 +2613,8 @@ impl Ui {
             }
         }
         let Some(p) = &self.palette else { return };
-        let (query, sel, mode) = (p.query.clone(), p.sel, p.mode);
+        let (query, sel, mode) = (p.input.text().to_string(), p.sel, p.mode);
+        let (cursor, all) = (p.input.cursor(), p.input.all_selected());
         let items: Vec<(String, String, RefKind, bool)> = p
             .items
             .iter()
@@ -2751,7 +2645,22 @@ impl Ui {
             );
             qx
         } else {
-            self.te.draw(cv, ui, self.pf(15.0), qx, base, &query, TEXT, r.w as f32 - self.pf(80.0))
+            if all {
+                // Select-all shows as a highlight behind the text.
+                let w = self.te.measure(ui, self.pf(15.0), &query).min(r.w as f32 - self.pf(80.0));
+                cv.fill_round(
+                    Rect::new(
+                        qx as i32 - self.px(2.0),
+                        input.y + self.px(13.0),
+                        w as i32 + self.px(4.0),
+                        self.px(26.0),
+                    ),
+                    self.pf(4.0),
+                    0x2c4a78,
+                );
+            }
+            self.te.draw(cv, ui, self.pf(15.0), qx, base, &query, TEXT, r.w as f32 - self.pf(80.0));
+            qx + self.te.measure(ui, self.pf(15.0), &query[..cursor.min(query.len())])
         };
         cv.fill(Rect::new(end as i32 + 1, input.y + self.px(15.0), self.px(2.0), self.px(22.0)), ACCENT);
         cv.fill(Rect::new(r.x + 1, input.bottom() - 1, r.w - 2, 1), BORDER);

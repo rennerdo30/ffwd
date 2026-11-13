@@ -43,6 +43,18 @@ The capture above is the real PoC UI. `ffwd --snapshot` rendered it offscreen fr
 - **Linux:** server-side decorations from the desktop.
 - **Icon:** the window icon is drawn from the logo's geometry at startup; `ffwd --icon-png out.png 256` writes it as a PNG for packaging.
 
+## Sidebar
+
+- Sections: Workspace (Local Changes, All Commits), Branches, Remotes, Tags, Stashes, Worktrees. Every section, remote and branch folder (`t3/…`) folds open and closed; the state is remembered.
+- The sidebar keeps **its own selection**: clicking a branch or tag highlights it there and jumps the history to its commit. Choosing a branch in `Ctrl+K` selects it in the sidebar too.
+- The checked-out branch has a check mark; ahead/behind counts sit on the right.
+- A filter field at the top narrows branches, remotes, tags and stashes (folders open while filtering). Typing while the sidebar has focus starts filtering.
+- Keyboard: `Tab` cycles sidebar → history → files → diff; in the sidebar `↑ ↓`, `←` closes or goes to the parent, `→` opens, `Enter` jumps.
+
+## Settings
+
+The gear in the top bar (or `Ctrl+,`) opens Settings: details layout, automatic updates and channel, repository folders, AI endpoint and model, **Open settings.toml**, **Check for updates now**. Changes save at once; the file keeps your comments.
+
 ## Repository tabs
 
 Like other clients: one tab per repository under the top bar.
@@ -68,6 +80,8 @@ Like other clients: one tab per repository under the top bar.
 | `Esc` | Back to the history |
 | `Ctrl+K` / `Ctrl+P` / `/` | Palette: jump to a branch, tag or SHA, or run a command |
 | `Ctrl+O` / `Ctrl+T` | Open a repository in a tab |
+| `Ctrl+,` | Settings |
+| `Ctrl+A` `Ctrl+C` `Ctrl+V` `Ctrl+X` `Ctrl+Backspace` `← →` `Home End` | Text editing in the palette and settings fields |
 | `Ctrl+W` / `Ctrl+Shift+T` | Close the tab / reopen the last closed one |
 | `Ctrl+Tab` / `Ctrl+Shift+Tab` / `Ctrl+1…9` | Next, previous, n-th tab (9 = last) |
 | `Ctrl+Shift+F` / `L` / `K` | Fetch / Pull / Push |

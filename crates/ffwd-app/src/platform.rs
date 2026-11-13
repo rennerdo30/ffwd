@@ -66,6 +66,92 @@ pub fn cloak_and_show(_hwnd: isize) -> bool {
     false
 }
 
+/// Clipboard text (Windows: the system clipboard API, no process).
+#[cfg(windows)]
+pub fn clipboard() -> Option<String> {
+    use windows_sys::Win32::System::DataExchange::{CloseClipboard, GetClipboardData, OpenClipboard};
+    use windows_sys::Win32::System::Memory::{GlobalLock, GlobalSize, GlobalUnlock};
+    const CF_UNICODETEXT: u32 = 13;
+    // SAFETY: the clipboard is opened and closed on this thread; the
+    // locked memory is read within its reported size and unlocked again.
+    unsafe {
+        if OpenClipboard(std::ptr::null_mut()) == 0 {
+            return None;
+        }
+        let mut out = None;
+        let h = GetClipboardData(CF_UNICODETEXT);
+        if !h.is_null() {
+            let p = GlobalLock(h) as *const u16;
+            if !p.is_null() {
+                let max = GlobalSize(h) / 2;
+                let len = (0..max).take_while(|&i| *p.add(i) != 0).count();
+                out = Some(String::from_utf16_lossy(std::slice::from_raw_parts(p, len.min(64 * 1024))));
+                GlobalUnlock(h);
+            }
+        }
+        CloseClipboard();
+        out
+    }
+}
+
+#[cfg(windows)]
+pub fn set_clipboard(text: &str) {
+    use windows_sys::Win32::System::DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData};
+    use windows_sys::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock};
+    const CF_UNICODETEXT: u32 = 13;
+    let wide: Vec<u16> = text.encode_utf16().chain(Some(0)).collect();
+    // SAFETY: the allocation is sized for `wide`, written while locked, and
+    // owned by the clipboard after a successful SetClipboardData.
+    unsafe {
+        if OpenClipboard(std::ptr::null_mut()) == 0 {
+            return;
+        }
+        EmptyClipboard();
+        let h = GlobalAlloc(GMEM_MOVEABLE, wide.len() * 2);
+        if !h.is_null() {
+            let p = GlobalLock(h) as *mut u16;
+            if !p.is_null() {
+                std::ptr::copy_nonoverlapping(wide.as_ptr(), p, wide.len());
+                GlobalUnlock(h);
+                SetClipboardData(CF_UNICODETEXT, h);
+            }
+        }
+        CloseClipboard();
+    }
+}
+
+/// macOS and Linux: the desktop's clipboard tools (pbpaste, wl-paste, xclip).
+#[cfg(not(windows))]
+pub fn clipboard() -> Option<String> {
+    let tries: &[&[&str]] = if cfg!(target_os = "macos") {
+        &[&["pbpaste"]]
+    } else {
+        &[&["wl-paste", "--no-newline"], &["xclip", "-selection", "clipboard", "-o"]]
+    };
+    tries.iter().find_map(|c| {
+        let out = std::process::Command::new(c[0]).args(&c[1..]).stdin(std::process::Stdio::null()).output().ok()?;
+        out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+    })
+}
+
+#[cfg(not(windows))]
+pub fn set_clipboard(text: &str) {
+    use std::io::Write;
+    let tries: &[&[&str]] =
+        if cfg!(target_os = "macos") { &[&["pbcopy"]] } else { &[&["wl-copy"], &["xclip", "-selection", "clipboard"]] };
+    for c in tries {
+        if let Ok(mut child) =
+            std::process::Command::new(c[0]).args(&c[1..]).stdin(std::process::Stdio::piped()).spawn()
+        {
+            if let Some(mut si) = child.stdin.take() {
+                let _ = si.write_all(text.as_bytes());
+            }
+            let _ = child.wait();
+            return;
+        }
+    }
+}
+
 /// Dark title bar on Windows 10/11 so the native caption matches the theme.
 #[cfg(windows)]
 pub fn dark_title_bar(hwnd: isize) {
