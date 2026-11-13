@@ -253,7 +253,7 @@
 
 | Feature | ffwd | Notes |
 |---|---|---|
-| Commit messages and branch review with Claude Code, Codex or Cursor (if installed) | M2 | ffwd: any OpenAI-compatible endpoint, local first; agents run in sandboxes (FF-23, FF-26) |
+| Commit messages and branch review with Claude Code, Codex or Cursor (if installed) | Partial | Commit messages are built: any OpenAI-compatible endpoint, local first, with the exact request shown before anything is sent. Branch review comes next; agents run in sandboxes (FF-23, FF-26) |
 | Editable AI requests (prompts) in the preferences | M2 | |
 
 ## ffwd's own (ffwd's own)

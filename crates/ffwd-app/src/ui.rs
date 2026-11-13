@@ -28,6 +28,9 @@ mod conflict_view;
 #[path = "ui_diff.rs"]
 mod diff_view;
 pub use activity_view::Entry as ActivityEntry;
+#[path = "ui_ai.rs"]
+mod ai_view;
+pub use ai_view::Prepared as AiPrepared;
 #[path = "ui_files.rs"]
 mod files_view;
 #[path = "ui_rebase.rs"]
@@ -282,6 +285,7 @@ const CMD_TAG: &str = "Create tag here";
 const CMD_PICK: &str = "Cherry-pick this commit";
 const CMD_REVERT: &str = "Revert this commit";
 const CMD_STASH: &str = "Stash changes";
+const CMD_AI_COMMIT: &str = "AI: Draft a commit message";
 const CMD_ADD_SUBMODULE: &str = "Add submodule…";
 const CMD_ACTIVITY: &str = "Activity log";
 const CMD_REBASE_I: &str = "Interactive rebase from here";
@@ -307,6 +311,7 @@ const WORKING: &[&str] = &[
     CMD_PICK,
     CMD_REVERT,
     CMD_STASH,
+    CMD_AI_COMMIT,
     CMD_ADD_SUBMODULE,
     CMD_ACTIVITY,
     CMD_REBASE_I,
@@ -344,6 +349,7 @@ const COMMANDS: &[(&str, &str)] = &[
     (CMD_REVERT, ""),
     (CMD_REBASE_I, "Ctrl Shift R"),
     (CMD_STASH, "Ctrl Shift S"),
+    (CMD_AI_COMMIT, ""),
     (CMD_ADD_SUBMODULE, ""),
     (CMD_ACTIVITY, ""),
     (CMD_ADD_REMOTE, ""),
@@ -1218,6 +1224,9 @@ impl Ui {
             }
             Msg::ConflictFile { seq, path, result } => self.on_conflict_file(seq, path, result),
             Msg::Activity(e) => self.on_activity(*e),
+            Msg::AiPrepared { seq, result } => self.on_ai_prepared(seq, result),
+            Msg::AiToken { seq, text } => self.on_ai_token(seq, text),
+            Msg::AiDone { seq, result } => self.on_ai_done(seq, result),
             Msg::RebasePlan(r) => self.on_rebase_plan(r),
             Msg::FilesTree(r) => self.on_files_tree(r),
             Msg::FileContent { seq, result } => self.on_file_content(seq, result),
@@ -1917,6 +1926,7 @@ impl Ui {
             CMD_SEARCH => self.open_search(),
             CMD_BRANCH | CMD_TAG | CMD_PICK | CMD_REVERT => self.selected_commit_command(c),
             CMD_STASH => self.open_stash_dialog(),
+            CMD_AI_COMMIT => self.ai_draft(),
             CMD_ADD_SUBMODULE => self.open_dialog(DialogKind::Name {
                 act: NameAct::AddSubmoduleUrl,
                 field: TextField::default(),
@@ -4390,6 +4400,121 @@ mod tests {
         }
         ui.key(Key::Esc);
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// AI commit message end to end (FF-50) against a fake local server:
+    /// ✦ AI shows the request and sends nothing until Send; the reply
+    /// streams in; Use puts it in the message box. Without an endpoint the
+    /// button only says that AI is off.
+    #[test]
+    fn ai_commit_message_preview_send_use() {
+        use std::io::{Read as _, Write as _};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::mpsc;
+        let mut te = TextEngine::new();
+        let Some(f) = load_fonts(&mut te) else { return };
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let requests = Arc::new(AtomicUsize::new(0));
+        let seen = requests.clone();
+        std::thread::spawn(move || {
+            for conn in listener.incoming() {
+                let Ok(mut s) = conn else { break };
+                seen.fetch_add(1, Ordering::SeqCst);
+                let mut req = Vec::new();
+                let mut buf = [0u8; 8192];
+                while let Ok(n) = s.read(&mut buf) {
+                    req.extend_from_slice(&buf[..n]);
+                    if let Some(end) = req.windows(4).position(|w| w == b"\r\n\r\n") {
+                        let head = String::from_utf8_lossy(&req[..end]).to_lowercase();
+                        let len: usize = head
+                            .lines()
+                            .find_map(|l| l.strip_prefix("content-length:").and_then(|v| v.trim().parse().ok()))
+                            .unwrap_or(0);
+                        if req.len() >= end + 4 + len {
+                            break;
+                        }
+                    }
+                }
+                let body = "data: {\"choices\":[{\"delta\":{\"content\":\"Add the greeting\\n\\nSo the app says hello.\"}}]}\n\ndata: [DONE]\n\n";
+                let _ = s.write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\n\r\n{body}",
+                        body.len()
+                    )
+                    .as_bytes(),
+                );
+            }
+        });
+        let dir = std::env::temp_dir().join(format!("ffwd-ui-ai-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = Git { root: dir.clone() };
+        for a in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.name", "ffwd test"],
+            &["config", "user.email", "test@example.invalid"],
+            &["config", "commit.gpgsign", "false"],
+        ] {
+            g.output(a).unwrap();
+        }
+        std::fs::write(dir.join("a.txt"), "a\n").unwrap();
+        g.output(&["add", "."]).unwrap();
+        g.output(&["commit", "-q", "-m", "first"]).unwrap();
+        std::fs::write(dir.join("hello.txt"), "hello\n").unwrap();
+        g.output(&["add", "."]).unwrap();
+        let (tx, rx) = mpsc::channel::<(u64, Msg)>();
+        let tx = Arc::new(std::sync::Mutex::new(tx));
+        let sinks: SinkFactory = Arc::new(move |id| {
+            let tx = tx.clone();
+            Arc::new(move |m| {
+                if let Ok(t) = tx.lock() {
+                    let _ = t.send((id, m));
+                }
+            })
+        });
+        crate::work::start(dir.clone(), &sinks(1));
+        let empty = crate::settings::Settings::parse("");
+        let mut ui = Ui::new(te, f, empty.clone(), empty, Some((1, dir.clone())), sinks, 1280, 800, 1.0);
+        let pump = |ui: &mut Ui, what: &str, done: &dyn Fn(&Ui) -> bool| {
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while !done(ui) {
+                let left = until.saturating_duration_since(std::time::Instant::now());
+                assert!(!left.is_zero(), "timed out waiting for {what}; notice: {:?}", ui.notice);
+                if let Ok((id, m)) = rx.recv_timeout(left) {
+                    ui.on_tab_msg(id, m);
+                }
+            }
+        };
+        pump(&mut ui, "history", &|u| u.r.log_done);
+        ui.enter_changes();
+        pump(&mut ui, "the changes", &|u| u.r.changes.status.is_some());
+        // Off: the button says so and opens Settings; nothing is prepared.
+        ui.ai_draft();
+        assert!(ui.r.changes.ai.is_none());
+        assert!(ui.notice.as_deref().is_some_and(|n| n.starts_with("AI is off")));
+        ui.close_settings();
+        ui.settings.set_string("ai.endpoint", &format!("http://127.0.0.1:{port}/v1"));
+        ui.settings.set_string("ai.model", "test-model");
+        let mut screen = vec![0u32; 1280 * 800];
+        ui.paint(&mut Canvas::new(&mut screen, 1280, 800), true);
+        ui.ai_draft();
+        pump(&mut ui, "the preview", &|u| u.r.changes.ai.as_ref().is_some_and(|a| a.stage == ai_view::Stage::Preview));
+        assert_partial_paint_is_full(&mut ui, &mut screen, "the preview");
+        assert_eq!(requests.load(Ordering::SeqCst), 0, "nothing is sent before Send");
+        let a = ui.r.changes.ai.as_ref().unwrap();
+        assert!(a.messages[1].content.contains("+hello"), "the preview holds the staged diff");
+        assert!(a.endpoint.is_local());
+        ui.key(Key::Enter);
+        pump(&mut ui, "the reply", &|u| u.r.changes.ai.as_ref().is_some_and(|a| a.stage == ai_view::Stage::Done));
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+        assert_partial_paint_is_full(&mut ui, &mut screen, "the reply");
+        ui.key(Key::Enter);
+        assert!(ui.r.changes.ai.is_none());
+        assert_eq!(ui.r.changes.subject.text(), "Add the greeting");
+        assert_eq!(ui.r.changes.desc.text(), "So the app says hello.");
+        assert_partial_paint_is_full(&mut ui, &mut screen, "use the message");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The find bar from the keyboard: message search selects the match,

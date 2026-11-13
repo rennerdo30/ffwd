@@ -134,6 +134,18 @@ pub fn run(args: &Args, t0: Instant) -> i32 {
     if args.stash_dialog {
         ui.open_stash_dialog();
     }
+    if args.ai_preview {
+        // Only the preview: it is built on a worker and nothing is sent.
+        ui.snapshot_ai_preview();
+        let until = Instant::now() + Duration::from_secs(10);
+        while let Ok((id, m)) = rx.recv_timeout(until.saturating_duration_since(Instant::now())) {
+            let done = matches!(m, Msg::AiPrepared { .. });
+            ui.on_tab_msg(id, m);
+            if done {
+                break;
+            }
+        }
+    }
     if args.activity {
         // Both fail without changing anything (a missing branch and tag).
         ui.snapshot_activity();

@@ -80,6 +80,20 @@ pub enum Msg {
     /// The commits an interactive rebase would rewrite (FF-37).
     #[allow(clippy::type_complexity)]
     RebasePlan(Result<(Option<String>, Vec<ffwd_core::rebase::Step>), String>),
+    /// AI commit message: the request is ready to show (FF-50).
+    AiPrepared {
+        seq: u64,
+        result: crate::ui::AiPrepared,
+    },
+    /// A piece of the AI's reply.
+    AiToken {
+        seq: u64,
+        text: String,
+    },
+    AiDone {
+        seq: u64,
+        result: Result<String, String>,
+    },
     /// A branch, tag or history operation ended.
     RefOp(Result<String, ffwd_core::refops::OpError>),
     /// What a discard removed (for Ctrl+Z).

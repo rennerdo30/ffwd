@@ -124,6 +124,17 @@ The capture above is the real PoC UI. `ffwd --snapshot` rendered it offscreen fr
 - **Move:** `git mv`, so `.gitmodules`, the index and the checkout follow, and missing folders are created. It refuses while the submodule has uncommitted or unpushed work, or while `.gitmodules` has unstaged edits, and says which.
 - **Relative and absolute URLs:** rewritten in `.gitmodules`, then `git submodule sync --recursive`. The `.gitmodules` change waits in Local Changes to be committed.
 
+## AI commit messages (FF-50)
+
+- **Off by default.** Settings → General has **AI endpoint** (an OpenAI-compatible base URL such as `http://localhost:11434/v1` for Ollama), **AI model**, and **AI key variable**: the name of an environment variable that holds a key. The key itself is never stored in settings. All three can be set per repository.
+- **Start:** **AI draft** next to Amend and Skip hooks in Local Changes, or the palette's "AI: Draft a commit message". With AI off, it says so and opens Settings.
+- **Preview first:** the diff pane shows exactly what Send sends, and to which host and model. The header is green ("stays on this machine") for localhost and amber ("leaves this machine") otherwise.
+  - The request holds the staged diff (cut at 24 KB) and the last 8 commit subjects for style.
+  - Secret-looking files (`.env`, keys, certificates, credentials) appear by name only, never their content; the footer lists them.
+- **Send** (or `Enter`) streams the reply in; **Stop** ends it.
+- **Use this message** (or `Enter`) puts the subject and body into the message box to edit; nothing is committed automatically. **Try again** builds a fresh request; `Esc` closes.
+- **Transport:** `http://` uses ffwd's own small client; `https://` uses the system `curl`, configured on stdin so the key is never on a command line. All of it runs on workers.
+
 ## Stashes (FF-38)
 
 - **Save:** `Ctrl+Shift+S` (or the palette's "Stash changes") opens a dialog with an optional message. Untracked files are included by default; `Tab` toggles that.

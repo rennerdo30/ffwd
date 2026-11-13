@@ -28,6 +28,10 @@ pub enum CHit {
     SkipHooks,
     StageLines,
     Commit,
+    /// AI draft: a commit message from the staged changes (FF-50).
+    Ai,
+    /// A button of the AI pane.
+    AiButton(ai_view::AiHit),
     /// The conflict resolver and the stopped-operation banner.
     Conflict(conflict_view::KHit),
 }
@@ -48,6 +52,8 @@ pub struct Changes {
     pub desc: TextArea,
     pub amend: bool,
     pub focus: CFocus,
+    /// The AI commit message pane, shown in place of the diff.
+    pub ai: Option<ai_view::AiPane>,
     /// An operation is running (its verb, for the commit button).
     pub busy: Option<&'static str>,
     pub hits: Vec<(Rect, CHit)>,
@@ -69,6 +75,7 @@ pub struct Changes {
 impl Default for Changes {
     fn default() -> Self {
         Changes {
+            ai: None,
             status: None,
             side: Side::Unstaged,
             sel: 0,
@@ -208,7 +215,7 @@ impl Ui {
 
     /// The left pane changed (lists, commit box); a key press repaints
     /// only this, never the diff (rule 2: damage stays small).
-    fn changes_dirty(&mut self) {
+    pub(super) fn changes_dirty(&mut self) {
         let a = self.changes_layout().left;
         self.damage.rects.push(a);
     }
@@ -560,6 +567,9 @@ impl Ui {
     /// Keys while the view is shown. Returns false for keys it leaves to
     /// the rest of the UI.
     pub(super) fn changes_key(&mut self, k: Key) -> bool {
+        if self.ai_key(k) {
+            return true;
+        }
         match k {
             Key::CtrlEnter => {
                 self.commit_changes();
@@ -723,6 +733,9 @@ impl Ui {
     pub(super) fn changes_wheel(&mut self, x: i32, y: i32, n: i64) {
         let l = self.changes_layout();
         if l.diff.contains(x, y) {
+            if self.r.changes.ai.is_some() {
+                return self.ai_wheel(n);
+            }
             if self.r.changes.conflict.is_some() {
                 return self.conflict_wheel(n);
             }
@@ -772,6 +785,8 @@ impl Ui {
             Some(CHit::Subject) => self.r.changes.focus = CFocus::Subject,
             Some(CHit::Desc) => self.r.changes.focus = CFocus::Desc,
             Some(CHit::SkipHooks) => self.r.changes.skip_hooks = !self.r.changes.skip_hooks,
+            Some(CHit::Ai) => self.ai_draft(),
+            Some(CHit::AiButton(h)) => self.ai_button(h),
             Some(CHit::StageLines) => self.stage_picked(),
             Some(CHit::Amend) => {
                 let on = !self.r.changes.amend;
@@ -1060,7 +1075,25 @@ impl Ui {
         let skip = self.r.changes.skip_hooks;
         let hb = self.checkbox(cv, ab.right() + self.px(4.0), by, "Skip hooks", skip, hot);
         hits.push((hb, CHit::SkipHooks));
-        let ab = hb;
+        // AI draft: a message from the staged changes.
+        let hot = self.change_hot(hits.len());
+        let label = "AI draft";
+        let aw = self.te.measure(semi, self.pf(12.0), label) + self.pf(20.0);
+        let air = Rect::new(hb.right() + self.px(6.0), by, aw as i32, self.px(30.0));
+        let (bg, border) = if hot { (CONTROL_HOVER, ACCENT_BORDER) } else { (BG_BAR, BORDER) };
+        cv.round_border(air, self.pf(7.0), border, bg);
+        self.te.draw(
+            cv,
+            semi,
+            self.pf(12.0),
+            air.x as f32 + self.pf(10.0),
+            (air.y as f32 + self.pf(20.0)).round(),
+            label,
+            ACCENT_FG,
+            aw,
+        );
+        hits.push((air, CHit::Ai));
+        let ab = air;
         let staged = self.side_list(Side::Staged).len();
         let label = match self.r.changes.busy {
             Some(v) => format!("{v}…"),
@@ -1152,6 +1185,9 @@ impl Ui {
     }
 
     fn paint_changes_diff(&mut self, cv: &mut Canvas, r: Rect, hits: &mut Vec<(Rect, CHit)>) {
+        if self.r.changes.ai.is_some() {
+            return self.paint_ai(cv, r, hits);
+        }
         if self.selected_entry().is_some_and(|e| e.conflicted) {
             return self.paint_conflict(cv, r, hits);
         }

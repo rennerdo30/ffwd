@@ -65,6 +65,8 @@ pub struct Args {
     pub prompt: bool,
     /// Opens the stash dialog (Ctrl+Shift+S).
     pub stash_dialog: bool,
+    /// Shows the AI commit message preview (a dummy local endpoint; nothing is sent).
+    pub ai_preview: bool,
     /// Runs two harmless failing operations, then shows the activity log.
     pub activity: bool,
     /// Opens the interactive rebase plan from this history row (read only).
@@ -102,6 +104,7 @@ fn parse_args() -> Result<Args, String> {
         menu: false,
         prompt: false,
         stash_dialog: false,
+        ai_preview: false,
         activity: false,
         rebase_from: None,
         find: None,
@@ -146,6 +149,7 @@ fn parse_args() -> Result<Args, String> {
             "--menu" => a.menu = true,
             "--prompt" => a.prompt = true,
             "--stash-dialog" => a.stash_dialog = true,
+            "--ai-preview" => a.ai_preview = true,
             "--activity" => a.activity = true,
             "--rebase-from" => a.rebase_from = Some(val("--rebase-from")?.parse().map_err(|_| "bad row")?),
             "--find" => a.find = Some(val("--find")?),
