@@ -180,6 +180,8 @@ pub enum RefOp {
     RemoteTest(String),
     /// A fetch, pull or push chosen in a dialog (the UI starts it itself).
     Sync(ffwd_core::ops::Op),
+    /// Resolve these conflicted files with one side (true: ours).
+    TakeSideAll(Vec<String>, bool),
     /// remote, tag
     PushTag(String, String),
     DeleteRemoteTag(String, String),
@@ -231,6 +233,8 @@ impl RefOp {
             RefOp::RemoteFetch(n) => format!("Fetch {n}"),
             RefOp::RemoteTest(n) => format!("Test {n}"),
             RefOp::Sync(op) => op.name().to_string(),
+            RefOp::TakeSideAll(p, true) => format!("Take ours for {} files", p.len()),
+            RefOp::TakeSideAll(p, false) => format!("Take theirs for {} files", p.len()),
             RefOp::PushTag(r, t) => format!("Push tag {t} to {r}"),
             RefOp::DeleteRemoteTag(r, t) => format!("Delete tag {t} on {r}"),
             RefOp::PushBranch(r, b) => format!("Push {b} to {r}"),
@@ -273,6 +277,7 @@ impl RefOp {
             RefOp::RemoteFetch(_) => "Fetching",
             RefOp::RemoteTest(_) => "Testing the connection",
             RefOp::Sync(op) => op.verb(),
+            RefOp::TakeSideAll(..) => "Resolving",
             RefOp::PushTag(..) | RefOp::PushBranch(..) => "Pushing",
             RefOp::DeleteRemoteTag(..) | RefOp::DeleteRemoteBranch(..) => "Deleting on the remote",
             RefOp::ApplyPatch(..) => "Applying the patch",
@@ -316,6 +321,9 @@ pub fn refop(git: Git, op: RefOp, sink: &Sink) {
                 ffwd_core::remotes::test(&git, n, std::time::Duration::from_secs(30), Default::default())
             }
             RefOp::Sync(_) => Err(r::OpError::Failed("internal: a sync runs through start_op".into())),
+            RefOp::TakeSideAll(paths, ours) => {
+                ffwd_core::conflict::take_side_all(&git, paths, *ours).map_err(r::OpError::Failed)
+            }
             RefOp::PushTag(rm, t) => r::push_tag(&git, rm, t),
             RefOp::DeleteRemoteTag(rm, t) => r::delete_remote_tag(&git, rm, t),
             RefOp::PushBranch(rm, b) => r::push_branch(&git, rm, b),

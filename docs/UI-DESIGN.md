@@ -219,6 +219,7 @@ The capture above is the real PoC UI. `ffwd --snapshot` rendered it offscreen fr
 - **Whole file:** **Take ours** or **Take theirs**, and **Save and mark resolved** once every conflict has a choice.
 - **Keys:** `o`, `t`, `b`, `B` choose for the current conflict and move to the next unresolved one; `↑`/`↓` move between conflicts; `Enter` saves.
 - **Safety:** Space on a conflicted file never stages it, because that would mark the markers themselves as the resolution. Git never opens an editor (`GIT_EDITOR=true`), so Continue cannot hang.
+- **All files at once:** with two or more conflicted files the banner adds **All ours…** and **All theirs…**. They ask first, naming the files, then take that side for each file and mark them resolved; Abort still gets everything back.
 
 ## Diff viewer (FF-41)
 

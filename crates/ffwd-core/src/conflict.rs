@@ -170,6 +170,16 @@ pub fn take_side(git: &Git, path: &str, ours: bool) -> Result<String, String> {
     Ok(format!("Took {} for {path}", if ours { "ours" } else { "theirs" }))
 }
 
+/// Takes one side for every path in `paths` (FF-42). Stops at the first
+/// failure and says how far it got.
+pub fn take_side_all(git: &Git, paths: &[String], ours: bool) -> Result<String, String> {
+    for (i, p) in paths.iter().enumerate() {
+        take_side(git, p, ours).map_err(|e| format!("{e} (after {i} of {} files)", paths.len()))?;
+    }
+    let side = if ours { "ours" } else { "theirs" };
+    Ok(format!("Took {side} for {} file{}", paths.len(), if paths.len() == 1 { "" } else { "s" }))
+}
+
 /// Continues the stopped operation (`kind` from `refops::in_progress`).
 pub fn continue_op(git: &Git, kind: &str) -> Result<String, String> {
     let args: &[&str] = match kind {

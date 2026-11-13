@@ -5743,6 +5743,81 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Conflicts in several files (FF-42): "All theirs…" asks first, then
+    /// takes theirs in every conflicted file and marks them resolved.
+    #[test]
+    fn take_theirs_for_all_conflicted_files() {
+        use std::sync::mpsc;
+        let mut te = TextEngine::new();
+        let Some(f) = load_fonts(&mut te) else { return };
+        let dir = std::env::temp_dir().join(format!("ffwd-ui-takeall-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = Git { root: dir.clone() };
+        for a in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.name", "ffwd test"],
+            &["config", "user.email", "test@example.invalid"],
+            &["config", "commit.gpgsign", "false"],
+            &["config", "core.autocrlf", "false"],
+        ] {
+            g.output(a).unwrap();
+        }
+        let write = |name: &str, text: &str| std::fs::write(dir.join(name), text).unwrap();
+        write("a.txt", "base\n");
+        write("b.txt", "base\n");
+        g.output(&["add", "."]).unwrap();
+        g.output(&["commit", "-q", "-m", "base"]).unwrap();
+        g.output(&["switch", "-q", "-c", "other"]).unwrap();
+        write("a.txt", "theirs a\n");
+        write("b.txt", "theirs b\n");
+        g.output(&["commit", "-q", "-am", "theirs"]).unwrap();
+        g.output(&["switch", "-q", "main"]).unwrap();
+        write("a.txt", "ours a\n");
+        write("b.txt", "ours b\n");
+        g.output(&["commit", "-q", "-am", "ours"]).unwrap();
+        assert!(g.output(&["merge", "-q", "other"]).is_err(), "the merge stops with conflicts");
+        let (tx, rx) = mpsc::channel::<(u64, Msg)>();
+        let tx = Arc::new(std::sync::Mutex::new(tx));
+        let sinks: SinkFactory = Arc::new(move |id| {
+            let tx = tx.clone();
+            Arc::new(move |m| {
+                if let Ok(t) = tx.lock() {
+                    let _ = t.send((id, m));
+                }
+            })
+        });
+        crate::work::start(dir.clone(), &sinks(1));
+        let empty = crate::settings::Settings::parse("");
+        let mut ui = Ui::new(te, f, empty.clone(), empty, Some((1, dir.clone())), sinks, 1280, 800, 1.0);
+        let pump = |ui: &mut Ui, what: &str, done: &dyn Fn(&Ui) -> bool| {
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while !done(ui) {
+                let left = until.saturating_duration_since(std::time::Instant::now());
+                assert!(!left.is_zero(), "timed out waiting for {what}; notice: {:?}", ui.notice);
+                if let Ok((id, m)) = rx.recv_timeout(left) {
+                    ui.on_tab_msg(id, m);
+                }
+            }
+        };
+        let conflicted =
+            |u: &Ui| u.r.changes.status.as_ref().map_or(0, |s| s.entries.iter().filter(|e| e.conflicted).count());
+        pump(&mut ui, "history", &|u| u.r.log_done);
+        ui.enter_changes();
+        pump(&mut ui, "the conflicts", &|u| conflicted(u) == 2 && u.r.changes.in_progress.is_some());
+        ui.ask_take_all(false);
+        let title = match &ui.dialog.as_ref().unwrap().kind {
+            DialogKind::Ask(a) => a.title.clone(),
+            _ => panic!("it asks first"),
+        };
+        assert!(title.contains("all 2 conflicted files"), "{title}");
+        ui.key(Key::Enter);
+        pump(&mut ui, "the resolution", &|u| u.dialog.is_none() && u.r.changes.status.is_some() && conflicted(u) == 0);
+        assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "theirs a\n");
+        assert_eq!(std::fs::read_to_string(dir.join("b.txt")).unwrap(), "theirs b\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// The find bar from the keyboard: message search selects the match,
     /// Tab changes the field, content waits for Enter, Esc closes.
     #[test]

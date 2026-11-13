@@ -170,7 +170,7 @@
 | Alternative three-column layout | M2 | |
 | Branch names instead of ours/theirs | **Built** | From the conflict markers |
 | Conflict marks on the scrollbar; navigation links | M2 | |
-| Resolve several files at once (ours or theirs) | Partial | Take ours or theirs per file is built; several at once comes later |
+| Resolve several files at once (ours or theirs) | **Built** | “All ours…” / “All theirs…” in the conflict banner (with two or more conflicts), asking first and naming the files; per file in the resolver |
 | Merge images, LFS files and submodules | M2 | |
 | External merge tools (many presets, several configured); UnityYAMLMerge | M1 | |
 | Diff of conflicted files resolved in an external editor | M2 | |

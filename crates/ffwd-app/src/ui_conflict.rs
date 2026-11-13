@@ -38,6 +38,9 @@ pub enum KHit {
     Save,
     Continue,
     Abort,
+    /// Every conflicted file at once.
+    AllOurs,
+    AllTheirs,
 }
 
 const CONTEXT: usize = 3;
@@ -219,7 +222,41 @@ impl Ui {
                 }
             }
             KHit::Abort => self.ask_abort(),
+            KHit::AllOurs => self.ask_take_all(true),
+            KHit::AllTheirs => self.ask_take_all(false),
         }
+    }
+
+    /// Every conflicted file with one side: ask first, naming the files
+    /// (the other side's changes in them are dropped; rule 8).
+    pub(super) fn ask_take_all(&mut self, ours: bool) {
+        let paths: Vec<String> = self
+            .r
+            .changes
+            .status
+            .as_ref()
+            .map(|s| s.entries.iter().filter(|e| e.conflicted).map(|e| e.path.to_string()).collect())
+            .unwrap_or_default();
+        if paths.is_empty() {
+            return self.set_notice("No file has conflicts.".into());
+        }
+        let side = if ours { "ours (HEAD)" } else { "theirs (the incoming side)" };
+        let other = if ours { "theirs" } else { "ours" };
+        let n = paths.len();
+        let list: Vec<&str> = paths.iter().take(6).map(String::as_str).collect();
+        let more = if n > 6 { format!(" and {} more", n - 6) } else { String::new() };
+        self.open_dialog(menu::DialogKind::Ask(menu::Ask {
+            title: format!("Take {side} for all {n} conflicted file{}?", if n == 1 { "" } else { "s" }),
+            text: format!(
+                "{}{more}: each file becomes {side} as a whole; {other} changes in them are dropped and the files are marked resolved. Abort the operation to get everything back.",
+                list.join(", ")
+            ),
+            choices: vec![(
+                format!("Take {} for all", if ours { "ours" } else { "theirs" }),
+                crate::work::RefOp::TakeSideAll(paths, ours),
+                true,
+            )],
+        }));
     }
 
     /// Abort throws away the resolutions so far: ask first (rule 8).
@@ -253,7 +290,17 @@ impl Ui {
         };
         self.te.draw(cv, semi, self.pf(12.5), r.x as f32 + self.pf(14.0), base, &text, TAG_FG, r.w as f32 * 0.55);
         let mut x = r.right() - self.px(10.0);
-        for (label, hit, enabled) in [("Abort…", KHit::Abort, true), ("Continue", KHit::Continue, conflicts == 0)] {
+        let buttons = [
+            ("Abort…", KHit::Abort, true),
+            ("All theirs…", KHit::AllTheirs, conflicts > 1),
+            ("All ours…", KHit::AllOurs, conflicts > 1),
+            ("Continue", KHit::Continue, conflicts == 0),
+        ];
+        for (label, hit, enabled) in buttons {
+            // The all-files buttons only show with several conflicts.
+            if matches!(hit, KHit::AllOurs | KHit::AllTheirs) && !enabled {
+                continue;
+            }
             let w = (self.te.measure(semi, self.pf(11.5), label) + self.pf(22.0)) as i32;
             let b = Rect::new(x - w, r.y + self.px(5.0), w, r.h - self.px(10.0));
             let hot = self.is_hot(Hot::Change(hits.len()));
