@@ -79,7 +79,7 @@
 | Checkout a remote branch: offer to fast-forward, merge, rebase or reset | Partial | It creates or reuses the local tracking branch |
 | Branch folders, autocomplete, move branches to a folder | Partial | Folders are shown |
 | Space becomes `-` or `_` in branch names; name validation | M1 | |
-| Sort references (alphabetical, recently used) | M2 | |
+| Sort references (alphabetical, recently used) | **Built** | Branches by name or by most recent commit (Branches header menu; setting `sidebar.branch_order`) |
 | Upstream state icons; warning for an invalid upstream | M1 | |
 | Change the tracking branch; track a remote branch (stash and re-apply) | M1 | |
 | Fast-forward a branch without checking it out; several at once | M2 | |

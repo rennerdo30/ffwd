@@ -22,6 +22,8 @@ pub struct Ref {
     pub ahead: u32,
     pub behind: u32,
     pub is_head: bool,
+    /// The target commit's committer time (Unix seconds; 0 when unknown).
+    pub time: i64,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -52,7 +54,7 @@ impl StatusSummary {
 }
 
 pub fn load(git: &Git) -> Result<Refs, GitError> {
-    let fmt = "--format=%(refname)%1f%(objectname)%1f%(*objectname)%1f%(HEAD)%1f%(upstream:short)%1f%(upstream:track,nobracket)";
+    let fmt = "--format=%(refname)%1f%(objectname)%1f%(*objectname)%1f%(HEAD)%1f%(upstream:short)%1f%(upstream:track,nobracket)%1f%(committerdate:unix)%1f%(*committerdate:unix)";
     let out = git.output(&["for-each-ref", fmt, "refs/heads", "refs/remotes", "refs/tags"])?;
     let mut refs = Refs::default();
     for line in out.split(|&b| b == b'\n').filter(|l| !l.is_empty()) {
@@ -76,6 +78,9 @@ pub fn load(git: &Git) -> Result<Refs, GitError> {
             continue;
         };
         let is_head = f[3] == b"*";
+        // Annotated tags carry the commit's date in the dereferenced field.
+        let num = |b: Option<&&[u8]>| b.and_then(|b| std::str::from_utf8(b).ok()?.trim().parse::<i64>().ok());
+        let time = num(f.get(7)).or_else(|| num(f.get(6))).unwrap_or(0);
         let (ahead, behind) = parse_track(&String::from_utf8_lossy(f[5]));
         if is_head {
             refs.head_branch = Some(name.into());
@@ -88,6 +93,7 @@ pub fn load(git: &Git) -> Result<Refs, GitError> {
             ahead,
             behind,
             is_head,
+            time,
         });
     }
     if let Ok(h) = git.output(&["rev-parse", "--verify", "-q", "HEAD"]) {

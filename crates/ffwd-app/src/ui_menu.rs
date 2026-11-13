@@ -26,6 +26,8 @@ pub enum MenuAct {
     OpenTerminal(PathBuf),
     /// Open a web page (the hosting site's page of a commit).
     OpenUrl(String),
+    /// Sort the sidebar's branches by most recent commit (else by name).
+    BranchOrder(bool),
     /// Copy a patch (commit, stash, working changes) to the clipboard.
     CopyPatch(PatchSrc),
     /// `gh pr create --web` for the current branch.
@@ -350,6 +352,11 @@ impl Ui {
             }
         } else if key == "h:prs" {
             v.push(item("Create pull request on GitHub", MenuAct::CreatePr));
+        } else if key == "h:branches" {
+            let recent = self.settings.get("sidebar.branch_order") == Some("recent");
+            let mark = |on: bool, t: &str| if on { format!("✓ {t}") } else { t.to_string() };
+            v.push(item(mark(!recent, "Sort by name"), MenuAct::BranchOrder(false)));
+            v.push(item(mark(recent, "Sort by most recent commit"), MenuAct::BranchOrder(true)));
         } else if key == "h:remotes" {
             v.push(item("Add remote…", MenuAct::Name(NameAct::AddRemoteUrl)));
             v.push(item("Fetch all remotes", MenuAct::Run(RefOp::Sync(ffwd_core::ops::Op::Fetch))));
@@ -510,6 +517,11 @@ impl Ui {
             Some(MenuAct::OpenFolder(p)) => crate::platform::open_folder(p),
             Some(MenuAct::OpenTerminal(p)) => crate::platform::open_terminal(p),
             Some(MenuAct::OpenUrl(u)) => crate::platform::open_url(u),
+            Some(MenuAct::BranchOrder(recent)) => {
+                self.settings.set_string("sidebar.branch_order", if recent { "recent" } else { "name" });
+                self.rebuild_side();
+                self.damage.rects.push(self.lay.side);
+            }
             Some(MenuAct::CopyPatch(src)) => self.make_patch(src, None),
             Some(MenuAct::CreatePr) => self.create_pr(),
             Some(MenuAct::ShowCommit(sha)) => {

@@ -62,6 +62,7 @@ impl SideItem {
 
 /// Adds `refs` as a tree: names with `/` group into folders (folders
 /// first, then branches, each sorted) `t3/…` folders.
+#[allow(clippy::too_many_arguments)]
 fn tree(
     out: &mut Vec<SideItem>,
     items: Vec<(String, &Ref)>,
@@ -70,6 +71,7 @@ fn tree(
     kind: SideKind,
     collapsed: &HashSet<String>,
     filtering: bool,
+    recent: bool,
 ) {
     let mut folders: BTreeMap<String, Vec<(String, &Ref)>> = BTreeMap::new();
     let mut leaves: Vec<(String, &Ref)> = Vec::new();
@@ -81,6 +83,12 @@ fn tree(
             _ => leaves.push((name, r)),
         }
     }
+    // By name, or (recent) folders by their newest branch.
+    let mut folders: Vec<(String, Vec<(String, &Ref)>)> = folders.into_iter().collect();
+    if recent {
+        let newest = |c: &Vec<(String, &Ref)>| c.iter().map(|x| x.1.time).max().unwrap_or(0);
+        folders.sort_by(|a, b| newest(&b.1).cmp(&newest(&a.1)).then_with(|| a.0.cmp(&b.0)));
+    }
     for (seg, children) in folders {
         let key = format!("{prefix}{seg}/");
         let open = filtering || !collapsed.contains(&key);
@@ -89,10 +97,14 @@ fn tree(
         f.expander = Some(open);
         out.push(f);
         if open {
-            tree(out, children, depth + 1, &key, kind, collapsed, filtering);
+            tree(out, children, depth + 1, &key, kind, collapsed, filtering, recent);
         }
     }
-    leaves.sort_by_key(|a| a.0.to_lowercase());
+    if recent {
+        leaves.sort_by(|a, b| b.1.time.cmp(&a.1.time).then_with(|| a.0.to_lowercase().cmp(&b.0.to_lowercase())));
+    } else {
+        leaves.sort_by_key(|a| a.0.to_lowercase());
+    }
     for (name, r) in leaves {
         let mut it = SideItem::new(depth, kind, &name, format!("{prefix}{name}"));
         it.target = Some(r.target);
@@ -167,6 +179,7 @@ impl Ui {
             v.push(SideItem::new(0, SideKind::Reflog, "Reflog", "reflog".into()));
         }
         let refs = &self.r.refs.refs;
+        let recent = self.settings.get("sidebar.branch_order") == Some("recent");
         let locals: Vec<(String, &Ref)> = refs
             .iter()
             .filter(|r| r.kind == RefKind::Local && matches(&r.name))
@@ -175,7 +188,7 @@ impl Ui {
         if !locals.is_empty() || !filtering {
             let n = fmt::num(locals.len());
             if header(&mut v, "Branches", "h:branches", n) {
-                tree(&mut v, locals, 0, "b:", SideKind::Branch, collapsed, filtering);
+                tree(&mut v, locals, 0, "b:", SideKind::Branch, collapsed, filtering, recent);
             }
         }
         let remotes: Vec<&Ref> = refs.iter().filter(|r| r.kind == RefKind::Remote && matches(&r.name)).collect();
@@ -201,7 +214,7 @@ impl Ui {
                 it.expander = Some(open(&key));
                 v.push(it);
                 if open(&key) {
-                    tree(&mut v, rs, 1, &key, SideKind::RemoteBranch, collapsed, filtering);
+                    tree(&mut v, rs, 1, &key, SideKind::RemoteBranch, collapsed, filtering, recent);
                 }
             }
         }
@@ -828,6 +841,7 @@ mod tests {
             ahead: 0,
             behind: 0,
             is_head: name == "main",
+            time: 0,
         }
     }
 
@@ -837,7 +851,7 @@ mod tests {
         let items: Vec<(String, &Ref)> = refs.iter().map(|x| (x.name.to_string(), x)).collect();
         let mut out = Vec::new();
         let mut collapsed = HashSet::new();
-        tree(&mut out, items.clone(), 0, "b:", SideKind::Branch, &collapsed, false);
+        tree(&mut out, items.clone(), 0, "b:", SideKind::Branch, &collapsed, false, false);
         let labels: Vec<(u8, &str)> = out.iter().map(|i| (i.depth, i.label.as_str())).collect();
         assert_eq!(
             labels,
@@ -848,10 +862,24 @@ mod tests {
         // A collapsed folder hides its branches, but filtering opens it.
         collapsed.insert("b:t3/".to_string());
         let mut out = Vec::new();
-        tree(&mut out, items.clone(), 0, "b:", SideKind::Branch, &collapsed, false);
+        tree(&mut out, items.clone(), 0, "b:", SideKind::Branch, &collapsed, false, false);
         assert!(!out.iter().any(|i| i.label == "a"));
         let mut out = Vec::new();
-        tree(&mut out, items, 0, "b:", SideKind::Branch, &collapsed, true);
+        tree(&mut out, items, 0, "b:", SideKind::Branch, &collapsed, true, false);
         assert!(out.iter().any(|i| i.label == "a"));
+    }
+
+    #[test]
+    fn branches_sort_by_most_recent_commit() {
+        let mut refs = [r("main"), r("t3/a"), r("t3/b"), r("old")];
+        for (x, t) in refs.iter_mut().zip([100, 300, 50, 10]) {
+            x.time = t;
+        }
+        let items: Vec<(String, &Ref)> = refs.iter().map(|x| (x.name.to_string(), x)).collect();
+        let mut out = Vec::new();
+        tree(&mut out, items, 0, "b:", SideKind::Branch, &HashSet::new(), false, true);
+        let labels: Vec<&str> = out.iter().map(|i| i.label.as_str()).collect();
+        // The t3 folder holds the newest branch; inside it, newest first.
+        assert_eq!(labels, ["t3", "a", "b", "main", "old"]);
     }
 }

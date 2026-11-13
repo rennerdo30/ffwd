@@ -78,6 +78,10 @@ The capture above is the real PoC UI. `ffwd --snapshot` rendered it offscreen fr
   - a tab shows an amber ring while its repository has uncommitted changes;
   - every Git call runs on a worker.
 
+## Branch order (FF-36)
+
+- The Branches header's menu sorts local and remote branches **by name** or **by most recent commit**: newest first, with folders ordered by their newest branch. The choice is saved as `sidebar.branch_order` (`name` or `recent`).
+
 ## Remotes and sync (FF-39)
 
 - **Remote menu** (right click on a remote in the sidebar): Fetch, Test connection, Edit URL…, Rename…, Remove…, Add remote…, Copy URL.
