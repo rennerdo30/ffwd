@@ -453,7 +453,7 @@ dependencies = [
 
 [[package]]
 name = "ffwd"
-version = "0.1.0-poc"
+version = "0.2.0-beta.1"
 dependencies = [
  "ffwd-agent",
  "ffwd-core",
@@ -468,25 +468,25 @@ dependencies = [
 
 [[package]]
 name = "ffwd-agent"
-version = "0.1.0-poc"
+version = "0.2.0-beta.1"
 dependencies = [
  "ffwd-core",
 ]
 
 [[package]]
 name = "ffwd-core"
-version = "0.1.0-poc"
+version = "0.2.0-beta.1"
 
 [[package]]
 name = "ffwd-render"
-version = "0.1.0-poc"
+version = "0.2.0-beta.1"
 dependencies = [
  "fontdue",
 ]
 
 [[package]]
 name = "ffwd-update"
-version = "0.1.0-poc"
+version = "0.2.0-beta.1"
 dependencies = [
  "serde_json",
  "sha2",
