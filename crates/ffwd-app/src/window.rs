@@ -93,8 +93,16 @@ pub fn run(args: &Args, t0: Instant) -> i32 {
     // Git work for the repository on the command line starts before the
     // window exists: first frame first, data behind it. Saved tabs load
     // when they are activated.
-    if let Some(repo) = &args.repo {
-        work::start(repo.clone(), &sinks(1));
+    // The git binary is chosen first (a setting may name one), on the
+    // same small thread, so the UI thread reads no files.
+    {
+        let (repo, sink) = (args.repo.clone(), sinks(1));
+        std::thread::spawn(move || {
+            crate::settings::Settings::choose_git();
+            if let Some(repo) = repo {
+                work::start(repo, &sink);
+            }
+        });
     }
     if args.smoke {
         let p = Mutex::new(event_loop.create_proxy());
@@ -111,6 +119,7 @@ pub fn run(args: &Args, t0: Instant) -> i32 {
         // Settings and session state are read here too, so file I/O stays
         // off the UI thread.
         let settings = crate::settings::Settings::load();
+        crate::settings::Settings::choose_git();
         // Agent smoke runs neither read nor write the user's session.
         let state = if smoke { crate::settings::Settings::parse("") } else { crate::settings::Settings::load_state() };
         let f = load_fonts(&mut te).map(|fonts| Loaded { te, fonts, settings, state });

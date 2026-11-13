@@ -147,6 +147,21 @@ impl Settings {
         s
     }
 
+    /// Chooses the git binary once: `FFWD_GIT`, else the `git.path`
+    /// setting, else `git` from `PATH` (FF-47). Call it off the UI thread.
+    pub fn choose_git() {
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| {
+            let p = std::env::var("FFWD_GIT")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+                .or_else(|| Settings::load().get("git.path").map(str::to_string));
+            if let Some(p) = p {
+                ffwd_core::git::set_program(&p);
+            }
+        });
+    }
+
     pub fn get(&self, key: &str) -> Option<&str> {
         self.values.get(key).map(|s| s.as_str())
     }

@@ -153,7 +153,7 @@
 | Token and inline highlights | **Built** | Word highlights within paired lines |
 | Ignore whitespace, show the entire file, context size dropdown | **Built** | 3, 10 or the whole file |
 | Show whitespace characters, `-`/`+` marks for colour blindness, word wrap, tab width, font size | M1 | |
-| Minimap or change marks on the scrollbar; next and previous change (`Ctrl+Up/Down`) | M1 | The selection mark is built |
+| Minimap or change marks on the scrollbar; next and previous change (`Ctrl+Up/Down`) | Partial | Next and previous change (`n`, `p`) and the selection mark are built; change marks on the scrollbar come later |
 | Reveal the line in an editor | M1 | |
 | Copy as patch | M1 | |
 | Remember the scroll position per file | M1 | |
@@ -217,18 +217,18 @@
 
 | Feature | ffwd | Notes |
 |---|---|---|
-| Save as patch: working changes, a commit, a range or several commits, a stash | M2 | |
-| Apply a patch, also from the clipboard (`Ctrl+V`), with a conflict check | M2 | |
+| Save as patch: working changes, a commit, a range or several commits, a stash | Partial | A commit (copy or save), a stash, the staged or unstaged changes; ranges come later |
+| Apply a patch, also from the clipboard (`Ctrl+V`), with a conflict check | **Built** | From the clipboard or a file; checked first, then asked; a patch that does not fit can be applied 3-way with conflict markers |
 
 ## 15. Customisation and tools (FF-47)
 
 | Feature | ffwd | Notes |
 |---|---|---|
 | Custom commands: shell, bash, URL; UI dialogs with text fields, branch pickers, file pickers and checkboxes; shared with the team; per OS; for branches, files and submodules | M2 | ffwd agents already have scripts (FF-23) |
-| Open in an editor, IDE or terminal (long preset list); custom shell and terminal | M1 | |
-| External diff and merge tools, several, with presets | M1 | |
+| Open in an editor, IDE or terminal (long preset list); custom shell and terminal | Partial | File menus: open in the editor (`tools.editor`) or the default app, show in the folder; tab menu: open a terminal. Presets come later |
+| External diff and merge tools, several, with presets | Partial | `git difftool` / `git mergetool` with the tool from the user's Git config (`diff.guitool`, `diff.tool`, `merge.tool`); presets come later |
 | Issue-tracker link rules (Jira, Redmine, GitHub issues) | M2 | |
-| Choose the Git binary (preferences or environment variable); bundled Git | M1 | ffwd uses the system `git` |
+| Choose the Git binary (preferences or environment variable); bundled Git | Partial | Setting `git.path` or `FFWD_GIT`; no bundled Git |
 | SSH key manager, SSH configuration helper, several keys; edit Git credentials | M2 | |
 | Preferences: UI zoom (`Ctrl+=`/`-`), light and dark themes (or follow the system), system accent colour, fonts | Partial | ffwd has a dark theme and settings |
 | Update channels (stable, develop) | **Built** | Stable and beta |

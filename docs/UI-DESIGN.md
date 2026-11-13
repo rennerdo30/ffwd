@@ -150,6 +150,20 @@ The capture above is the real PoC UI. `ffwd --snapshot` rendered it offscreen fr
 - **Current branch only:** click the list title ("All commits · n") to show only HEAD's history ("Current branch · n", amber), and click again for all. The palette has the same toggle; each tab remembers its own.
 - **Web link:** the commit menu has "Open on <host>" and "Copy web link" when the remote is on GitHub, GitLab, Bitbucket, Azure DevOps or a Gitea-style host.
 
+## Patches (FF-46)
+
+- **Make:** the commit menu has "Copy as patch" and "Save as patch…" (`git format-patch`, with the message). The suggested file is `<sha>-<subject>.patch` in Downloads. The stash menu has "Copy as patch". The palette has "Copy unstaged changes as patch" and "Copy staged changes as patch".
+- **Apply:** the palette's "Apply patch from the clipboard" or "Apply patch from a file…". ffwd checks the patch first (`git apply --check`), then asks, naming the files it changes. Only the working tree changes; nothing is staged or committed.
+- **When it does not fit:** the dialog says why and offers "Apply with conflict markers" (`git apply --3way`), and the conflicts then show in Local Changes.
+- Patches up to 32 MB; reading, writing and checking run on workers.
+
+## Files and external tools (FF-47)
+
+- **File menus** (right click a file in Local Changes, the Files view or a commit's file list): Open in editor, Open with the default app, Show in Explorer/Finder, Open in the diff tool (for a conflicted file: Resolve in the merge tool), Copy path, Copy full path.
+- **Editor:** Settings → General → **Editor** (`tools.editor`), a command such as `code` or a full path, with quotes for spaces. Empty uses the default app.
+- **Diff and merge tools:** `git difftool` / `git mergetool` with the tool your Git config names (`diff.guitool`, `diff.tool`, `merge.tool`). Without one, ffwd says how to set it instead of starting a terminal tool. After the merge tool closes, Local Changes reloads.
+- **Git program:** Settings → General → **Git program** (`git.path`) or the `FFWD_GIT` variable, chosen once at start, off the UI thread.
+
 ## Stashes (FF-38)
 
 - **Save:** `Ctrl+Shift+S` (or the palette's "Stash changes") opens a dialog with an optional message. Untracked files are included by default; `Tab` toggles that.
@@ -200,6 +214,7 @@ The capture above is the real PoC UI. `ffwd --snapshot` rendered it offscreen fr
 - **Word highlights:** in a changed line paired with the line it replaces, the changed part gets a stronger background. A line that changed for the most part gets none.
 - **Side by side:** each deletion sits next to the addition that replaces it. Lines with no partner leave the other side empty.
 - **Speed:** only visible lines are tokenized; the pairing and comment state are computed once per diff.
+- **Next and previous change:** `n` and `p` in the diff jump between blocks of changes (unified or side by side), with three lines of context above; past the last one the status bar says so.
 
 ## Find bar (FF-34)
 

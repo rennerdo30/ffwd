@@ -14,6 +14,7 @@ pub mod git;
 pub mod graph;
 pub mod log;
 pub mod ops;
+pub mod patches;
 pub mod rebase;
 pub mod refops;
 pub mod refs;
@@ -21,6 +22,7 @@ pub mod remotes;
 pub mod search;
 pub mod stash;
 pub mod submodules;
+pub mod tools;
 pub mod web;
 
 pub use git::{Git, GitError};

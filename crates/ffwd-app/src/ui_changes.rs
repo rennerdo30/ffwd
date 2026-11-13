@@ -192,7 +192,7 @@ impl Ui {
         self.r.changes.status.as_ref().map_or_else(Vec::new, |s| s.side(side).into_iter().cloned().collect())
     }
 
-    fn selected_entry(&self) -> Option<Entry> {
+    pub(super) fn selected_entry(&self) -> Option<Entry> {
         self.side_list(self.r.changes.side).get(self.r.changes.sel).cloned()
     }
 
@@ -541,7 +541,7 @@ impl Ui {
         self.changes_dirty();
     }
 
-    fn select_change(&mut self, side: Side, i: usize) {
+    pub(super) fn select_change(&mut self, side: Side, i: usize) {
         let n = self.side_list(side).len();
         if n == 0 {
             return;

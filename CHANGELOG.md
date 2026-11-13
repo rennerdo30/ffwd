@@ -18,6 +18,9 @@
 - **Interactive rebase** (FF-37): a plan view to pick, reword, squash, fixup, drop and reorder commits (`Ctrl+Shift+R`); no editor ever opens, a backup ref keeps the old tip, and conflicts stop in Local Changes.
 - **History list** (FF-33): ↑/↓ marks for commits to push and to pull; the list title switches to the current branch only; "Open on <host>" for a commit.
 - **Fix:** a Local Changes diff could stay empty when history arrived at the same moment; its request now has its own place in the worker (FF-56).
+- **Patches** (FF-46): copy or save a commit (or a stash, or the working changes) as a patch; apply one from the clipboard or a file, checked first, with a 3-way fallback.
+- **File menus and external tools** (FF-47): right-click files to open them in your editor or the default app, show them in the folder, or open the external diff or merge tool from your Git config; choose the Git binary (`git.path`, `FFWD_GIT`).
+- **Diff:** `n` and `p` jump to the next and previous change (FF-41).
 - **AI commit messages** (FF-50): **AI draft** in Local Changes, against any OpenAI-compatible endpoint (local servers such as Ollama first). It shows exactly what will be sent and where before anything leaves, never sends secret-looking files, streams the reply, and only fills the message box. Off until an endpoint is set.
 - **Repositories and tabs** (FF-44): clone with progress and cancel, create a new repository, and a tab menu (close others, open in the file manager or a terminal, copy path).
 - **Submodules** (FF-45, FF-54):

@@ -225,3 +225,37 @@ pub fn open_url(url: String) {
         let _ = std::process::Command::new("xdg-open").arg(&url).spawn();
     });
 }
+
+/// Opens a file with its default app (as one argument, no shell parsing
+/// of the path).
+pub fn open_path(p: std::path::PathBuf) {
+    std::thread::spawn(move || {
+        #[cfg(windows)]
+        {
+            // explorer.exe opens a file with its associated app.
+            let _ = std::process::Command::new("explorer.exe").arg(&p).spawn();
+        }
+        #[cfg(target_os = "macos")]
+        let _ = std::process::Command::new("open").arg(&p).spawn();
+        #[cfg(not(any(windows, target_os = "macos")))]
+        let _ = std::process::Command::new("xdg-open").arg(&p).spawn();
+    });
+}
+
+/// Shows a file selected in the file manager (its folder elsewhere).
+pub fn show_file(p: std::path::PathBuf) {
+    std::thread::spawn(move || {
+        #[cfg(windows)]
+        {
+            let mut arg = std::ffi::OsString::from("/select,");
+            arg.push(p.as_os_str());
+            let _ = std::process::Command::new("explorer.exe").arg(arg).spawn();
+        }
+        #[cfg(target_os = "macos")]
+        let _ = std::process::Command::new("open").arg("-R").arg(&p).spawn();
+        #[cfg(not(any(windows, target_os = "macos")))]
+        if let Some(dir) = p.parent() {
+            let _ = std::process::Command::new("xdg-open").arg(dir).spawn();
+        }
+    });
+}

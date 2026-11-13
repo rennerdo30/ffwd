@@ -559,6 +559,15 @@ impl Ui {
         self.files_dirty();
     }
 
+    /// The repository-relative path of the file row at (x, y).
+    pub(super) fn files_path_at(&self, x: i32, y: i32) -> Option<String> {
+        let i = self.files_hit_at(x, y)?;
+        let Some((_, FHit::Row(r))) = self.r.files.hits.get(i) else { return None };
+        let (id, _) = *self.r.files.rows.get(*r)?;
+        let t = self.r.files.tree.as_ref()?;
+        (!t.nodes[id as usize].dir).then(|| t.path(id))
+    }
+
     pub(super) fn files_hit_at(&self, x: i32, y: i32) -> Option<usize> {
         if !self.r.files_view {
             return None;

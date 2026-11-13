@@ -26,6 +26,23 @@ pub enum MenuAct {
     OpenTerminal(PathBuf),
     /// Open a web page (the hosting site's page of a commit).
     OpenUrl(String),
+    /// Copy a patch (commit, stash, working changes) to the clipboard.
+    CopyPatch(PatchSrc),
+    /// Files (FF-47): open in the editor (or the default app), show in
+    /// the folder, external diff and merge tools.
+    OpenFile(PathBuf, bool),
+    ShowFile(PathBuf),
+    DiffTool(String, ffwd_core::tools::DiffOf),
+    MergeTool(String),
+}
+
+/// What a patch is made from (FF-46).
+#[derive(Clone, Debug)]
+pub enum PatchSrc {
+    Commit(String),
+    Stash(String),
+    /// The staged (true) or unstaged changes.
+    Working(bool),
 }
 
 #[derive(Clone, Debug)]
@@ -88,6 +105,12 @@ pub enum NameAct {
     },
     /// A new repository in this folder.
     InitDir,
+    /// Save a patch to this file.
+    SavePatch {
+        src: PatchSrc,
+    },
+    /// Apply the patch in this file.
+    ApplyPatchFile,
 }
 
 /// A choice dialog: a title, what will happen, and buttons.
@@ -184,6 +207,8 @@ impl Ui {
             v.push(item(format!("Open on {host}"), MenuAct::OpenUrl(url.clone())));
             v.push(item("Copy web link", MenuAct::Copy(url)));
         }
+        v.push(item("Copy as patch", MenuAct::CopyPatch(PatchSrc::Commit(sha.clone()))));
+        v.push(item("Save as patch…", MenuAct::Name(NameAct::SavePatch { src: PatchSrc::Commit(sha.clone()) })));
         v.push(item("Copy SHA", MenuAct::Copy(sha.clone())));
         v.push(item("Copy subject", MenuAct::Copy(c.subject.to_string())));
         v
@@ -299,6 +324,7 @@ impl Ui {
                 })),
             ));
             v.push(sep());
+            v.push(item("Copy as patch", MenuAct::CopyPatch(PatchSrc::Stash(name.into()))));
             v.push(item("Copy message", MenuAct::Copy(msg)));
         } else if let Some(name) = key.strip_prefix("t:") {
             v.push(item(format!("Checkout {name} (detached)"), MenuAct::Run(RefOp::Checkout(name.into()))));
@@ -418,14 +444,27 @@ impl Ui {
         self.close_menu();
         match act {
             Some(MenuAct::Run(op)) => self.run_refop(op),
+            Some(MenuAct::OpenFile(p, editor)) => self.open_external(p, editor),
+            Some(MenuAct::ShowFile(p)) => crate::platform::show_file(p),
+            Some(MenuAct::DiffTool(path, of)) => self.run_tool(path, Some(of)),
+            Some(MenuAct::MergeTool(path)) => self.run_tool(path, None),
             Some(MenuAct::CloseTab(i)) => self.close_tab(i),
             Some(MenuAct::CloseOtherTabs(i)) => self.close_other_tabs(i),
             Some(MenuAct::OpenFolder(p)) => crate::platform::open_folder(p),
             Some(MenuAct::OpenTerminal(p)) => crate::platform::open_terminal(p),
             Some(MenuAct::OpenUrl(u)) => crate::platform::open_url(u),
+            Some(MenuAct::CopyPatch(src)) => self.make_patch(src, None),
             Some(MenuAct::RebaseFrom(sha)) => self.open_rebase(sha),
             Some(MenuAct::OpenSubmodule(name)) => self.open_submodule(&name),
             Some(MenuAct::Ask(a)) => self.open_dialog(DialogKind::Ask(*a)),
+            Some(MenuAct::Name(NameAct::SavePatch { src })) => {
+                let path = self.patch_path(&src);
+                self.open_dialog(DialogKind::Name {
+                    act: NameAct::SavePatch { src },
+                    field: TextField::new(&path.to_string_lossy()),
+                    checkout: false,
+                });
+            }
             Some(MenuAct::Name(n)) => {
                 let field = match &n {
                     NameAct::Rename { old }
@@ -501,7 +540,8 @@ impl Ui {
                     | NameAct::AddSubmoduleUrl
                     | NameAct::MoveSubmodule { .. }
                     | NameAct::CloneUrl
-                    | NameAct::InitDir,
+                    | NameAct::InitDir
+                    | NameAct::ApplyPatchFile,
                 ..
             }) => self.px(250.0),
             Some(DialogKind::Name { .. }) => self.px(210.0),
@@ -570,6 +610,17 @@ impl Ui {
             self.close_dialog();
             return self.start_init(dir);
         }
+        // Patches: save to a file, or read one to apply (FF-46).
+        if let DialogKind::Name { act: NameAct::SavePatch { src }, field, .. } = &d.kind {
+            let (src, path) = (src.clone(), PathBuf::from(field.text().trim()));
+            self.close_dialog();
+            return self.make_patch(src, Some(path));
+        }
+        if let DialogKind::Name { act: NameAct::ApplyPatchFile, field, .. } = &d.kind {
+            let path = PathBuf::from(field.text().trim());
+            self.close_dialog();
+            return self.check_patch_file(path);
+        }
         // Adding a remote asks for the URL first, then a name it suggests.
         if let DialogKind::Name { act: NameAct::AddRemoteUrl, field, .. } = &d.kind {
             let url = field.text().trim().to_string();
@@ -613,6 +664,7 @@ impl Ui {
                         }
                         NameAct::AddSubmoduleUrl | NameAct::AddSubmodulePath { .. } => unreachable!("handled above"),
                         NameAct::MoveSubmodule { path } => RefOp::SubMove(path.clone(), n),
+                        NameAct::SavePatch { .. } | NameAct::ApplyPatchFile => unreachable!("handled above"),
                     })
                 }
             }
@@ -737,6 +789,246 @@ impl Ui {
         }
     }
 
+    /// Makes a patch on a worker: to the clipboard, or saved to `to`.
+    pub(super) fn make_patch(&mut self, src: PatchSrc, to: Option<PathBuf>) {
+        let (Some(g), Some(t)) = (self.git_for_tab(), self.tabs.get(self.cur_tab)) else { return };
+        let sink = (self.sinks)(t.id);
+        crate::work::spawn("patch", &sink, move |sink| {
+            use ffwd_core::patches as p;
+            let r = match &src {
+                PatchSrc::Commit(sha) => p::commit_patch(&g, sha),
+                PatchSrc::Stash(n) => p::stash_patch(&g, n),
+                PatchSrc::Working(staged) => p::working_patch(&g, *staged),
+            };
+            let r = r.and_then(|text| match to {
+                Some(path) => {
+                    if let Some(d) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+                        std::fs::create_dir_all(d).map_err(|e| format!("cannot create {}: {e}", d.display()))?;
+                    }
+                    std::fs::write(&path, &text).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+                    Ok((String::new(), Some(path)))
+                }
+                None => Ok((text, None)),
+            });
+            sink(Msg::PatchMade(r));
+        });
+    }
+
+    pub(super) fn on_patch_made(&mut self, r: Result<(String, Option<PathBuf>), String>) {
+        match r {
+            Ok((_, Some(path))) => self.set_notice(format!("Saved the patch to {}", path.display())),
+            Ok((text, None)) => {
+                let n = ffwd_core::patches::files(&text).len();
+                crate::platform::set_clipboard(&text);
+                self.set_notice(format!(
+                    "Copied a patch of {n} file{} to the clipboard",
+                    if n == 1 { "" } else { "s" }
+                ));
+            }
+            Err(e) => self.set_notice(format!("No patch: {e}")),
+        }
+    }
+
+    /// Where a saved patch goes by default: the Downloads folder.
+    pub(super) fn patch_path(&self, src: &PatchSrc) -> PathBuf {
+        let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from);
+        let dir = home.map(|h| h.join("Downloads")).unwrap_or_default();
+        let name = match src {
+            PatchSrc::Commit(sha) => {
+                let subject = self.r.commits.iter().find(|c| c.id.to_string() == *sha).map(|c| c.subject.to_string());
+                let slug: String = subject
+                    .unwrap_or_default()
+                    .chars()
+                    .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' })
+                    .collect::<String>()
+                    .split('-')
+                    .filter(|s| !s.is_empty())
+                    .take(6)
+                    .collect::<Vec<_>>()
+                    .join("-");
+                format!("{}-{slug}.patch", &sha[..sha.len().min(8)])
+            }
+            PatchSrc::Stash(_) => "stash.patch".into(),
+            PatchSrc::Working(true) => "staged.patch".into(),
+            PatchSrc::Working(false) => "changes.patch".into(),
+        };
+        dir.join(name)
+    }
+
+    /// Checks a patch on a worker, then asks before applying it.
+    pub(super) fn check_patch(&mut self, patch: String) {
+        let (Some(g), Some(t)) = (self.git_for_tab(), self.tabs.get(self.cur_tab)) else { return };
+        if patch.len() > ffwd_core::patches::MAX_PATCH {
+            return self.set_notice("That patch is larger than 32 MB.".into());
+        }
+        let sink = (self.sinks)(t.id);
+        crate::work::spawn("patch-check", &sink, move |sink| {
+            let result = ffwd_core::patches::check(&g, &patch);
+            sink(Msg::PatchChecked { patch, result });
+        });
+    }
+
+    fn check_patch_file(&mut self, path: PathBuf) {
+        let (Some(g), Some(t)) = (self.git_for_tab(), self.tabs.get(self.cur_tab)) else { return };
+        let sink = (self.sinks)(t.id);
+        crate::work::spawn("patch-read", &sink, move |sink| {
+            let read = std::fs::metadata(&path)
+                .map_err(|e| format!("cannot read {}: {e}", path.display()))
+                .and_then(|m| {
+                    if m.len() as usize > ffwd_core::patches::MAX_PATCH {
+                        Err("That patch is larger than 32 MB".to_string())
+                    } else {
+                        std::fs::read(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))
+                    }
+                })
+                .map(|b| String::from_utf8_lossy(&b).into_owned());
+            match read {
+                Ok(patch) => {
+                    let result = ffwd_core::patches::check(&g, &patch);
+                    sink(Msg::PatchChecked { patch, result });
+                }
+                Err(e) => sink(Msg::PatchChecked { patch: String::new(), result: Err(e) }),
+            }
+        });
+    }
+
+    pub(super) fn on_patch_checked(&mut self, patch: String, r: Result<Vec<String>, String>) {
+        match r {
+            Ok(files) => {
+                let n = files.len();
+                let list: Vec<String> = files.iter().take(6).cloned().collect();
+                let more = if n > 6 { format!(" and {} more", n - 6) } else { String::new() };
+                self.open_dialog(DialogKind::Ask(Ask {
+                    title: "Apply the patch?".into(),
+                    text: format!(
+                        "It changes {n} file{}: {}{more}. Only the working tree changes; nothing is staged or committed.",
+                        if n == 1 { "" } else { "s" },
+                        list.join(", ")
+                    ),
+                    choices: vec![("Apply".into(), RefOp::ApplyPatch(patch, false), false)],
+                }));
+            }
+            Err(e) if patch.is_empty() => self.set_notice(format!("Failed: {e}")),
+            Err(e) => self.open_dialog(DialogKind::Ask(Ask {
+                title: "The patch does not apply cleanly".into(),
+                text: format!(
+                    "{e}. A 3-way apply writes conflict markers into those files for you to resolve in Local Changes."
+                ),
+                choices: vec![("Apply with conflict markers".into(), RefOp::ApplyPatch(patch, true), true)],
+            })),
+        }
+    }
+
+    /// The menu of the file row under (x, y): Local Changes, the Files
+    /// view or a commit's file list.
+    fn file_menu_at(&mut self, x: i32, y: i32) -> Option<Vec<MenuItem>> {
+        use ffwd_core::tools::DiffOf;
+        let root = self.r.git.as_ref()?.root.clone();
+        let file_items = |rel: &str, exists: bool| {
+            let full = root.join(rel);
+            let mut v = Vec::new();
+            if exists {
+                v.push(item("Open in editor", MenuAct::OpenFile(full.clone(), true)));
+                v.push(item("Open with the default app", MenuAct::OpenFile(full.clone(), false)));
+                v.push(item(show_label(), MenuAct::ShowFile(full.clone())));
+            }
+            (v, full)
+        };
+        if self.r.changes_view {
+            let i = self.change_hit_at(x, y)?;
+            let Some((_, changes_view::CHit::Row(side, k))) = self.r.changes.hits.get(i).cloned() else { return None };
+            self.select_change(side, k);
+            let e = self.selected_entry()?;
+            let deleted = e.unstaged == b'D' || (side == ffwd_core::changes::Side::Staged && e.staged == b'D');
+            let (mut v, full) = file_items(&e.path, !deleted);
+            v.push(sep());
+            if e.conflicted {
+                v.push(item("Resolve in the merge tool", MenuAct::MergeTool(e.path.to_string())));
+            } else if !e.untracked() {
+                let of = if side == ffwd_core::changes::Side::Staged { DiffOf::Staged } else { DiffOf::Unstaged };
+                v.push(item("Open in the diff tool", MenuAct::DiffTool(e.path.to_string(), of)));
+            }
+            v.push(item("Copy path", MenuAct::Copy(e.path.to_string())));
+            v.push(item("Copy full path", MenuAct::Copy(full.to_string_lossy().into_owned())));
+            return Some(v);
+        }
+        if self.r.files_view {
+            let path = self.files_path_at(x, y)?;
+            let (mut v, full) = file_items(&path, true);
+            v.push(sep());
+            v.push(item("Copy path", MenuAct::Copy(path)));
+            v.push(item("Copy full path", MenuAct::Copy(full.to_string_lossy().into_owned())));
+            return Some(v);
+        }
+        if let Some(Hot::File(k)) = self.hot
+            && let Some(d) = &self.r.details
+            && let Some(f) = d.files.get(k)
+        {
+            let sha = self.r.commits.get(self.r.sel).map(|c| c.id.to_string())?;
+            let path = f.path.to_string();
+            let exists = root.join(&path).exists();
+            let (mut v, _) = file_items(&path, exists);
+            v.push(sep());
+            v.push(item("Open in the diff tool", MenuAct::DiffTool(path.clone(), DiffOf::Commit(sha))));
+            v.push(item("Copy path", MenuAct::Copy(path)));
+            return Some(v);
+        }
+        None
+    }
+
+    /// Opens a file in the editor (`tools.editor`) or the default app.
+    fn open_external(&mut self, p: PathBuf, editor: bool) {
+        let cmd = self
+            .current_repo_settings()
+            .and_then(|r| r.get("tools.editor"))
+            .or_else(|| self.settings.get("tools.editor"))
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+        match (editor, cmd) {
+            (true, Some(c)) => {
+                let parts = ffwd_core::tools::split_command(&c);
+                if let Some((prog, args)) = parts.split_first() {
+                    let (prog, args) = (prog.clone(), args.to_vec());
+                    std::thread::spawn(move || {
+                        let _ = std::process::Command::new(prog).args(args).arg(&p).spawn();
+                    });
+                }
+            }
+            (true, None) => {
+                self.set_notice("No editor is set (Settings → Tools → Editor); opened with the default app.".into());
+                crate::platform::open_path(p);
+            }
+            (false, _) => crate::platform::open_path(p),
+        }
+    }
+
+    /// Runs the external diff tool (`Some`) or merge tool (`None`) on a
+    /// worker; it returns when the tool closes.
+    fn run_tool(&mut self, path: String, diff: Option<ffwd_core::tools::DiffOf>) {
+        let (Some(g), Some(t)) = (self.git_for_tab(), self.tabs.get(self.cur_tab)) else { return };
+        let sink = (self.sinks)(t.id);
+        let merge = diff.is_none();
+        self.set_notice(if merge { "Opening the merge tool…".into() } else { "Opening the diff tool…".into() });
+        crate::work::spawn("tool", &sink, move |sink| {
+            let result = match &diff {
+                Some(of) => ffwd_core::tools::difftool(&g, &path, of),
+                None => ffwd_core::tools::mergetool(&g, &path),
+            };
+            sink(Msg::ToolDone { merge, result });
+        });
+    }
+
+    pub(super) fn on_tool_done(&mut self, merge: bool, r: Result<String, String>) {
+        match r {
+            Ok(m) => self.set_notice(m),
+            Err(e) => self.set_notice(format!("Failed: {e}")),
+        }
+        if merge && self.r.changes_view {
+            self.reload_changes();
+        }
+    }
+
     pub(super) fn run_refop(&mut self, op: RefOp) {
         if let RefOp::Sync(o) = op {
             self.close_dialog();
@@ -807,6 +1099,9 @@ impl Ui {
                 let items = self.commit_menu(row);
                 return self.open_menu(x, y, items);
             }
+        }
+        if let Some(items) = self.file_menu_at(x, y) {
+            return self.open_menu(x, y, items);
         }
         if self.lay.side.contains(x, y)
             && let Some(i) = self.side_item_at(x, y)
@@ -930,6 +1225,11 @@ impl Ui {
                         .to_string(),
                 ),
                 NameAct::AddSubmodulePath { url } => (format!("Folder for {url}"), String::new()),
+                NameAct::SavePatch { .. } => ("Save the patch as".to_string(), String::new()),
+                NameAct::ApplyPatchFile => (
+                    "Apply a patch file".to_string(),
+                    "The patch is checked first; only the working tree changes.".to_string(),
+                ),
                 NameAct::MoveSubmodule { path } => (
                     format!("Move {path}"),
                     "The new folder, inside the repository. .gitmodules and the index follow.".to_string(),
@@ -964,6 +1264,7 @@ impl Ui {
                     NameAct::CloneDest { .. } | NameAct::InitDir => "Folder",
                     NameAct::AddSubmoduleUrl => "https://github.com/owner/library.git",
                     NameAct::AddSubmodulePath { .. } | NameAct::MoveSubmodule { .. } => "vendor/library",
+                    NameAct::SavePatch { .. } | NameAct::ApplyPatchFile => "File path",
                     _ => "feature/my-change",
                 };
                 self.te.draw(cv, ui, self.pf(13.0), tx, fb, ph, TEXT_4, inner);
@@ -1025,6 +1326,8 @@ impl Ui {
                     NameAct::AddSubmoduleUrl => "Next".into(),
                     NameAct::AddSubmodulePath { .. } => "Add submodule".into(),
                     NameAct::MoveSubmodule { .. } => "Move".into(),
+                    NameAct::SavePatch { .. } => "Save".into(),
+                    NameAct::ApplyPatchFile => "Check".into(),
                 },
                 false,
             )],
@@ -1129,5 +1432,15 @@ fn open_folder_label() -> &'static str {
         "Show in Finder"
     } else {
         "Open the folder"
+    }
+}
+
+fn show_label() -> &'static str {
+    if cfg!(windows) {
+        "Show in Explorer"
+    } else if cfg!(target_os = "macos") {
+        "Show in Finder"
+    } else {
+        "Show in the folder"
     }
 }

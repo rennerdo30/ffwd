@@ -40,7 +40,7 @@ pub use files_view::{Loaded as FileLoaded, TreeResult as FilesTreeResult};
 mod menu;
 #[path = "ui_search.rs"]
 mod search_view;
-use menu::{Dialog, DialogKind, Menu, NameAct};
+use menu::{Dialog, DialogKind, Menu, NameAct, PatchSrc};
 #[path = "ui_hover.rs"]
 mod hover;
 pub use hover::Cursor;
@@ -285,6 +285,10 @@ const CMD_TAG: &str = "Create tag here";
 const CMD_PICK: &str = "Cherry-pick this commit";
 const CMD_REVERT: &str = "Revert this commit";
 const CMD_STASH: &str = "Stash changes";
+const CMD_PATCH_UNSTAGED: &str = "Copy unstaged changes as patch";
+const CMD_PATCH_STAGED: &str = "Copy staged changes as patch";
+const CMD_APPLY_CLIP: &str = "Apply patch from the clipboard";
+const CMD_APPLY_FILE: &str = "Apply patch from a file…";
 const CMD_AI_COMMIT: &str = "AI: Draft a commit message";
 const CMD_CLONE: &str = "Clone repository…";
 const CMD_INIT: &str = "Create a new repository…";
@@ -315,6 +319,10 @@ const WORKING: &[&str] = &[
     CMD_PICK,
     CMD_REVERT,
     CMD_STASH,
+    CMD_PATCH_UNSTAGED,
+    CMD_PATCH_STAGED,
+    CMD_APPLY_CLIP,
+    CMD_APPLY_FILE,
     CMD_AI_COMMIT,
     CMD_CLONE,
     CMD_INIT,
@@ -357,6 +365,10 @@ const COMMANDS: &[(&str, &str)] = &[
     (CMD_REVERT, ""),
     (CMD_REBASE_I, "Ctrl Shift R"),
     (CMD_STASH, "Ctrl Shift S"),
+    (CMD_PATCH_UNSTAGED, ""),
+    (CMD_PATCH_STAGED, ""),
+    (CMD_APPLY_CLIP, ""),
+    (CMD_APPLY_FILE, ""),
     (CMD_AI_COMMIT, ""),
     (CMD_CLONE, ""),
     (CMD_INIT, ""),
@@ -1260,6 +1272,9 @@ impl Ui {
             }
             Msg::ConflictFile { seq, path, result } => self.on_conflict_file(seq, path, result),
             Msg::Activity(e) => self.on_activity(*e),
+            Msg::PatchMade(r) => self.on_patch_made(r),
+            Msg::PatchChecked { patch, result } => self.on_patch_checked(patch, result),
+            Msg::ToolDone { merge, result } => self.on_tool_done(merge, result),
             Msg::AiPrepared { seq, result } => self.on_ai_prepared(seq, result),
             Msg::AiToken { seq, text } => self.on_ai_token(seq, text),
             Msg::AiDone { seq, result } => self.on_ai_done(seq, result),
@@ -1582,6 +1597,8 @@ impl Ui {
                 self.apply_diff_bar(h);
             }
             (Focus::Diff, Key::Char('w')) => self.apply_diff_bar(diff_view::DiffBar::Whitespace),
+            (Focus::Diff, Key::Char('n')) => self.jump_change(true),
+            (Focus::Diff, Key::Char('p')) => self.jump_change(false),
             (Focus::Diff, Key::Char('c')) => {
                 let next = match self.diff_opts.context {
                     3 => 10,
@@ -2038,6 +2055,17 @@ impl Ui {
             CMD_SEARCH => self.open_search(),
             CMD_BRANCH | CMD_TAG | CMD_PICK | CMD_REVERT => self.selected_commit_command(c),
             CMD_STASH => self.open_stash_dialog(),
+            CMD_PATCH_UNSTAGED => self.make_patch(PatchSrc::Working(false), None),
+            CMD_PATCH_STAGED => self.make_patch(PatchSrc::Working(true), None),
+            CMD_APPLY_CLIP => match crate::platform::clipboard() {
+                Some(p) if !p.trim().is_empty() => self.check_patch(p),
+                _ => self.set_notice("The clipboard holds no text.".into()),
+            },
+            CMD_APPLY_FILE => self.open_dialog(DialogKind::Name {
+                act: NameAct::ApplyPatchFile,
+                field: TextField::default(),
+                checkout: false,
+            }),
             CMD_AI_COMMIT => self.ai_draft(),
             CMD_CLONE => self.open_dialog(DialogKind::Name {
                 act: NameAct::CloneUrl,
@@ -4860,6 +4888,248 @@ mod tests {
             matches!(link, Some(menu::MenuAct::Copy(u)) if u == format!("https://github.com/someone/project/commit/{sha}"))
         );
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Patches (FF-46): save a commit as a patch file from its menu,
+    /// undo the commit, apply the file (checked, then asked), and a patch
+    /// that no longer fits offers a 3-way apply. The clipboard is not used
+    /// here: tests never touch the owner's clipboard.
+    #[test]
+    fn patches_save_and_apply_from_a_file() {
+        use std::sync::mpsc;
+        let mut te = TextEngine::new();
+        let Some(f) = load_fonts(&mut te) else { return };
+        let base = std::env::temp_dir().join(format!("ffwd-ui-patches-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let dir = base.join("repo");
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = Git { root: dir.clone() };
+        for a in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.name", "ffwd test"],
+            &["config", "user.email", "test@example.invalid"],
+            &["config", "commit.gpgsign", "false"],
+            &["config", "core.autocrlf", "false"],
+        ] {
+            g.output(a).unwrap();
+        }
+        std::fs::write(dir.join("a.txt"), "one\ntwo\n").unwrap();
+        g.output(&["add", "."]).unwrap();
+        g.output(&["commit", "-q", "-m", "first"]).unwrap();
+        std::fs::write(dir.join("a.txt"), "one\nTWO\n").unwrap();
+        g.output(&["commit", "-q", "-am", "Shout two"]).unwrap();
+        let (tx, rx) = mpsc::channel::<(u64, Msg)>();
+        let tx = Arc::new(std::sync::Mutex::new(tx));
+        let sinks: SinkFactory = Arc::new(move |id| {
+            let tx = tx.clone();
+            Arc::new(move |m| {
+                if let Ok(t) = tx.lock() {
+                    let _ = t.send((id, m));
+                }
+            })
+        });
+        crate::work::start(dir.clone(), &sinks(1));
+        let empty = crate::settings::Settings::parse("");
+        let mut ui = Ui::new(te, f, empty.clone(), empty, Some((1, dir.clone())), sinks, 1280, 800, 1.0);
+        let pump = |ui: &mut Ui, what: &str, done: &dyn Fn(&Ui) -> bool| {
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while !done(ui) {
+                let left = until.saturating_duration_since(std::time::Instant::now());
+                assert!(!left.is_zero(), "timed out waiting for {what}; notice: {:?}", ui.notice);
+                if let Ok((id, m)) = rx.recv_timeout(left) {
+                    ui.on_tab_msg(id, m);
+                }
+            }
+        };
+        let read = || std::fs::read_to_string(dir.join("a.txt")).unwrap();
+        pump(&mut ui, "history", &|u| u.r.log_done && u.r.commits.len() == 2);
+        // Save the newest commit as a patch (the dialog suggests a name).
+        let items = ui.commit_menu(0);
+        let k = items.iter().position(|i| i.label == "Save as patch…").unwrap();
+        ui.open_menu(100, 100, items);
+        ui.menu_activate(k);
+        let suggested = match &ui.dialog.as_ref().unwrap().kind {
+            DialogKind::Name { act: NameAct::SavePatch { .. }, field, .. } => field.text().to_string(),
+            _ => panic!("the save dialog"),
+        };
+        assert!(suggested.ends_with("-shout-two.patch"), "{suggested}");
+        let file = base.join("out").join("x.patch");
+        ui.key(Key::Ctrl('a'));
+        for c in file.to_string_lossy().chars() {
+            ui.key(Key::Char(c));
+        }
+        ui.key(Key::Enter);
+        pump(&mut ui, "the saved patch", &|u| u.notice.as_deref().is_some_and(|n| n.starts_with("Saved the patch")));
+        assert!(std::fs::read_to_string(&file).unwrap().contains("Subject: [PATCH] Shout two"));
+        // Undo the commit, then apply the file: checked, asked, applied.
+        g.output(&["reset", "-q", "--hard", "HEAD~1"]).unwrap();
+        ui.run_command(CMD_APPLY_FILE);
+        for c in file.to_string_lossy().chars() {
+            ui.key(Key::Char(c));
+        }
+        ui.key(Key::Enter);
+        pump(&mut ui, "the check", &|u| {
+            u.dialog.as_ref().is_some_and(|d| matches!(&d.kind, DialogKind::Ask(a) if a.title == "Apply the patch?"))
+        });
+        ui.key(Key::Enter);
+        pump(&mut ui, "the apply", &|u| {
+            u.dialog.is_none() && u.notice.as_deref().is_some_and(|n| n.starts_with("Applied"))
+        });
+        assert_eq!(read(), "one\nTWO\n");
+        // A patch that no longer fits offers the 3-way apply.
+        g.output(&["checkout", "--", "a.txt"]).unwrap();
+        std::fs::write(dir.join("a.txt"), "one\nzwei\n").unwrap();
+        g.output(&["commit", "-q", "-am", "theirs"]).unwrap();
+        ui.check_patch(std::fs::read_to_string(&file).unwrap());
+        pump(&mut ui, "the failed check", &|u| {
+            u.dialog
+                .as_ref()
+                .is_some_and(|d| matches!(&d.kind, DialogKind::Ask(a) if a.title.contains("does not apply")))
+        });
+        ui.key(Key::Enter);
+        pump(&mut ui, "the 3-way apply", &|u| u.dialog.is_none() && read().contains("<<<<<<<"));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// File menus (FF-47): a right click on a Local Changes row offers the
+    /// editor, the default app, the folder and the diff tool; the diff tool
+    /// runs (a repository-local test tool that only exits). Nothing that
+    /// opens a window on the owner's screen runs here.
+    #[test]
+    fn file_menus_and_external_diff_tool() {
+        use std::sync::mpsc;
+        let mut te = TextEngine::new();
+        let Some(f) = load_fonts(&mut te) else { return };
+        let dir = std::env::temp_dir().join(format!("ffwd-ui-tools-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = Git { root: dir.clone() };
+        let ok = if cfg!(windows) { "cmd /c exit 0" } else { "true" };
+        for a in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.name", "ffwd test"],
+            &["config", "user.email", "test@example.invalid"],
+            &["config", "commit.gpgsign", "false"],
+            &["config", "diff.guitool", "ffwdtest"],
+            &["config", "difftool.ffwdtest.cmd", ok],
+        ] {
+            g.output(a).unwrap();
+        }
+        std::fs::write(dir.join("a.txt"), "a\n").unwrap();
+        g.output(&["add", "."]).unwrap();
+        g.output(&["commit", "-q", "-m", "first"]).unwrap();
+        std::fs::write(dir.join("a.txt"), "b\n").unwrap();
+        let (tx, rx) = mpsc::channel::<(u64, Msg)>();
+        let tx = Arc::new(std::sync::Mutex::new(tx));
+        let sinks: SinkFactory = Arc::new(move |id| {
+            let tx = tx.clone();
+            Arc::new(move |m| {
+                if let Ok(t) = tx.lock() {
+                    let _ = t.send((id, m));
+                }
+            })
+        });
+        crate::work::start(dir.clone(), &sinks(1));
+        let empty = crate::settings::Settings::parse("");
+        let mut ui = Ui::new(te, f, empty.clone(), empty, Some((1, dir.clone())), sinks, 1280, 800, 1.0);
+        let pump = |ui: &mut Ui, what: &str, done: &dyn Fn(&Ui) -> bool| {
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while !done(ui) {
+                let left = until.saturating_duration_since(std::time::Instant::now());
+                assert!(!left.is_zero(), "timed out waiting for {what}; notice: {:?}", ui.notice);
+                if let Ok((id, m)) = rx.recv_timeout(left) {
+                    ui.on_tab_msg(id, m);
+                }
+            }
+        };
+        pump(&mut ui, "history", &|u| u.r.log_done && u.r.git.is_some());
+        ui.enter_changes();
+        pump(&mut ui, "the changes", &|u| u.r.changes.status.as_ref().is_some_and(|s| !s.entries.is_empty()));
+        let mut screen = vec![0u32; 1280 * 800];
+        ui.paint(&mut Canvas::new(&mut screen, 1280, 800), true);
+        let row = ui.r.changes.hits.iter().find(|h| matches!(h.1, changes_view::CHit::Row(..))).map(|h| h.0).unwrap();
+        let (x, y) = (row.x + row.w / 2, row.y + row.h / 2);
+        ui.right_click(x, y);
+        let labels: Vec<String> = ui.menu.as_ref().unwrap().items.iter().map(|i| i.label.clone()).collect();
+        for want in ["Open in editor", "Open with the default app", "Open in the diff tool", "Copy full path"] {
+            assert!(labels.iter().any(|l| l == want), "{want} missing: {labels:?}");
+        }
+        let k = labels.iter().position(|l| l == "Open in the diff tool").unwrap();
+        ui.menu_activate(k);
+        pump(&mut ui, "the diff tool", &|u| u.notice.as_deref().is_some_and(|n| n.starts_with("Closed ffwdtest")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Diff navigation (FF-41): n and p jump between blocks of changes,
+    /// in unified and side-by-side mode; past the last one ffwd says so.
+    #[test]
+    fn diff_next_and_previous_change() {
+        use std::sync::mpsc;
+        let mut te = TextEngine::new();
+        let Some(f) = load_fonts(&mut te) else { return };
+        let dir = std::env::temp_dir().join(format!("ffwd-ui-diffnav-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = Git { root: dir.clone() };
+        for a in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.name", "ffwd test"],
+            &["config", "user.email", "test@example.invalid"],
+            &["config", "commit.gpgsign", "false"],
+            &["config", "core.autocrlf", "false"],
+        ] {
+            g.output(a).unwrap();
+        }
+        let lines: Vec<String> = (1..=120).map(|i| format!("line {i}")).collect();
+        std::fs::write(dir.join("a.txt"), lines.join("\n") + "\n").unwrap();
+        g.output(&["add", "."]).unwrap();
+        g.output(&["commit", "-q", "-m", "first"]).unwrap();
+        let mut changed = lines.clone();
+        changed[9] = "CHANGED 10".into();
+        changed[99] = "CHANGED 100".into();
+        std::fs::write(dir.join("a.txt"), changed.join("\n") + "\n").unwrap();
+        g.output(&["commit", "-q", "-am", "two changes"]).unwrap();
+        let (tx, rx) = mpsc::channel::<(u64, Msg)>();
+        let tx = Arc::new(std::sync::Mutex::new(tx));
+        let sinks: SinkFactory = Arc::new(move |id| {
+            let tx = tx.clone();
+            Arc::new(move |m| {
+                if let Ok(t) = tx.lock() {
+                    let _ = t.send((id, m));
+                }
+            })
+        });
+        crate::work::start(dir.clone(), &sinks(1));
+        let empty = crate::settings::Settings::parse("");
+        let mut ui = Ui::new(te, f, empty.clone(), empty, Some((1, dir.clone())), sinks, 1280, 800, 1.0);
+        let pump = |ui: &mut Ui, what: &str, done: &dyn Fn(&Ui) -> bool| {
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while !done(ui) {
+                let left = until.saturating_duration_since(std::time::Instant::now());
+                assert!(!left.is_zero(), "timed out waiting for {what}; notice: {:?}", ui.notice);
+                if let Ok((id, m)) = rx.recv_timeout(left) {
+                    ui.on_tab_msg(id, m);
+                }
+            }
+        };
+        pump(&mut ui, "the diff", &|u| u.r.log_done && u.r.diff.is_some());
+        ui.focus = Focus::Diff;
+        for split in [false, true] {
+            ui.diff_split = split;
+            ui.r.diff_top = 0;
+            let starts = ui.change_starts();
+            assert_eq!(starts.len(), 2, "split {split}: {starts:?}");
+            ui.key(Key::Char('n'));
+            assert_eq!(ui.r.diff_top, starts[0] - 3, "split {split}");
+            ui.key(Key::Char('n'));
+            assert_eq!(ui.r.diff_top, starts[1] - 3, "split {split}");
+            ui.notice = None;
+            ui.key(Key::Char('n'));
+            assert_eq!(ui.notice.as_deref(), Some("No more changes below"));
+            ui.key(Key::Char('p'));
+            assert_eq!(ui.r.diff_top, starts[0] - 3, "split {split}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The find bar from the keyboard: message search selects the match,

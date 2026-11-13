@@ -207,6 +207,43 @@ impl Ui {
     }
 
     /// The rows a diff has in the current layout (for scrolling).
+    /// The rows where a block of changes starts (unified or split).
+    pub(super) fn change_starts(&mut self) -> Vec<usize> {
+        use ffwd_core::diff::LineKind;
+        let Some(d) = self.r.diff.clone() else { return Vec::new() };
+        let changed = |i: usize| matches!(d.lines[i].kind, LineKind::Add | LineKind::Del);
+        let rows: Vec<bool> = if self.diff_split {
+            let (p, _) = self.diff_meta(&d);
+            Self::split_rows(&d, &p)
+                .into_iter()
+                .map(|(l, r)| l.is_some_and(changed) || r.is_some_and(changed))
+                .collect()
+        } else {
+            (0..d.lines.len()).map(changed).collect()
+        };
+        (0..rows.len()).filter(|&i| rows[i] && (i == 0 || !rows[i - 1])).collect()
+    }
+
+    /// Scrolls to the next (or previous) block of changes, with three
+    /// lines of context above it (FF-41).
+    pub(super) fn jump_change(&mut self, next: bool) {
+        const CONTEXT: usize = 3;
+        let starts = self.change_starts();
+        let pivot = self.r.diff_top + CONTEXT;
+        let target = if next {
+            starts.iter().copied().find(|&s| s > pivot)
+        } else {
+            starts.iter().rev().copied().find(|&s| s < pivot)
+        };
+        match target {
+            Some(s) => {
+                self.r.diff_top = s.saturating_sub(CONTEXT);
+                self.damage.rects.push(self.diff_rect());
+            }
+            None => self.set_notice(if next { "No more changes below".into() } else { "No more changes above".into() }),
+        }
+    }
+
     pub(super) fn diff_row_count(&mut self) -> usize {
         let Some(d) = self.r.diff.clone() else { return 0 };
         if self.diff_split {

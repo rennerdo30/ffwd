@@ -24,6 +24,22 @@ impl fmt::Display for GitError {
 
 impl std::error::Error for GitError {}
 
+static PROGRAM: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Chooses the git binary (setting `git.path` or `FFWD_GIT`), once, at
+/// start. Without it ffwd runs `git` from `PATH`.
+pub fn set_program(path: &str) {
+    let p = path.trim();
+    if !p.is_empty() {
+        let _ = PROGRAM.set(p.to_string());
+    }
+}
+
+/// The git binary ffwd runs.
+pub fn program() -> &'static str {
+    PROGRAM.get().map_or("git", String::as_str)
+}
+
 /// A repository handle that runs `git` with a fixed working tree.
 #[derive(Clone, Debug)]
 pub struct Git {
@@ -84,7 +100,7 @@ impl Git {
     }
 
     pub fn command(&self, args: &[&str]) -> Command {
-        let mut cmd = Command::new("git");
+        let mut cmd = Command::new(program());
         // Stable, machine-readable output whatever the user's config says.
         cmd.args(["-c", "color.ui=false", "-c", "core.quotepath=false", "-c", "log.showSignature=false"]);
         cmd.args(args).current_dir(&self.root).stdin(Stdio::null());
