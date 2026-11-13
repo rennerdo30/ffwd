@@ -314,7 +314,7 @@ impl Ui {
                    on: bool,
                    hit: DiffBar,
                    hits: &mut Vec<(Rect, DiffBar)>| {
-            let w = (ui_.te.measure(semi, ui_.pf(11.0), label) + ui_.pf(16.0)) as i32;
+            let w = (ui_.te.measure(semi, ui_.pf(11.5), label) + ui_.pf(16.0)) as i32;
             let r = Rect::new(*x - w, y, w, h);
             if on {
                 cv.fill_round(r, ui_.pf(5.0), BG_CHOSEN);
@@ -324,11 +324,11 @@ impl Ui {
             ui_.te.draw(
                 cv,
                 semi,
-                ui_.pf(11.0),
+                ui_.pf(11.5),
                 r.x as f32 + ui_.pf(8.0),
                 base,
                 label,
-                if on { TEXT } else { TEXT_3 },
+                if on { TEXT } else { TEXT_2 },
                 w as f32,
             );
             hits.push((r, hit));
@@ -346,17 +346,23 @@ impl Ui {
             DiffBar::Whitespace,
             &mut hits,
         );
-        x -= self.px(10.0);
+        x -= self.px(5.0);
+        cv.fill(Rect::new(x, y + self.px(4.0), 1, h - self.px(8.0)), BORDER);
+        x -= self.px(5.0);
         for &(n, label) in CONTEXTS.iter().rev() {
             let on = self.diff_opts.context == n;
             seg(self, cv, &mut x, label, on, DiffBar::Context(n), &mut hits);
         }
-        x -= self.px(10.0);
+        x -= self.px(5.0);
+        cv.fill(Rect::new(x, y + self.px(4.0), 1, h - self.px(8.0)), BORDER);
+        x -= self.px(5.0);
         let split = self.diff_split;
         seg(self, cv, &mut x, "Side by side", split, DiffBar::Split, &mut hits);
         seg(self, cv, &mut x, "Unified", !split, DiffBar::Unified, &mut hits);
         // Icon buttons, the click twins of p, n and Ctrl+F (FF-57).
-        x -= self.px(8.0);
+        x -= self.px(5.0);
+        cv.fill(Rect::new(x, y + self.px(4.0), 1, h - self.px(8.0)), BORDER);
+        x -= self.px(5.0);
         for (g, hit) in [
             (super::Glyph::Search, DiffBar::Find),
             (super::Glyph::Down, DiffBar::Next),
@@ -369,8 +375,8 @@ impl Ui {
             } else if self.is_hot(Hot::DiffBar(hits.len())) {
                 cv.fill_round(r, self.pf(5.0), CONTROL_HOVER);
             }
-            let c = if on { TEXT } else { TEXT_3 };
-            self.glyph(cv, g, r.x as f32 + r.w as f32 / 2.0, r.y as f32 + r.h as f32 / 2.0, self.pf(5.0), c);
+            let c = if on { TEXT } else { TEXT_2 };
+            self.glyph(cv, g, r.x as f32 + r.w as f32 / 2.0, r.y as f32 + r.h as f32 / 2.0, self.pf(6.5), c);
             hits.push((r, hit));
             x = r.x - self.px(2.0);
         }
@@ -467,7 +473,7 @@ impl Ui {
             let mark = if c == '\t' { "→" } else { "·" };
             let w = self.te.measure(mono, fs, mark);
             let at = if c == '\t' { pen + self.pf(1.0) } else { pen + (sp - w) / 2.0 };
-            self.te.draw(cv, mono, fs, at, base, mark, TEXT_4, end - at);
+            self.te.draw(cv, mono, fs, at, base, mark, WS_MARK, end - at);
             pen += sp * n as f32;
             col += n;
             run = i + c.len_utf8();

@@ -67,6 +67,8 @@ pub struct MenuItem {
 pub struct Menu {
     pub x: i32,
     pub y: i32,
+    /// Width: the longest label plus padding and the icon gutter.
+    pub w: i32,
     pub items: Vec<MenuItem>,
     pub sel: Option<usize>,
 }
@@ -480,7 +482,10 @@ impl Ui {
             return;
         }
         self.palette = None;
-        self.menu = Some(Menu { x, y, items, sel: None });
+        let ui = self.f.ui;
+        let longest = items.iter().map(|i| self.te.measure(ui, self.pf(12.5), &i.label)).fold(0.0f32, f32::max);
+        let w = ((longest + self.pf(26.0 + 20.0 + 12.0)) as i32).clamp(self.px(300.0), self.px(460.0));
+        self.menu = Some(Menu { x, y, w, items, sel: None });
         let r = self.menu_rect();
         self.damage.rects.push(r);
     }
@@ -501,7 +506,7 @@ impl Ui {
     pub(super) fn menu_rect(&self) -> Rect {
         let Some(m) = &self.menu else { return Rect::default() };
         let h: i32 = m.items.iter().map(|i| self.menu_item_h(i)).sum::<i32>() + self.px(12.0);
-        let w = self.px(300.0);
+        let w = m.w;
         let x = m.x.min(self.w as i32 - w - self.px(6.0)).max(0);
         let y = m.y.min(self.h as i32 - h - self.px(6.0)).max(0);
         Rect::new(x, y, w, h)
@@ -1390,7 +1395,7 @@ impl Ui {
         let rects = self.menu_item_rects();
         let Some(m) = self.menu.take() else { return };
         let old = cv.set_clip(cv.clip().intersect(r));
-        cv.round_border(r, self.pf(9.0), BORDER_STRONG, BG_PANEL);
+        cv.round_border(r, self.pf(9.0), BORDER_STRONG, BG_FLOAT);
         let ui = self.f.ui;
         // Icons from each item's action (FF-57); a gutter when any has one.
         let icons: Vec<Option<super::Glyph>> =
@@ -1433,7 +1438,7 @@ impl Ui {
         let Some(mut d) = self.dialog.take() else { return };
         let r = self.dialog_rect();
         let old = cv.set_clip(cv.clip().intersect(r));
-        cv.round_border(r, self.pf(12.0), BORDER_STRONG, BG_PANEL);
+        cv.round_border(r, self.pf(12.0), BORDER_STRONG, BG_FLOAT);
         let (ui, semi) = (self.f.ui, self.f.semi);
         let pad = self.px(22.0);
         let x0 = (r.x + pad) as f32;

@@ -2783,31 +2783,6 @@ impl Ui {
         buttons.push((pill, TopAction::Branch));
         self.branch_icon(cv, pill.x as f32 + self.pf(14.0), cy, TEXT_2);
         self.te.draw(cv, semi, self.pf(12.5), pill.x as f32 + self.pf(25.0), base - self.pf(0.5), &branch, TEXT, bw);
-        // Search / command field.
-        let sw = self.px(460.0).min(r.w - self.px(760.0)).max(self.px(200.0));
-        let search = Rect::new((r.w - sw) / 2, (cy - self.pf(15.0)) as i32, sw, self.px(30.0));
-        let sborder = if self.is_hot(Hot::Search) { BORDER_HOVER } else { BORDER };
-        cv.round_border(search, self.pf(8.0), sborder, BG_INPUT);
-        controls.push((search.x, search.right()));
-        self.search_rect = search;
-        let sx = search.x as f32 + self.pf(14.0);
-        cv.ring(sx + self.pf(4.5), cy - self.pf(1.0), self.pf(5.0), self.pf(1.6), TEXT_3);
-        cv.stroke(
-            &[(sx + self.pf(8.0), cy + self.pf(2.5)), (sx + self.pf(11.0), cy + self.pf(5.5))],
-            self.pf(1.6),
-            TEXT_3,
-        );
-        self.te.draw(
-            cv,
-            ui,
-            self.pf(13.0),
-            sx + self.pf(20.0),
-            base,
-            "Jump to branch, commit or command",
-            TEXT_3,
-            sw as f32 - self.pf(110.0),
-        );
-        self.keycap(cv, search.right() as f32 - self.pf(12.0), cy, "Ctrl K", true);
         // Actions with ahead/behind from the current branch.
         let head = self.r.refs.refs.iter().find(|r| r.is_head);
         let (ahead, behind) = head.map_or((0, 0), |h| (h.ahead, h.behind));
@@ -2870,6 +2845,34 @@ impl Ui {
         // Stash to the gear's right edge: the gear is a control too, not
         // part of the title bar's drag area (FF-29).
         controls.push((stash as i32, gear.right()));
+        // Search / command field.
+        // Between the branch pill and the toolbar buttons, centred where it fits.
+        let (lo, hi) = (pill.right() + self.px(16.0), stash as i32 - self.px(12.0));
+        let sw = self.px(460.0).min(hi - lo).max(self.px(160.0));
+        let sx0 = ((r.w - sw) / 2).min(hi - sw).max(lo);
+        let search = Rect::new(sx0, (cy - self.pf(15.0)) as i32, sw, self.px(30.0));
+        let sborder = if self.is_hot(Hot::Search) { BORDER_HOVER } else { BORDER };
+        cv.round_border(search, self.pf(8.0), sborder, BG_INPUT);
+        controls.push((search.x, search.right()));
+        self.search_rect = search;
+        let sx = search.x as f32 + self.pf(14.0);
+        cv.ring(sx + self.pf(4.5), cy - self.pf(1.0), self.pf(5.0), self.pf(1.6), TEXT_3);
+        cv.stroke(
+            &[(sx + self.pf(8.0), cy + self.pf(2.5)), (sx + self.pf(11.0), cy + self.pf(5.5))],
+            self.pf(1.6),
+            TEXT_3,
+        );
+        self.te.draw(
+            cv,
+            ui,
+            self.pf(13.0),
+            sx + self.pf(20.0),
+            base,
+            "Jump to branch, commit or command",
+            TEXT_3,
+            sw as f32 - self.pf(110.0),
+        );
+        self.keycap(cv, search.right() as f32 - self.pf(12.0), cy, "Ctrl K", true);
         self.title_controls = controls;
         self.top_buttons = buttons;
         let _ = mono;
@@ -3249,16 +3252,16 @@ impl Ui {
             self.scope_rect = tr;
             // Find (Ctrl+F), clickable (FF-57).
             let fl = "Find";
-            let fw = self.te.measure(semi, self.pf(11.5), fl) + self.pf(30.0);
+            let fw = self.te.measure(semi, self.pf(11.5), fl) + self.pf(34.0);
             let fr = Rect::new(tr.right() + self.px(8.0), tr.y, fw as i32, tr.h);
             if self.is_hot(Hot::HeadFind) {
                 cv.fill_round(fr, self.pf(6.0), BG_HOVER);
             }
-            self.glyph(cv, Glyph::Search, fr.x as f32 + self.pf(11.0), cy, self.pf(4.5), TEXT_3);
-            self.te.draw(cv, semi, self.pf(11.5), fr.x as f32 + self.pf(20.0), base, fl, TEXT_3, fw);
+            self.glyph(cv, Glyph::Search, fr.x as f32 + self.pf(12.0), cy, self.pf(6.0), TEXT_2);
+            self.te.draw(cv, semi, self.pf(11.5), fr.x as f32 + self.pf(23.0), base, fl, TEXT_2, fw);
             self.head_find_rect = fr;
             for (x, t) in [(author_x, "Author"), (date_x, "Date"), (sha_x, "Commit")] {
-                self.te.draw(cv, semi, self.pf(11.5), x, base, t, TEXT_4, self.pf(100.0));
+                self.te.draw(cv, semi, self.pf(11.5), x, base, t, TEXT_3, self.pf(100.0));
             }
         }
         let body = Rect::new(l.x, self.lay.list_body.y, l.w - self.lay.scrollbar.w, self.lay.list_body.h);
@@ -3275,7 +3278,7 @@ impl Ui {
                 self.paint_row(cv, row, rr, text_x, author_x, date_x, sha_x, ui, semi);
                 // A search dims what doesn't match; the matches stay bright.
                 if self.row_dimmed(row) {
-                    cv.fill_alpha(rr, BG, 165);
+                    cv.fill_alpha(rr, BG, 120);
                 }
                 cv.set_clip(old);
                 y += self.lay.row_h;
@@ -3346,7 +3349,7 @@ impl Ui {
             }
             let rf = &self.r.refs.refs[ri as usize];
             let (cbg, cfg) = match rf.kind {
-                _ if rf.is_head => (ACCENT, ACCENT_TEXT),
+                _ if rf.is_head => (ACCENT_SOFT_HOVER, ACCENT_FG),
                 RefKind::Local => (LOCAL_BG, LOCAL_FG),
                 RefKind::Remote => (REMOTE_BG, REMOTE_FG),
                 RefKind::Tag => (TAG_BG, TAG_FG),
@@ -3561,7 +3564,7 @@ impl Ui {
         let sha_y = meta_y + self.pf(40.0);
         let mut sx = self.te.draw(cv, mono, self.pf(12.0), x0, sha_y, &c.id.short(12), TEXT_2, maxw);
         for p in c.parents.iter().take(2) {
-            sx = self.te.draw(cv, ui, self.pf(12.0), sx + self.pf(14.0), sha_y, "parent", TEXT_4, maxw);
+            sx = self.te.draw(cv, ui, self.pf(12.0), sx + self.pf(14.0), sha_y, "parent", TEXT_3, maxw);
             sx = self.te.draw(cv, mono, self.pf(12.0), sx + self.pf(6.0), sha_y, &p.short(8), TEXT_3, maxw);
         }
         // Files.
@@ -4061,7 +4064,7 @@ impl Ui {
             .map(|i| (i.label.clone(), i.hint.clone(), i.kind, matches!(i.action, PAction::Command(_))))
             .collect();
         let old = cv.set_clip(clip.intersect(r));
-        cv.round_border(r, self.pf(12.0), BORDER_STRONG, BG_PANEL);
+        cv.round_border(r, self.pf(12.0), BORDER_STRONG, BG_FLOAT);
         let (ui, semi) = (self.f.ui, self.f.semi);
         let input = Rect::new(r.x, r.y, r.w, self.px(52.0));
         let base = (input.y as f32 + input.h as f32 / 2.0 + self.pf(5.5)).round();
@@ -4073,7 +4076,7 @@ impl Ui {
                 cv,
                 ui,
                 self.pf(15.0),
-                qx,
+                qx + self.pf(6.0),
                 base,
                 if mode == PMode::Repos {
                     "Open a repository: type its name or a folder path"

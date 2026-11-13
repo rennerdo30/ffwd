@@ -14,6 +14,8 @@ pub enum Glyph {
     Commit,
     Merge,
     Rebase,
+    /// The interactive rebase plan: a list with a move arrow.
+    Plan,
     CherryPick,
     Revert,
     Reset,
@@ -113,12 +115,20 @@ impl Ui {
                 line(cv, &[(0.45, 0.0), (1.0, 0.0)]);
             }
             Glyph::Merge => {
-                line(cv, &[(-0.5, -0.8), (-0.5, 0.8)]);
-                let (a, b, c, d) = (p(0.55, -0.2), p(0.55, 0.3), p(-0.5, 0.15), p(-0.5, 0.65));
+                // Two lines joining into one.
+                let (a, b, c, d) = (p(-0.6, -0.75), p(-0.6, -0.1), p(0.0, -0.1), p(0.0, 0.3));
                 cv.bezier(a, b, c, d, w, color);
-                dot(cv, -0.5, -0.8, 0.25);
-                dot(cv, 0.55, -0.35, 0.25);
-                dot(cv, -0.5, 0.85, 0.25);
+                let (a, b, c, d) = (p(0.6, -0.75), p(0.6, -0.1), p(0.0, -0.1), p(0.0, 0.3));
+                cv.bezier(a, b, c, d, w, color);
+                line(cv, &[(0.0, 0.3), (0.0, 0.9)]);
+                dot(cv, -0.6, -0.8, 0.24);
+                dot(cv, 0.6, -0.8, 0.24);
+            }
+            Glyph::Plan => {
+                for v in [-0.6, 0.0, 0.6] {
+                    line(cv, &[(-0.1, v), (0.9, v)]);
+                }
+                arrow(cv, -0.65, 0.75, -0.65, -0.75);
             }
             Glyph::Rebase => {
                 line(cv, &[(-0.55, -0.8), (-0.55, 0.8)]);
@@ -287,7 +297,8 @@ pub(super) fn for_act(act: &super::menu::MenuAct) -> Option<Glyph> {
             | R::DeleteRemoteBranch(..) => Glyph::Trash,
             R::CreateTag(..) => Glyph::Tag,
             R::Merge(..) => Glyph::Merge,
-            R::Rebase(_) | R::RebaseInteractive(..) => Glyph::Rebase,
+            R::Rebase(_) => Glyph::Rebase,
+            R::RebaseInteractive(..) => Glyph::Plan,
             R::CherryPick(_) => Glyph::CherryPick,
             R::Revert(_) => Glyph::Revert,
             R::Reset(..) => Glyph::Reset,
@@ -329,7 +340,7 @@ pub(super) fn for_act(act: &super::menu::MenuAct) -> Option<Glyph> {
             _ => Glyph::Edit,
         }),
         M::Copy(_) => Some(Glyph::Copy),
-        M::RebaseFrom(_) => Some(Glyph::Rebase),
+        M::RebaseFrom(_) => Some(Glyph::Plan),
         M::OpenSubmodule(_) => Some(Glyph::Submodule),
         M::CloseTab(_) | M::CloseOtherTabs(_) => Some(Glyph::Close),
         M::OpenFolder(_) | M::ShowFile(_) => Some(Glyph::Folder),

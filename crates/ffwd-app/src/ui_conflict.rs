@@ -394,16 +394,6 @@ impl Ui {
         cv.fill(Rect::new(r.x, r.bottom() - 1, r.w, 1), BORDER);
         let conflicts = self.r.changes.status.as_ref().map_or(0, |s| s.entries.iter().filter(|e| e.conflicted).count());
         let base = (r.y as f32 + r.h as f32 / 2.0 + self.pf(4.5)).round();
-        let text = if conflicts > 0 {
-            format!(
-                "{} stopped · {conflicts} conflicted file{}",
-                title_case(kind),
-                if conflicts == 1 { "" } else { "s" }
-            )
-        } else {
-            format!("{} stopped · all conflicts resolved", title_case(kind))
-        };
-        self.te.draw(cv, semi, self.pf(12.5), r.x as f32 + self.pf(14.0), base, &text, TAG_FG, r.w as f32 * 0.55);
         let mut x = r.right() - self.px(10.0);
         let buttons = [
             ("Abort…", KHit::Abort, true),
@@ -419,12 +409,16 @@ impl Ui {
             let w = (self.te.measure(semi, self.pf(11.5), label) + self.pf(22.0)) as i32;
             let b = Rect::new(x - w, r.y + self.px(5.0), w, r.h - self.px(10.0));
             let hot = self.is_hot(Hot::Change(hits.len()));
-            let (bg, border, fg) = match (enabled, hit == KHit::Continue, hot) {
-                (false, _, _) => (TAG_BG, BORDER, TEXT_4),
-                (true, true, true) => (ACCENT, ACCENT, ACCENT_TEXT),
-                (true, true, false) => (ACCENT_SOFT_HOVER, ACCENT_BORDER, ACCENT_FG),
-                (true, false, true) => (DEL_BG, DEL, DEL_TEXT),
-                (true, false, false) => (TAG_BG, DANGER_BORDER, DEL_TEXT),
+            // Continue is the primary action, Abort the dangerous one; the
+            // all-files choices are plain buttons (they ask first anyway).
+            let (bg, border, fg) = match (enabled, hit, hot) {
+                (false, _, _) => (BG_BAR, BORDER, TEXT_4),
+                (true, KHit::Continue, true) => (ACCENT, ACCENT, ACCENT_TEXT),
+                (true, KHit::Continue, false) => (ACCENT_SOFT_HOVER, ACCENT_BORDER, ACCENT_FG),
+                (true, KHit::Abort, true) => (DEL_BG, DEL, DEL_TEXT),
+                (true, KHit::Abort, false) => (BG_BAR, DANGER_BORDER, DEL_TEXT),
+                (true, _, true) => (CONTROL_HOVER, BORDER_HOVER, TEXT),
+                (true, _, false) => (BG_BAR, BORDER, TEXT_2),
             };
             cv.round_border(b, self.pf(6.0), border, bg);
             self.te.draw(
@@ -442,6 +436,21 @@ impl Ui {
             }
             x = b.x - self.px(6.0);
         }
+        // The state, in the space the buttons leave (never under them).
+        let tx = r.x as f32 + self.pf(14.0);
+        let room = x as f32 - self.pf(12.0) - tx;
+        let k = title_case(kind);
+        let long = if conflicts > 0 {
+            format!("{k} stopped · {conflicts} conflicted file{}", if conflicts == 1 { "" } else { "s" })
+        } else {
+            format!("{k} stopped · all conflicts resolved")
+        };
+        let short = if conflicts > 0 { format!("{k} stopped · {conflicts}") } else { format!("{k} stopped") };
+        let text = [long, short, format!("{k} stopped")]
+            .into_iter()
+            .find(|t| self.te.measure(semi, self.pf(12.5), t) <= room)
+            .unwrap_or_default();
+        self.te.draw(cv, semi, self.pf(12.5), tx, base, &text, TAG_FG, room.max(0.0));
         let _ = ui;
     }
 
@@ -515,7 +524,8 @@ impl Ui {
                 continue;
             }
             let lb = (y as f32 + lh as f32 / 2.0 + self.pf(4.0)).round();
-            let tx = body.x as f32 + self.pf(24.0);
+            // A gutter for the OURS/THEIRS tags, code aligned after it.
+            let tx = body.x as f32 + self.pf(66.0);
             match row {
                 Row::Text(t) => {
                     self.te.draw(
@@ -532,14 +542,15 @@ impl Ui {
                 Row::Gap(n) => {
                     cv.fill(rr, BG_SIDEBAR);
                     let t = format!("… {n} unchanged lines");
-                    self.te.draw(cv, ui, self.pf(11.5), tx, lb, &t, TEXT_4, body.w as f32);
+                    self.te.draw(cv, ui, self.pf(11.5), tx, lb, &t, TEXT_3, body.w as f32);
                 }
                 Row::Head(k) => {
                     let b = blocks[*k];
                     let on = *k == v.cur;
-                    cv.fill(rr, if on { BG_SELECT } else { HUNK_BG });
+                    cv.fill(rr, HUNK_BG);
+                    cv.fill(Rect::new(rr.x, rr.y, rr.w, 1), BORDER);
                     if on {
-                        cv.fill(Rect::new(rr.x, rr.y, self.px(3.0), rr.h), ACCENT);
+                        cv.fill(Rect::new(rr.x, rr.y, self.px(4.0), rr.h), ACCENT);
                     }
                     let edited = v.manual.get(*k).is_some_and(|m| m.is_some());
                     let editing = v.editing.as_ref().is_some_and(|x| x.0 == *k);
@@ -550,7 +561,8 @@ impl Ui {
                     } else {
                         format!("Conflict {} of {n}", k + 1)
                     };
-                    let e = self.te.draw(cv, semi, self.pf(11.5), tx, lb, &t, HUNK_TEXT, self.pf(140.0));
+                    let tc = if on { TEXT } else { TEXT_2 };
+                    let e = self.te.draw(cv, semi, self.pf(12.0), tx, lb, &t, tc, self.pf(150.0));
                     let mut bx = e + self.pf(14.0);
                     let chosen = v.choices[*k];
                     for (label, c) in [
@@ -559,26 +571,23 @@ impl Ui {
                         ("Both (b)".to_string(), Choice::OursThenTheirs),
                         ("Both, theirs first".to_string(), Choice::TheirsThenOurs),
                     ] {
-                        let w = self.te.measure(semi, self.pf(11.0), &label) + self.pf(16.0);
-                        let br = Rect::new(bx as i32, y + self.px(2.0), w as i32, lh - self.px(4.0));
+                        let w = self.te.measure(semi, self.pf(11.5), &label) + self.pf(18.0);
+                        let br = Rect::new(bx as i32, y + self.px(1.0), w as i32, lh - self.px(2.0));
                         let sel = chosen == Some(c);
                         let hot = self.is_hot(Hot::Change(hits.len()));
-                        let (bg, border) = match (sel, hot) {
-                            (true, _) => (ACCENT, ACCENT),
-                            (false, true) => (CONTROL_HOVER, BORDER_HOVER),
-                            _ => (BG_BAR, HUNK_BORDER),
+                        // Ours and theirs carry their rows' colours.
+                        let side = match c {
+                            Choice::Ours => OURS_FG,
+                            Choice::Theirs => THEIRS_FG,
+                            _ => TEXT_2,
+                        };
+                        let (bg, border, fg) = match (sel, hot) {
+                            (true, _) => (ACCENT, ACCENT, ACCENT_TEXT),
+                            (false, true) => (CONTROL_HOVER, BORDER_HOVER, TEXT),
+                            _ => (BG_INPUT, BORDER_STRONG, side),
                         };
                         cv.round_border(br, self.pf(5.0), border, bg);
-                        self.te.draw(
-                            cv,
-                            semi,
-                            self.pf(11.0),
-                            br.x as f32 + self.pf(8.0),
-                            lb,
-                            &label,
-                            if sel { ACCENT_TEXT } else { HUNK_TEXT },
-                            w,
-                        );
+                        self.te.draw(cv, semi, self.pf(11.5), br.x as f32 + self.pf(9.0), lb, &label, fg, w);
                         hits.push((br, changes_view::CHit::Conflict(KHit::Pick(*k, c))));
                         bx += w + self.pf(6.0);
                     }
@@ -603,22 +612,21 @@ impl Ui {
                 }
                 Row::Ours(t) | Row::Theirs(t) | Row::Result(t) => {
                     let (bg, mark, fg) = match row {
-                        Row::Ours(..) => (REMOTE_BG, "ours", REMOTE_FG),
-                        Row::Theirs(..) => (TAG_BG, "theirs", TAG_FG),
-                        _ => (ADD_BG, "", ADD_TEXT),
+                        Row::Ours(..) => (OURS_BG, "OURS", OURS_FG),
+                        Row::Theirs(..) => (THEIRS_BG, "THEIRS", THEIRS_FG),
+                        _ => (ADD_BG, "", ADD),
                     };
                     cv.fill(rr, bg);
-                    if !mark.is_empty() {
-                        self.te.draw(
-                            cv,
-                            ui,
-                            self.pf(10.0),
-                            body.x as f32 + self.pf(6.0),
-                            lb,
-                            &mark[..1],
-                            fg,
-                            self.pf(14.0),
+                    cv.fill(Rect::new(rr.x, rr.y, self.px(4.0), rr.h), fg);
+                    // The side's name on the first row of its block.
+                    let first = j == 0
+                        || !matches!(
+                            (&rows[j - 1], row),
+                            (Row::Ours(..), Row::Ours(..)) | (Row::Theirs(..), Row::Theirs(..))
                         );
+                    if !mark.is_empty() && first {
+                        let mx = rr.x as f32 + self.pf(12.0);
+                        self.te.draw(cv, semi, self.pf(10.5), mx, lb, mark, fg, self.pf(52.0));
                     }
                     self.te.draw(
                         cv,
@@ -637,7 +645,7 @@ impl Ui {
         let hw = self.te.measure(ui, self.pf(11.0), hint);
         let hy = r.bottom() as f32 - self.pf(10.0);
         if rows.len() < fit {
-            self.te.draw(cv, ui, self.pf(11.0), r.right() as f32 - hw - self.pf(16.0), hy, hint, TEXT_4, hw + 2.0);
+            self.te.draw(cv, ui, self.pf(11.0), r.right() as f32 - hw - self.pf(16.0), hy, hint, TEXT_3, hw + 2.0);
         }
         self.r.changes.conflict = Some(ConflictView { top, ..v });
     }

@@ -935,7 +935,7 @@ impl Ui {
                     list.x as f32 + self.pf(16.0),
                     list.y as f32 + self.pf(22.0),
                     t,
-                    TEXT_4,
+                    TEXT_3,
                     list.w as f32,
                 );
             }
@@ -1188,7 +1188,13 @@ impl Ui {
             cb.right() as f32 - kw - self.pf(10.0),
             (cb.y as f32 + self.pf(19.5)).round(),
             kc,
-            if can && hot { ACCENT_TEXT } else { TEXT_4 },
+            if can && hot {
+                ACCENT_TEXT
+            } else if can {
+                TAG_FG
+            } else {
+                TEXT_4
+            },
             kw + 2.0,
         );
         if can {

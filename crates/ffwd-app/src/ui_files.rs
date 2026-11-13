@@ -676,7 +676,7 @@ impl Ui {
                 l.tree.x as f32 + self.pf(16.0),
                 l.tree.y as f32 + self.pf(22.0),
                 &t,
-                TEXT_4,
+                TEXT_3,
                 l.tree.w as f32,
             );
         }
@@ -782,7 +782,7 @@ impl Ui {
                 l.pane.x as f32 + self.pf(16.0),
                 l.pane.y as f32 + self.pf(26.0),
                 t,
-                TEXT_4,
+                TEXT_3,
                 l.pane.w as f32,
             );
         }
@@ -800,7 +800,7 @@ impl Ui {
                 r.x as f32 + self.pf(16.0),
                 r.y as f32 + self.pf(26.0),
                 &t,
-                TEXT_4,
+                TEXT_3,
                 r.w as f32,
             );
             return;
@@ -863,9 +863,9 @@ impl Ui {
                         (mono, format!("{sha} · {} · {when}", c.author), TEXT_3)
                     }
                 } else if second {
-                    (ui, c.summary.to_string(), TEXT_4)
+                    (ui, c.summary.to_string(), TEXT_3)
                 } else {
-                    (ui, String::new(), TEXT_4)
+                    (ui, String::new(), TEXT_3)
                 };
                 if !text.is_empty() {
                     let x = r.x as f32 + self.pf(10.0);
@@ -929,7 +929,7 @@ impl Ui {
                 r.x as f32 + self.pf(16.0),
                 r.y as f32 + self.pf(26.0),
                 "Reading the history…",
-                TEXT_4,
+                TEXT_3,
                 r.w as f32,
             );
             return;
@@ -942,7 +942,7 @@ impl Ui {
                 r.x as f32 + self.pf(16.0),
                 r.y as f32 + self.pf(26.0),
                 "No commits touch this file yet (untracked?)",
-                TEXT_4,
+                TEXT_3,
                 r.w as f32,
             );
             return;
