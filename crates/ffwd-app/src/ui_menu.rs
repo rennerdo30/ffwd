@@ -26,6 +26,8 @@ pub enum MenuAct {
     OpenTerminal(PathBuf),
     /// Open a web page (the hosting site's page of a commit).
     OpenUrl(String),
+    /// A tab's colour (FF-44).
+    TabColor(usize, Option<u8>),
     /// Sort the sidebar's branches by most recent commit (else by name).
     BranchOrder(bool),
     /// Copy a patch (commit, stash, working changes) to the clipboard.
@@ -94,6 +96,11 @@ pub enum NameAct {
     /// Move a submodule to another folder.
     MoveSubmodule {
         path: String,
+    },
+    /// Rename tab `index`.
+    RenameTab {
+        index: usize,
+        old: String,
     },
     /// Clone: the URL, then the folder.
     CloneUrl,
@@ -517,6 +524,7 @@ impl Ui {
             Some(MenuAct::OpenFolder(p)) => crate::platform::open_folder(p),
             Some(MenuAct::OpenTerminal(p)) => crate::platform::open_terminal(p),
             Some(MenuAct::OpenUrl(u)) => crate::platform::open_url(u),
+            Some(MenuAct::TabColor(i, c)) => self.set_tab_color(i, c),
             Some(MenuAct::BranchOrder(recent)) => {
                 self.settings.set_string("sidebar.branch_order", if recent { "recent" } else { "name" });
                 self.rebuild_side();
@@ -548,6 +556,7 @@ impl Ui {
                     | NameAct::StashRename { old, .. }
                     | NameAct::RemoteUrl { old, .. }
                     | NameAct::RenameRemote { old }
+                    | NameAct::RenameTab { old, .. }
                     | NameAct::MoveSubmodule { path: old } => TextField::new(old),
                     _ => TextField::default(),
                 };
@@ -682,6 +691,11 @@ impl Ui {
             self.close_dialog();
             return self.start_clone(url, dest);
         }
+        if let DialogKind::Name { act: NameAct::RenameTab { index, .. }, field, .. } = &d.kind {
+            let (i, name) = (*index, field.text().to_string());
+            self.close_dialog();
+            return self.rename_tab(i, &name);
+        }
         if let DialogKind::Name { act: NameAct::InitDir, field, .. } = &d.kind {
             let dir = PathBuf::from(field.text().trim());
             self.close_dialog();
@@ -736,6 +750,7 @@ impl Ui {
                         NameAct::AddRemoteName { url } => RefOp::RemoteAdd(n, url.clone()),
                         NameAct::RemoteUrl { name, .. } => RefOp::RemoteSetUrl(name.clone(), n),
                         NameAct::RenameRemote { old } => RefOp::RemoteRename(old.clone(), n),
+                        NameAct::RenameTab { .. } => unreachable!("handled above"),
                         NameAct::CloneUrl | NameAct::CloneDest { .. } | NameAct::InitDir => {
                             unreachable!("handled above")
                         }
@@ -1232,6 +1247,7 @@ impl Ui {
         let Some(t) = self.tabs.get(i) else { return Vec::new() };
         let p = t.path.clone();
         let mut v = vec![item("Close", MenuAct::CloseTab(i))];
+        v.push(item("Rename tab…", MenuAct::Name(NameAct::RenameTab { index: i, old: t.title().to_string() })));
         if self.tabs.len() > 1 {
             v.push(item("Close other tabs", MenuAct::CloseOtherTabs(i)));
         }
@@ -1239,6 +1255,15 @@ impl Ui {
         v.push(item(open_folder_label(), MenuAct::OpenFolder(p.clone())));
         v.push(item("Open in terminal", MenuAct::OpenTerminal(p.clone())));
         v.push(item("Copy path", MenuAct::Copy(p.to_string_lossy().into_owned())));
+        v.push(sep());
+        let cur = t.color;
+        for (k, (name, _)) in super::TAB_COLORS.iter().enumerate() {
+            let on = cur == Some(k as u8);
+            v.push(item(if on { format!("✓ {name}") } else { name.to_string() }, MenuAct::TabColor(i, Some(k as u8))));
+        }
+        if cur.is_some() {
+            v.push(item("No colour", MenuAct::TabColor(i, None)));
+        }
         v
     }
 
@@ -1324,6 +1349,9 @@ impl Ui {
                 NameAct::AddRemoteName { url } => (format!("Name the remote for {url}"), String::new()),
                 NameAct::RemoteUrl { name, .. } => (format!("URL of {name}"), String::new()),
                 NameAct::RenameRemote { old } => (format!("Rename the remote {old}"), String::new()),
+                NameAct::RenameTab { old, .. } => {
+                    (format!("Rename the tab {old}"), "An empty name shows the folder's name again.".to_string())
+                }
                 NameAct::CloneUrl => (
                     "Clone a repository".to_string(),
                     "Its URL (https or ssh) or a path. ffwd opens it in a new tab when the clone is done.".to_string(),
@@ -1433,7 +1461,7 @@ impl Ui {
                     NameAct::AddRemoteUrl => "Next".into(),
                     NameAct::AddRemoteName { .. } => "Add and fetch".into(),
                     NameAct::RemoteUrl { .. } => "Save URL".into(),
-                    NameAct::RenameRemote { .. } => "Rename".into(),
+                    NameAct::RenameRemote { .. } | NameAct::RenameTab { .. } => "Rename".into(),
                     NameAct::CloneUrl => "Next".into(),
                     NameAct::CloneDest { .. } => "Clone".into(),
                     NameAct::InitDir => "Create".into(),

@@ -482,6 +482,21 @@ pub struct Tab {
     stale: bool,
     /// History of the current branch only (FF-33).
     head_only: bool,
+    /// A name the user gave the tab (FF-44); `name` stays the folder's.
+    label: Option<String>,
+    /// One of [`TAB_COLORS`].
+    color: Option<u8>,
+}
+
+/// Tab colours (FF-44): red, amber, green, blue, purple.
+pub(super) const TAB_COLORS: [(&str, u32); 5] =
+    [("Red", DEL), ("Amber", MOD), ("Green", ADD), ("Blue", REMOTE_FG), ("Purple", STASH_FG)];
+
+impl Tab {
+    /// What the tab shows.
+    fn title(&self) -> &str {
+        self.label.as_deref().unwrap_or(&self.name)
+    }
 }
 
 /// Creates the message sink for a tab id (the window wraps messages into
@@ -721,8 +736,22 @@ impl Ui {
         // Saved tabs, then the one ffwd was started with.
         let saved: Vec<PathBuf> = ui.state.get_list("session.tabs").into_iter().map(PathBuf::from).collect();
         let saved_active = ui.state.get("session.active").map(PathBuf::from);
+        // Names and colours the user gave tabs, by repository path.
+        let styles: Vec<(PathBuf, Option<String>, Option<u8>)> = ui
+            .state
+            .get_list("session.tab_style")
+            .into_iter()
+            .filter_map(|e| {
+                let mut f = e.split('\u{1f}');
+                let p = PathBuf::from(f.next()?);
+                let label = f.next().filter(|s| !s.is_empty()).map(str::to_string);
+                let color = f.next().and_then(|c| c.parse::<u8>().ok()).filter(|&c| (c as usize) < TAB_COLORS.len());
+                Some((p, label, color))
+            })
+            .collect();
         for p in &saved {
             let id = ui.take_id();
+            let style = styles.iter().find(|x| same_path(&x.0, p));
             ui.tabs.push(Tab {
                 id,
                 path: p.clone(),
@@ -732,6 +761,8 @@ impl Ui {
                 started: false,
                 stale: false,
                 head_only: false,
+                label: style.and_then(|x| x.1.clone()),
+                color: style.and_then(|x| x.2),
             });
         }
         let mut active = saved_active.and_then(|a| ui.tabs.iter().position(|t| same_path(&t.path, &a))).unwrap_or(0);
@@ -752,6 +783,8 @@ impl Ui {
                         started: true,
                         stale: false,
                         head_only: false,
+                        label: None,
+                        color: None,
                     });
                     active = ui.tabs.len() - 1;
                 }
@@ -855,6 +888,8 @@ impl Ui {
             started: false,
             stale: false,
             head_only: false,
+            label: None,
+            color: None,
         });
         self.remember_recent(&path);
         let i = self.tabs.len() - 1;
@@ -1002,6 +1037,22 @@ impl Ui {
         if self.state.get_list("session.tabs") != tabs {
             self.state.set_list("session.tabs", &tabs);
         }
+        let styles: Vec<String> = self
+            .tabs
+            .iter()
+            .filter(|t| t.label.is_some() || t.color.is_some())
+            .map(|t| {
+                format!(
+                    "{}\u{1f}{}\u{1f}{}",
+                    t.path.to_string_lossy(),
+                    t.label.as_deref().unwrap_or(""),
+                    t.color.map_or(String::new(), |c| c.to_string())
+                )
+            })
+            .collect();
+        if self.state.get_list("session.tab_style") != styles {
+            self.state.set_list("session.tab_style", &styles);
+        }
         if let Some(t) = self.tabs.get(self.cur_tab) {
             let a = t.path.to_string_lossy().into_owned();
             if self.state.get("session.active") != Some(a.as_str()) {
@@ -1035,7 +1086,10 @@ impl Ui {
     }
 
     pub fn window_title(&self) -> String {
-        if self.tabs.is_empty() { "ffwd".into() } else { format!("{} · ffwd", self.r.repo_name) }
+        match self.tabs.get(self.cur_tab) {
+            Some(t) => format!("{} · ffwd", t.title()),
+            None => "ffwd".into(),
+        }
     }
 
     // ------------------------------------------------------ top bar actions
@@ -2099,6 +2153,25 @@ impl Ui {
         }
     }
 
+    /// Renames tab `i` (an empty name goes back to the folder's).
+    pub(super) fn rename_tab(&mut self, i: usize, name: &str) {
+        if let Some(t) = self.tabs.get_mut(i) {
+            let n = name.trim();
+            t.label = (!n.is_empty() && n != t.name).then(|| n.to_string());
+            self.save_session();
+            self.damage.rects.push(self.lay.tabs);
+            self.title_dirty = true;
+        }
+    }
+
+    pub(super) fn set_tab_color(&mut self, i: usize, color: Option<u8>) {
+        if let Some(t) = self.tabs.get_mut(i) {
+            t.color = color;
+            self.save_session();
+            self.damage.rects.push(self.lay.tabs);
+        }
+    }
+
     /// Closes every tab but `keep`.
     pub(super) fn close_other_tabs(&mut self, keep: usize) {
         let n = self.tabs.len();
@@ -2712,7 +2785,12 @@ impl Ui {
             if !active && i + 1 != self.cur_tab {
                 cv.fill(Rect::new(t.right() - 1, t.y + self.px(8.0), 1, t.h - self.px(16.0)), BORDER);
             }
-            let name = self.tabs[i].name.clone();
+            let name = self.tabs[i].title().to_string();
+            // The tab's colour: the top bar when active, a thin line otherwise.
+            if let Some(c) = self.tabs[i].color.and_then(|c| TAB_COLORS.get(c as usize)) {
+                let h = if active { self.px(3.0) } else { self.px(2.0) };
+                cv.fill(Rect::new(t.x, t.y, t.w, h), c.1);
+            }
             let base = (t.y as f32 + t.h as f32 / 2.0 + self.pf(4.5)).round();
             let close_w = if active || hover { self.pf(28.0) } else { 0.0 };
             let font = if active { semi } else { ui };
@@ -6076,6 +6154,61 @@ mod tests {
         ui.click(s.x + 2, s.y + (last as i32));
         assert!(ui.r.diff_top > 200, "the click jumps near the bottom: {}", ui.r.diff_top);
         assert_partial_paint_is_full(&mut ui, &mut screen, "strip click");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Tab names and colours (FF-44): rename and colour a tab from its
+    /// menu; both are saved with the session and come back on restore; an
+    /// empty name shows the folder's name again.
+    #[test]
+    fn tab_rename_and_colour_survive_a_restart() {
+        use std::sync::mpsc;
+        let mut te = TextEngine::new();
+        let Some(f) = load_fonts(&mut te) else { return };
+        let dir = std::env::temp_dir().join(format!("ffwd-ui-tabstyle-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        Git { root: dir.clone() }.output(&["init", "-q", "-b", "main"]).unwrap();
+        let (tx, _rx) = mpsc::channel::<(u64, Msg)>();
+        let tx = Arc::new(std::sync::Mutex::new(tx));
+        let sinks: SinkFactory = Arc::new(move |id| {
+            let tx = tx.clone();
+            Arc::new(move |m| {
+                if let Ok(t) = tx.lock() {
+                    let _ = t.send((id, m));
+                }
+            })
+        });
+        let empty = crate::settings::Settings::parse("");
+        let mut ui =
+            Ui::new(te, f, empty.clone(), empty.clone(), Some((1, dir.clone())), sinks.clone(), 1280, 800, 1.0);
+        let items = ui.tab_menu(0);
+        let k = items.iter().position(|i| i.label == "Rename tab…").unwrap();
+        ui.open_menu(100, 60, items);
+        ui.menu_activate(k);
+        ui.key(Key::Ctrl('a'));
+        for c in "Work".chars() {
+            ui.key(Key::Char(c));
+        }
+        ui.key(Key::Enter);
+        assert_eq!(ui.tabs[0].title(), "Work");
+        assert_eq!(ui.window_title(), "Work · ffwd");
+        let items = ui.tab_menu(0);
+        let k = items.iter().position(|i| i.label == "Blue").unwrap();
+        ui.open_menu(100, 60, items);
+        ui.menu_activate(k);
+        assert_eq!(ui.tabs[0].color, Some(3));
+        assert_eq!(ui.state.get_list("session.tab_style").len(), 1);
+        // A restart with that session: the name and colour come back.
+        let state = ui.state.clone();
+        let mut te2 = TextEngine::new();
+        let Some(f2) = load_fonts(&mut te2) else { return };
+        let mut ui2 = Ui::new(te2, f2, empty.clone(), state, None, sinks, 1280, 800, 1.0);
+        assert_eq!(ui2.tabs.len(), 1);
+        assert_eq!((ui2.tabs[0].title(), ui2.tabs[0].color), ("Work", Some(3)));
+        // An empty name goes back to the folder's.
+        ui2.rename_tab(0, "  ");
+        assert_eq!(ui2.tabs[0].title(), ui2.tabs[0].name);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

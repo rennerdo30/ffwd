@@ -148,6 +148,7 @@ The capture above is the real PoC UI. `ffwd --snapshot` rendered it offscreen fr
   - The clone opens in a new tab.
 - **New repository:** "Create a new repository…" with a suggested folder. The folder is created when missing; an existing repository there is just opened.
 - **Tab menu** (right click a tab): Close, Close other tabs, Show in Explorer/Finder (or Open the folder), Open in terminal (Windows Terminal, else a console; Terminal on macOS; the desktop's terminal on Linux), Copy path. A middle click closes a tab.
+- **Tab name and colour:** the tab menu has **Rename tab…** (an empty name shows the folder's again) and five colours (red, amber, green, blue, purple; **No colour** removes it). The colour fills the active tab's top bar and draws a thin line on inactive ones. Both are kept with the session by repository path.
 
 ## History list (FF-33)
 

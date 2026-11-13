@@ -193,7 +193,7 @@
 
 | Feature | ffwd | Notes |
 |---|---|---|
-| Tabs: close with middle click, restore closed (`Ctrl+Shift+T`), rename, colour, open in terminal or file manager | Partial | Close (also middle click), restore, a tab menu with close others, open in the file manager or a terminal, copy path are built; rename and colour come later |
+| Tabs: close with middle click, restore closed (`Ctrl+Shift+T`), rename, colour, open in terminal or file manager | **Built** | Close (also middle click), restore, rename, five colours, close others, open in the file manager or a terminal, copy path; names and colours are kept with the session |
 | Vertical tabs | M2 | |
 | Repository manager: folders and subfolders, recent, rename, colour tags, rearrange | Partial | The picker and recent list are built |
 | Several source-code folders; new repositories found automatically | Partial | `repos.roots` |
