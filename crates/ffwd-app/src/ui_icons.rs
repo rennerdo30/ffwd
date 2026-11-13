@@ -355,6 +355,8 @@ pub(super) fn for_act(act: &super::menu::MenuAct) -> Option<Glyph> {
         M::TabColor(_, Some(c)) => super::TAB_COLORS.get(*c as usize).map(|t| Glyph::Swatch(t.1)),
         M::TabColor(_, None) => Some(Glyph::Close),
         M::DiffShowWs(_) => Some(Glyph::Text),
+        M::CompareMark(_) => Some(Glyph::Check),
+        M::Compare(..) => Some(Glyph::DiffTool),
         M::StageToggle(true) => Some(Glyph::Plus),
         M::StageToggle(false) => Some(Glyph::Undo),
         M::Discard => Some(Glyph::Trash),

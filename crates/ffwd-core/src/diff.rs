@@ -109,6 +109,21 @@ pub fn details(git: &Git, id: Oid) -> Result<Details, GitError> {
     Ok(Details { id, parents, author, email, time, committer, commit_time, message, files, files_truncated })
 }
 
+/// What changed from commit `a` to commit `b` (FF-33 compare), shaped like
+/// `b`'s details with `a` as its only parent, so the file list and
+/// [`file_diff_with`] work on it unchanged.
+pub fn compare(git: &Git, a: Oid, b: Oid) -> Result<Details, GitError> {
+    let mut d = details(git, b)?;
+    let (sa, sb) = (a.to_string(), b.to_string());
+    let raw = git
+        .output_limited(&["diff-tree", "-r", "-M", "--raw", "--numstat", "-z", "--no-commit-id", &sa, &sb], 16 << 20)?;
+    let (files, truncated) = parse_raw_numstat(&raw);
+    d.parents = vec![a];
+    d.files = files;
+    d.files_truncated = truncated;
+    Ok(d)
+}
+
 /// Parses `diff-tree --raw --numstat -z` output: raw records first, then
 /// numstat records in the same order.
 pub fn parse_raw_numstat(b: &[u8]) -> (Vec<FileChange>, bool) {
@@ -314,6 +329,45 @@ fn parse_hunk_header(h: &[u8]) -> (u32, u32) {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn compare_two_commits() {
+        use crate::git::Git;
+        let dir = std::env::temp_dir().join(format!("ffwd-compare-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = Git { root: dir.clone() };
+        for a in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.name", "ffwd test"],
+            &["config", "user.email", "test@example.invalid"],
+            &["config", "commit.gpgsign", "false"],
+            &["config", "core.autocrlf", "false"],
+        ] {
+            g.output(a).unwrap();
+        }
+        let commit = |file: &str, text: &str| {
+            std::fs::write(dir.join(file), text).unwrap();
+            g.output(&["add", "."]).unwrap();
+            g.output(&["commit", "-q", "-m", file]).unwrap();
+            Oid::from_hex(g.output(&["rev-parse", "HEAD"]).unwrap().trim_ascii()).unwrap()
+        };
+        let a = commit("a.txt", "one\n");
+        commit("b.txt", "two\n");
+        let c = commit("a.txt", "one\nmore\n");
+        let d = compare(&g, a, c).unwrap();
+        assert_eq!((d.id, d.parents.clone()), (c, vec![a]));
+        let mut names: Vec<&str> = d.files.iter().map(|f| &*f.path).collect();
+        names.sort_unstable();
+        assert_eq!(names, ["a.txt", "b.txt"], "both commits' changes, from a to c");
+        let fa = d.files.iter().find(|f| &*f.path == "a.txt").unwrap();
+        let diff = file_diff_with(&g, c, &[a], fa, DiffOpts::default()).unwrap();
+        assert!(diff.lines.iter().any(|l| l.kind == LineKind::Add && &*l.text == "more"));
+        // Swapped: the same files, the change reversed.
+        let back = file_diff_with(&g, a, &[c], fa, DiffOpts::default()).unwrap();
+        assert!(back.lines.iter().any(|l| l.kind == LineKind::Del && &*l.text == "more"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn new_line_numbers_for_every_kind() {

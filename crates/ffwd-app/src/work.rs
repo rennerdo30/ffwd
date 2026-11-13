@@ -23,6 +23,11 @@ pub enum Msg {
         seq: u64,
         result: Result<Box<Details>, String>,
     },
+    /// Two commits compared (FF-33): `b`'s details against `a`.
+    Compared {
+        seq: u64,
+        result: Result<Box<Details>, String>,
+    },
     Diff {
         seq: u64,
         file: usize,

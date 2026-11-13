@@ -48,6 +48,9 @@ pub enum MenuAct {
     OpenFile(PathBuf, bool),
     /// Open a file in the editor at a line (FF-41).
     OpenFileAt(PathBuf, u32),
+    /// Compare commits (FF-33): mark one, then compare another with it.
+    CompareMark(ffwd_core::Oid),
+    Compare(ffwd_core::Oid, ffwd_core::Oid),
     /// Local Changes, on the selected file (FF-57): stage or unstage,
     /// discard (asks first), add to .gitignore.
     StageToggle(bool),
@@ -237,9 +240,37 @@ impl Ui {
             };
             v.push(item(what, MenuAct::OpenUrl(url.clone())));
         }
+        // Compare (FF-33): mark this one, or compare with the marked one.
+        v.push(sep());
+        match self.r.compare_mark {
+            Some(m) if m != c.id => {
+                v.push(item(format!("Compare with {}", m.short(8)), MenuAct::Compare(m, c.id)));
+                v.push(item("Mark for comparison instead", MenuAct::CompareMark(c.id)));
+            }
+            _ => v.push(item("Mark for comparison", MenuAct::CompareMark(c.id))),
+        }
+        if let Some((a, b)) = self.r.compare {
+            v.push(item("Swap comparison order", MenuAct::Compare(b, a)));
+        }
+        v.push(sep());
         v.push(item("Copy SHA", MenuAct::Copy(sha.clone())));
         v.push(item("Copy subject", MenuAct::Copy(c.subject.to_string())));
         v
+    }
+
+    /// Shows what changed from `a` to `b` in the details pane (FF-33).
+    pub(super) fn start_compare(&mut self, a: ffwd_core::Oid, b: ffwd_core::Oid) {
+        let (Some(g), Some(t)) = (self.git_for_tab(), self.tabs.get(self.cur_tab)) else { return };
+        self.r.seq += 1;
+        let seq = self.r.seq;
+        self.r.compare = Some((a, b));
+        self.r.diff = None;
+        let sink = (self.sinks)(t.id);
+        crate::work::spawn("compare", &sink, move |sink| {
+            let result = ffwd_core::diff::compare(&g, a, b).map(Box::new).map_err(|e| e.to_string());
+            sink(Msg::Compared { seq, result });
+        });
+        self.damage.rects.push(self.lay.details);
     }
 
     /// The menu for a sidebar ref (`b:name`, `r:remote/name`, `t:name`).
@@ -536,6 +567,15 @@ impl Ui {
             Some(MenuAct::Run(op)) => self.run_refop(op),
             Some(MenuAct::OpenFile(p, editor)) => self.open_external(p, editor, None),
             Some(MenuAct::OpenFileAt(p, line)) => self.open_external(p, true, Some(line)),
+            Some(MenuAct::CompareMark(id)) => {
+                self.r.compare_mark = Some(id);
+                self.set_notice(format!(
+                    "{} is marked: right-click another commit and choose Compare with {}",
+                    id.short(8),
+                    id.short(8)
+                ));
+            }
+            Some(MenuAct::Compare(a, b)) => self.start_compare(a, b),
             Some(MenuAct::StageToggle(_)) => self.toggle_selected_change(),
             Some(MenuAct::Discard) => self.discard_selected(),
             Some(MenuAct::Ignore) => self.ignore_selected(),

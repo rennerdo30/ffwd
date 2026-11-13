@@ -30,7 +30,7 @@
 | Double-click a label to check it out | **Built** | Row or sidebar |
 | Space: commit details popup or large side-by-side view | M1 | |
 | Collapsible details (`Ctrl+Shift+D`), vertical layout, one-line list layout | Partial | Below/beside layout is built |
-| Compare two selected commits (swap order); compare a commit with local changes | M1 | |
+| Compare two selected commits (swap order); compare a commit with local changes | Partial | Commit menu: *Mark for comparison*, then *Compare with …* on another commit; the details list the files between them with their diffs, **Swap** and **Close** in the header. A commit against local changes comes later |
 | Open a commit for review in its own window | M2 | |
 | Open a commit in the hosting site's web page | **Built** | Commit menu: Open on <host>, Copy web link (GitHub, GitLab, Bitbucket, Azure DevOps, Gitea-style) |
 | Highlight one author with a colour; `.mailmap` | M2 | |

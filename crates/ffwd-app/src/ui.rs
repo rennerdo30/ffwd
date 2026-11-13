@@ -408,6 +408,9 @@ const LAYOUT_BESIDE: &str = "Layout: details beside the history";
 /// lives in `Ui::r`; inactive tabs keep theirs in `Tab::state`.
 #[derive(Default)]
 pub struct RepoState {
+    /// A commit marked for comparison, and a comparison shown (from, to).
+    pub compare_mark: Option<Oid>,
+    pub compare: Option<(Oid, Oid)>,
     /// Where each file's diff was scrolled to, by commit and path (FF-41).
     pub diff_scroll: HashMap<(Oid, Box<str>), usize>,
     pub repo_name: String,
@@ -623,6 +626,8 @@ pub struct Ui {
     diff_strip: Rect,
     /// The list title, which switches all branches / current branch.
     scope_rect: Rect,
+    /// The comparison header's Swap and Close buttons.
+    compare_btns: [Rect; 2],
     /// Extra height of the details header for a commit message longer
     /// than fits by default (up to five body lines; FF-57).
     details_extra: i32,
@@ -774,6 +779,7 @@ impl Ui {
             search_rect: Rect::default(),
             diff_strip: Rect::default(),
             scope_rect: Rect::default(),
+            compare_btns: [Rect::default(); 2],
             details_extra: 0,
             head_find_rect: Rect::default(),
             notice_act: None,
@@ -1363,6 +1369,24 @@ impl Ui {
                 self.damage.rows.extend(start.max(self.r.top)..end);
                 self.damage.rects.extend([self.lay.status, self.lay.scrollbar, self.lay.list_head]);
             }
+            Msg::Compared { seq, result } => match result {
+                Ok(d) if seq == self.r.seq => {
+                    // Not cached: the details of `b` stay its own.
+                    self.r.details = Some(d);
+                    self.r.diff = None;
+                    self.r.diff_top = 0;
+                    self.show_first_file();
+                    self.request_diff();
+                    // A comparison replaces the whole details view (title,
+                    // buttons, file list, diff): one full repaint.
+                    self.damage.full = true;
+                }
+                Err(e) if seq == self.r.seq => {
+                    self.r.compare = None;
+                    self.set_notice(format!("Could not compare: {e}"));
+                }
+                _ => {}
+            },
             Msg::Details { seq, result } => match result {
                 Ok(d) => {
                     let id = d.id;
@@ -1620,6 +1644,7 @@ impl Ui {
         self.r.sel_file = 0;
         self.r.file_top = 0;
         let id = self.r.commits[row].id;
+        self.r.compare = None;
         // Same-frame answer: cached details show at once; otherwise the
         // header paints from the list data and the rest fills in.
         self.r.details = self.r.cache.get(&id).cloned();
@@ -2028,6 +2053,18 @@ impl Ui {
         }
         if self.notice_btn.contains(x, y) {
             return self.notice_click();
+        }
+        if self.r.compare.is_some() {
+            if self.compare_btns[0].contains(x, y)
+                && let Some((a, b)) = self.r.compare
+            {
+                return self.start_compare(b, a);
+            }
+            if self.compare_btns[1].contains(x, y) {
+                let row = self.r.sel;
+                self.r.compare = None;
+                return self.select(row);
+            }
         }
         if !self.r.changes_view && self.r.search.is_none() && self.head_find_rect.contains(x, y) {
             return self.open_search();
@@ -3564,13 +3601,45 @@ impl Ui {
         let maxw = d.w as f32 - 2.0 * pad;
         let mut y = d.y as f32 + self.pf(34.0);
         // Subject (from list data: instant) and body (from details).
-        let subject = c.subject.to_string();
+        let compare = self.r.compare;
+        let subject = match compare {
+            // Plain ASCII: the UI font has every glyph on every OS.
+            Some((a, b)) => format!("Changes from {} to {}", a.short(8), b.short(8)),
+            None => c.subject.to_string(),
+        };
         let (s16, s13) = (self.pf(16.0), self.pf(13.0));
         for line in wrap(&mut self.te, semi, s16, &subject, maxw).into_iter().take(2) {
             self.te.draw(cv, semi, self.pf(16.0), x0, y, &line, TEXT, maxw);
             y += self.pf(22.0);
         }
+        self.compare_btns = [Rect::default(); 2];
+        if compare.is_some() {
+            // Swap and Close, the comparison's controls (FF-33).
+            let mut bx = x0;
+            for (k, (label, g)) in [("Swap", Glyph::Reset), ("Close", Glyph::Close)].into_iter().enumerate() {
+                let w = self.te.measure(semi, self.pf(11.5), label) + self.pf(32.0);
+                let b = Rect::new(bx as i32, (y - self.pf(12.0)) as i32, w as i32, self.px(24.0));
+                let hot = self.is_hot(Hot::Compare(k));
+                let (bg, border) = if hot { (CONTROL_HOVER, BORDER_HOVER) } else { (BG_BAR, BORDER) };
+                cv.round_border(b, self.pf(6.0), border, bg);
+                let cy = b.y as f32 + b.h as f32 / 2.0;
+                self.glyph(cv, g, b.x as f32 + self.pf(13.0), cy, self.pf(5.0), TEXT_2);
+                self.te.draw(
+                    cv,
+                    semi,
+                    self.pf(11.5),
+                    b.x as f32 + self.pf(22.0),
+                    (cy + self.pf(4.0)).round(),
+                    label,
+                    TEXT,
+                    w,
+                );
+                self.compare_btns[k] = b;
+                bx += w + self.pf(8.0);
+            }
+        }
         let body: Vec<String> = match &self.r.details {
+            Some(_) if compare.is_some() => Vec::new(),
             Some(det) => {
                 det.message.lines().skip(1).skip_while(|l| l.trim().is_empty()).map(|s| s.to_string()).collect()
             }
@@ -7358,6 +7427,93 @@ mod tests {
         assert_eq!(error(&ui), None);
         ui.key(Key::Enter);
         pump(&mut ui, "the new branch", &|u| u.r.refs.refs.iter().any(|r| &*r.name == "my-feature"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Compare two commits (FF-33): mark one from its menu, compare another
+    /// with it; the details list the files between them and diffs follow;
+    /// Swap reverses it, Close (or selecting a commit) ends it.
+    #[test]
+    fn compare_two_commits_from_the_menu() {
+        use std::sync::mpsc;
+        let mut te = TextEngine::new();
+        let Some(f) = load_fonts(&mut te) else { return };
+        let dir = std::env::temp_dir().join(format!("ffwd-ui-compare-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = Git { root: dir.clone() };
+        for a in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.name", "ffwd test"],
+            &["config", "user.email", "test@example.invalid"],
+            &["config", "commit.gpgsign", "false"],
+            &["config", "core.autocrlf", "false"],
+        ] {
+            g.output(a).unwrap();
+        }
+        for (file, text) in [("a.txt", "one\n"), ("b.txt", "two\n"), ("a.txt", "one\nmore\n")] {
+            std::fs::write(dir.join(file), text).unwrap();
+            g.output(&["add", "."]).unwrap();
+            g.output(&["commit", "-q", "-m", file]).unwrap();
+        }
+        let (tx, rx) = mpsc::channel::<(u64, Msg)>();
+        let tx = Arc::new(std::sync::Mutex::new(tx));
+        let sinks: SinkFactory = Arc::new(move |id| {
+            let tx = tx.clone();
+            Arc::new(move |m| {
+                if let Ok(t) = tx.lock() {
+                    let _ = t.send((id, m));
+                }
+            })
+        });
+        crate::work::start(dir.clone(), &sinks(1));
+        let empty = crate::settings::Settings::parse("");
+        let mut ui = Ui::new(te, f, empty.clone(), empty, Some((1, dir.clone())), sinks, 1280, 800, 1.0);
+        let pump = |ui: &mut Ui, what: &str, done: &dyn Fn(&Ui) -> bool| {
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while !done(ui) {
+                let left = until.saturating_duration_since(std::time::Instant::now());
+                assert!(!left.is_zero(), "timed out waiting for {what}; notice {:?}", ui.notice);
+                if let Ok((id, m)) = rx.recv_timeout(left) {
+                    ui.on_tab_msg(id, m);
+                }
+            }
+        };
+        pump(&mut ui, "history", &|u| u.r.log_done && u.r.commits.len() == 3 && u.r.details.is_some());
+        let mut screen = vec![0u32; 1280 * 800];
+        ui.paint(&mut Canvas::new(&mut screen, 1280, 800), true);
+        let pick = |ui: &mut Ui, row: usize, prefix: &str| {
+            let items = ui.commit_menu(row);
+            let k = items.iter().position(|i| i.label.starts_with(prefix)).unwrap_or_else(|| panic!("no {prefix}"));
+            ui.open_menu(300, 200, items);
+            ui.menu_activate(k);
+        };
+        let (first, last) = (ui.r.commits[2].id, ui.r.commits[0].id);
+        pick(&mut ui, 2, "Mark for comparison");
+        assert_eq!(ui.r.compare_mark, Some(first));
+        pick(&mut ui, 0, "Compare with");
+        pump(&mut ui, "the comparison", &|u| {
+            u.r.details.as_ref().is_some_and(|d| d.parents == [first]) && u.r.diff.is_some()
+        });
+        assert_eq!(ui.r.compare, Some((first, last)));
+        let mut names: Vec<String> = ui.r.details.as_ref().unwrap().files.iter().map(|f| f.path.to_string()).collect();
+        names.sort();
+        assert_eq!(names, ["a.txt", "b.txt"]);
+        assert_partial_paint_is_full(&mut ui, &mut screen, "comparison");
+        // Swap: from the last to the first.
+        let b = ui.compare_btns[0];
+        ui.click(b.x + 4, b.y + b.h / 2);
+        pump(&mut ui, "the swapped comparison", &|u| u.r.details.as_ref().is_some_and(|d| d.parents == [last]));
+        assert_eq!(ui.r.compare, Some((last, first)));
+        assert_partial_paint_is_full(&mut ui, &mut screen, "swapped");
+        // Close: the selected commit's own details again.
+        let c = ui.compare_btns[1];
+        ui.click(c.x + 4, c.y + c.h / 2);
+        assert!(ui.r.compare.is_none());
+        pump(&mut ui, "the commit's own details", &|u| {
+            u.r.details.as_ref().is_some_and(|d| d.id == u.r.commits[u.r.sel].id && d.parents != [last])
+        });
+        assert_partial_paint_is_full(&mut ui, &mut screen, "closed");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

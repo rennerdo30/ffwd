@@ -13,6 +13,8 @@ pub enum Hot {
     Search,
     /// The list title: all branches or only the current one.
     Scope,
+    /// The comparison header's Swap (0) and Close (1).
+    Compare(usize),
     /// The history header's Find button.
     HeadFind,
     /// The status bar's action button.
@@ -126,6 +128,9 @@ impl Ui {
         if self.r.search.is_none() && self.scope_rect.contains(x, y) {
             return Some(Hot::Scope);
         }
+        if let Some(k) = self.compare_btns.iter().position(|b| b.contains(x, y)) {
+            return Some(Hot::Compare(k));
+        }
         if self.r.search.is_none() && self.head_find_rect.contains(x, y) {
             return Some(Hot::HeadFind);
         }
@@ -159,6 +164,7 @@ impl Ui {
             }
             Hot::Search => self.search_rect.inset(-2, -2),
             Hot::Scope => self.scope_rect.inset(-2, -2),
+            Hot::Compare(k) => self.compare_btns[k].inset(-2, -2),
             Hot::HeadFind => self.head_find_rect.inset(-2, -2),
             Hot::Notice => self.notice_btn.inset(-2, -2),
             Hot::Row(r) => self.row_rect(r).unwrap_or_default(),
