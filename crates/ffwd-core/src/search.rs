@@ -56,22 +56,16 @@ impl Field {
     }
 }
 
-/// The `git log` arguments for a search. Commit lines start with a NUL
-/// byte; for content and path searches the matching file names follow.
-pub fn args(field: Field, query: &str) -> Vec<String> {
-    let mut a: Vec<String> = [
-        "-c",
-        "core.quotePath=false",
-        "log",
-        "--branches",
-        "--remotes",
-        "--tags",
-        "HEAD",
-        "--topo-order",
-        "--format=%x00%H",
-    ]
-    .map(String::from)
-    .to_vec();
+/// The `git log` arguments for a search over the same history the list
+/// shows: every branch, remote and tag, or with `head_only` only the
+/// current branch. Commit lines start with a NUL byte; for content and
+/// path searches the matching file names follow.
+pub fn args(field: Field, query: &str, head_only: bool) -> Vec<String> {
+    let mut a: Vec<String> = ["-c", "core.quotePath=false", "log"].map(String::from).to_vec();
+    if !head_only {
+        a.extend(["--branches", "--remotes", "--tags"].map(String::from));
+    }
+    a.extend(["HEAD", "--topo-order", "--format=%x00%H"].map(String::from));
     if field.lists_files() {
         a.push("--name-only".into());
     }
@@ -95,11 +89,12 @@ pub fn stream(
     git: &Git,
     field: Field,
     query: &str,
+    head_only: bool,
     seq: u64,
     cur: &Arc<AtomicU64>,
     mut batch: impl FnMut(Vec<Match>, bool),
 ) -> usize {
-    let a = args(field, query);
+    let a = args(field, query, head_only);
     let refs: Vec<&str> = a.iter().map(String::as_str).collect();
     let Ok(mut child) = git.spawn(&refs) else {
         batch(Vec::new(), true);
@@ -177,7 +172,7 @@ mod tests {
         let run = |f: Field, q: &str| {
             let mut v = Vec::new();
             let mut done = false;
-            stream(&g, f, q, 1, &cur, |b, d| {
+            stream(&g, f, q, false, 1, &cur, |b, d| {
                 v.extend(b.into_iter().map(|m| m.id));
                 done |= d;
             });
@@ -193,7 +188,7 @@ mod tests {
         // Content and path matches name the files that matched, and only those.
         let files = |f: Field, q: &str| {
             let mut v = Vec::new();
-            stream(&g, f, q, 1, &cur, |b, _| v.extend(b));
+            stream(&g, f, q, false, 1, &cur, |b, _| v.extend(b));
             v.into_iter().map(|m| (m.id, m.files)).collect::<Vec<_>>()
         };
         let d = commit("src/ui/other.rs", "fn draw_panel_again() {}\n", "Both");
@@ -207,10 +202,23 @@ mod tests {
         );
         assert_eq!(files(Field::Path, "panel.rs"), vec![(b, one("src/ui/panel.rs"))]);
         assert!(files(Field::Message, "Both").iter().all(|(_, f)| f.is_empty()), "message matches list no files");
+        // The current branch only: a commit on another branch is not found.
+        g.output(&["checkout", "-q", "-b", "side"]).unwrap();
+        let s = commit("side.txt", "x\n", "Only on side");
+        g.output(&["checkout", "-q", "main"]).unwrap();
+        let scoped = |head_only: bool| {
+            let mut v = Vec::new();
+            stream(&g, Field::Message, "only on side", head_only, 1, &cur, |b, _| {
+                v.extend(b.into_iter().map(|m| m.id))
+            });
+            v
+        };
+        assert_eq!(scoped(false), vec![s]);
+        assert!(scoped(true).is_empty(), "main's history has no such commit");
         // A superseded search stops and reports nothing more.
         let stale = Arc::new(AtomicU64::new(2));
         let mut got = 0;
-        stream(&g, Field::Author, "ada", 1, &stale, |b, _| got += b.len());
+        stream(&g, Field::Author, "ada", false, 1, &stale, |b, _| got += b.len());
         assert_eq!(got, 0);
         let _ = std::fs::remove_dir_all(&dir);
     }

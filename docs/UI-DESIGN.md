@@ -249,6 +249,7 @@ The capture above is the real PoC UI. `ffwd --snapshot` rendered it offscreen fr
   - Message and author search as you type (literal text, case-insensitive).
   - SHA matches prefixes in the loaded history without calling Git.
   - Content (`git log -S`) and Path (any part of a path) search on `Enter`, because they read every commit.
+- **Scope:** the search covers the history the list shows: all branches, or only the current branch (the list header's scope). Switching the scope keeps the bar open and runs the search again.
 - **Results:** they stream in from a worker, and a newer search stops the older one at once.
   - Commits that don't match are dimmed; matches are marked in amber on the scroll track.
   - The first match is selected, and the bar counts "n of m".

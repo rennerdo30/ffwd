@@ -2196,7 +2196,16 @@ impl Ui {
         t.head_only = !t.head_only;
         let on = t.head_only;
         self.set_notice(if on { "Showing the current branch only".into() } else { "Showing all branches".into() });
+        // An open search stays and runs again over the new scope.
+        let search = self.r.search.take();
         self.reload_current();
+        if let Some(s) = search {
+            let run = !s.input.text().trim().is_empty();
+            self.r.search = Some(s);
+            if run {
+                self.restart_search();
+            }
+        }
     }
 
     /// Whether ffwd asks the hosting site (setting `hosting.enabled`,
@@ -6319,6 +6328,68 @@ mod tests {
         ui.key(Key::Esc);
         assert_eq!(ui.match_files(id), None);
         assert_partial_paint_is_full(&mut ui, &mut screen, "search closed");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The find bar follows the history's scope (FF-34): a commit only on
+    /// another branch is found over all branches; switching to the current
+    /// branch keeps the search and runs it again, and it finds nothing.
+    #[test]
+    fn find_follows_the_history_scope() {
+        use std::sync::mpsc;
+        let mut te = TextEngine::new();
+        let Some(f) = load_fonts(&mut te) else { return };
+        let dir = std::env::temp_dir().join(format!("ffwd-ui-findscope-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = Git { root: dir.clone() };
+        for a in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.name", "ffwd test"],
+            &["config", "user.email", "test@example.invalid"],
+            &["config", "commit.gpgsign", "false"],
+            &["commit", "-q", "--allow-empty", "-m", "Start"],
+            &["checkout", "-q", "-b", "side"],
+            &["commit", "-q", "--allow-empty", "-m", "Only on side"],
+            &["checkout", "-q", "main"],
+        ] {
+            g.output(a).unwrap();
+        }
+        let (tx, rx) = mpsc::channel::<(u64, Msg)>();
+        let tx = Arc::new(std::sync::Mutex::new(tx));
+        let sinks: SinkFactory = Arc::new(move |id| {
+            let tx = tx.clone();
+            Arc::new(move |m| {
+                if let Ok(t) = tx.lock() {
+                    let _ = t.send((id, m));
+                }
+            })
+        });
+        crate::work::start(dir.clone(), &sinks(1));
+        let empty = crate::settings::Settings::parse("");
+        let mut ui = Ui::new(te, f, empty.clone(), empty, Some((1, dir.clone())), sinks, 1280, 800, 1.0);
+        let pump = |ui: &mut Ui, what: &str, done: &dyn Fn(&Ui) -> bool| {
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while !done(ui) {
+                let left = until.saturating_duration_since(std::time::Instant::now());
+                assert!(!left.is_zero(), "timed out waiting for {what}");
+                if let Ok((id, m)) = rx.recv_timeout(left) {
+                    ui.on_tab_msg(id, m);
+                }
+            }
+        };
+        pump(&mut ui, "history", &|u| u.r.log_done && u.r.commits.len() == 2);
+        ui.key(Key::Ctrl('f'));
+        for c in "only on side".chars() {
+            ui.key(Key::Char(c));
+        }
+        let done = |u: &Ui| u.r.search.as_ref().is_some_and(|s| s.done);
+        pump(&mut ui, "the search over all branches", &done);
+        assert_eq!(ui.r.search.as_ref().unwrap().matches.len(), 1);
+        ui.toggle_scope();
+        assert_eq!(ui.r.search.as_ref().map(|s| s.input.text()), Some("only on side"), "the search stays open");
+        pump(&mut ui, "the search over the current branch", &|u| done(u) && u.r.log_done);
+        assert!(ui.r.search.as_ref().unwrap().matches.is_empty(), "main's history has no such commit");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

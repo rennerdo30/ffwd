@@ -42,7 +42,7 @@
 |---|---|---|
 | Commit search by message, author, SHA | **Built** | Find bar (`Ctrl+F`) |
 | Search by diff content and by file path, with matching files listed | **Built** | The selected match's file list marks the files that matched and opens the first of them |
-| Search the current branch or the whole repository | M1 | |
+| Search the current branch or the whole repository | **Built** | The search covers what the history shows; switching the scope keeps the search and runs it again |
 | Recent search queries | **Built** | The last 10 queries (session state); `↑`/`↓` in the empty find field walk them |
 | Remove matches with Delete (a to-do list) | M2 | |
 | Inline search in the diff (`Ctrl+F`), kept when switching files | M1 | |

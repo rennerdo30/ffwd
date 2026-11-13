@@ -105,7 +105,7 @@ impl Ui {
         }
     }
 
-    fn restart_search(&mut self) {
+    pub(super) fn restart_search(&mut self) {
         let seq = self.search_seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
         let Some(s) = &mut self.r.search else { return };
         s.matches.clear();
@@ -142,8 +142,10 @@ impl Ui {
                 let (Some(g), Some(t)) = (self.git_for_tab(), self.tabs.get(self.cur_tab)) else { return };
                 let sink = (self.sinks)(t.id);
                 let cur = self.search_seq.clone();
+                // The same history the list shows (FF-33 scope).
+                let head_only = t.head_only;
                 crate::work::spawn("search", &sink, move |sink| {
-                    ffwd_core::search::stream(&g, field, &q, seq, &cur, |ids, done| {
+                    ffwd_core::search::stream(&g, field, &q, head_only, seq, &cur, |ids, done| {
                         sink(Msg::SearchBatch { seq, ids, done })
                     });
                 });
