@@ -34,7 +34,7 @@
 | Open a commit for review in its own window | M2 | |
 | Open a commit in the hosting site's web page | **Built** | Commit menu: Open on <host>, Copy web link (GitHub, GitLab, Bitbucket, Azure DevOps, Gitea-style) |
 | Highlight one author with a colour; `.mailmap` | M2 | |
-| Horizontal scroll (Shift+wheel, touchpad) | M1 | |
+| Horizontal scroll (Shift+wheel, touchpad) | **Built** | In diffs (unified and side by side) when lines don't wrap: the code moves, line numbers stay, up to the widest line on screen |
 
 ## 2. Search (FF-34)
 

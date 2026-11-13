@@ -311,6 +311,8 @@ impl Ui {
                 }
                 // Line numbers shift after any staging: picks start over.
                 self.r.changes.picked.clear();
+                // A new diff starts at the left edge.
+                self.code_left = 0.0;
                 self.r.changes.diff = Some(d);
             }
             Err(e) => {
@@ -567,6 +569,11 @@ impl Ui {
         let side = self.r.changes.side;
         self.r.changes.picked.clear();
         self.run_change_op(crate::work::ChangeOp::Lines(Box::new(e), side, picks), "Staging");
+    }
+
+    /// The Local Changes diff's top line.
+    pub(super) fn changes_diff_top(&self) -> usize {
+        self.r.changes.diff_top
     }
 
     /// The line of the Local Changes diff under (x, y), if that pane

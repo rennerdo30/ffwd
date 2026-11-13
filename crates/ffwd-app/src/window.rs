@@ -739,11 +739,25 @@ impl ApplicationHandler<UserEvent> for App {
             WindowEvent::MouseWheel { delta, .. } => {
                 let (x, y) = self.cursor;
                 if let Some(ui) = &mut self.ui {
-                    let lines = match delta {
-                        MouseScrollDelta::LineDelta(_, dy) => -dy * 3.0,
-                        MouseScrollDelta::PixelDelta(p) => -(p.y as f32) / ui.lay.row_h.max(1) as f32,
+                    // Sideways: a touchpad's horizontal swipe, or Shift with
+                    // the wheel (FF-41 horizontal scroll).
+                    let shift = self.mods.shift_key();
+                    let (dx, dy) = match delta {
+                        MouseScrollDelta::LineDelta(dx, dy) => (-dx * 48.0, -dy),
+                        MouseScrollDelta::PixelDelta(p) => {
+                            (-(p.x as f32), -(p.y as f32) / ui.lay.row_h.max(1) as f32 / 3.0)
+                        }
                     };
-                    ui.wheel(x, y, lines);
+                    if shift && dx == 0.0 {
+                        ui.wheel_h(x, y, dy * 48.0 * 3.0);
+                    } else {
+                        if dx != 0.0 {
+                            ui.wheel_h(x, y, dx);
+                        }
+                        if dy != 0.0 {
+                            ui.wheel(x, y, dy * 3.0);
+                        }
+                    }
                 }
             }
             _ => return,

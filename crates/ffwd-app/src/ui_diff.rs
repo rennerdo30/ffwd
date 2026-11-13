@@ -244,12 +244,15 @@ impl Ui {
                 marks.extend(self.diff_find_marks(i, &text));
                 let tx = x0 as f32 + num_w + self.pf(8.0);
                 let st = blocks.get(i).copied().unwrap_or(false);
-                let old = cv.set_clip(clip.intersect(cell));
+                // Code scrolls sideways inside its half; numbers stay.
+                let left = self.code_left;
+                let code = Rect::new(tx as i32, cell.y, (cell.right() as f32 - tx) as i32, cell.h);
+                let old = cv.set_clip(clip.intersect(code));
                 let maxw = (cell.right() as f32) - tx - self.pf(8.0);
-                self.draw_code(cv, tx, lb, cell, &text, fg, maxw, lang, st, &marks);
+                self.draw_code(cv, tx - left, lb, cell, &text, fg, maxw + left, lang, st, &marks);
                 if self.diff_show_ws {
                     let raw = line.text.clone();
-                    self.draw_whitespace(cv, tx, lb, &raw, maxw);
+                    self.draw_whitespace(cv, tx - left, lb, &raw, maxw + left);
                 }
                 cv.set_clip(old);
             }

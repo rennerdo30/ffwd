@@ -595,6 +595,8 @@ pub struct Ui {
     pub diff_show_ws: bool,
     /// Long diff lines wrap (FF-41; unified view).
     pub diff_wrap: bool,
+    /// How far code is scrolled sideways in the diff (pixels; FF-41).
+    pub code_left: f32,
     pub diff_tab: usize,
     /// Code text size in points (diffs, file viewer; FF-41).
     pub code_pt: u8,
@@ -749,6 +751,7 @@ impl Ui {
             diff_find: None,
             diff_show_ws: diff_view::view_from(&settings).0,
             diff_wrap: diff_view::wrap_from(&settings),
+            code_left: 0.0,
             diff_tab: diff_view::view_from(&settings).1 as usize,
             code_pt: diff_view::code_size_from(&settings),
             diff_opts: diff_view::opts_from(&settings).1,
@@ -1428,6 +1431,7 @@ impl Ui {
                             if image {
                                 self.load_diff_images(seq);
                             }
+                            self.code_left = 0.0;
                             // The find query stays: search the new diff.
                             self.diff_find_on_new_diff();
                         }
@@ -1929,6 +1933,45 @@ impl Ui {
         if top != self.r.diff_top {
             self.r.diff_top = top;
             self.damage.rects.push(self.diff_rect());
+        }
+    }
+
+    /// Scrolls code sideways by `px` over a diff (no wrap), up to the
+    /// widest line on screen.
+    pub fn wheel_h(&mut self, x: i32, y: i32, px: f32) {
+        if self.diff_wrap || px == 0.0 {
+            return;
+        }
+        let (diff, top, body) = if self.r.changes_view {
+            let r = self.changes_layout().diff;
+            if !r.contains(x, y) || self.r.changes.ai.is_some() || self.r.changes.conflict.is_some() {
+                return;
+            }
+            (self.r.changes.diff.clone(), self.changes_diff_top(), Rect::new(r.x, r.y + self.px(32.0), r.w, r.h))
+        } else {
+            let r = self.diff_rect();
+            if !r.contains(x, y) {
+                return;
+            }
+            (self.r.diff.clone(), self.r.diff_top, Rect::new(r.x + 1, r.y + self.px(32.0), r.w - 1, r.h))
+        };
+        let Some(d) = diff else { return };
+        let (_, w) = self.code_column(body);
+        let rows = (body.h / self.code_lh().max(1)) as usize + 1;
+        let (mono, fs) = (self.f.mono, self.code_fs());
+        let widest = d
+            .lines
+            .iter()
+            .skip(top)
+            .take(rows)
+            .map(|l| self.te.measure(mono, fs, &diff_find::shown_text(&l.text, self.diff_tab)))
+            .fold(0.0f32, f32::max);
+        let max = (widest - w + self.pf(24.0)).max(0.0);
+        let left = (self.code_left + px).clamp(0.0, max);
+        if left != self.code_left {
+            self.code_left = left;
+            let r = if self.r.changes_view { self.changes_layout().diff } else { self.diff_rect() };
+            self.damage.rects.push(r);
         }
     }
 
@@ -4099,10 +4142,15 @@ impl Ui {
             let maxw = (body.right() as f32) - tx - self.pf(24.0);
             if nrows == 1 {
                 let r1 = Rect::new(body.x, y, body.w, lh);
-                self.draw_code(cv, tx + self.pf(14.0), lb, r1, &text, fg, maxw, lang, st, &marks);
+                // Scrolled sideways: the code moves, numbers and marks stay.
+                let left = if self.diff_wrap { 0.0 } else { self.code_left };
+                let band = Rect::new(code_x as i32, y, (body.right() as f32 - code_x) as i32, lh);
+                let prev = cv.set_clip(old_clip.intersect(band));
+                self.draw_code(cv, tx + self.pf(14.0) - left, lb, r1, &text, fg, maxw + left, lang, st, &marks);
                 if self.diff_show_ws {
-                    self.draw_whitespace(cv, tx + self.pf(14.0), lb, &line.text, maxw);
+                    self.draw_whitespace(cv, tx + self.pf(14.0) - left, lb, &line.text, maxw + left);
                 }
+                cv.set_clip(prev);
             } else {
                 // Each row shows the next `code_w` of the line: the whole
                 // line drawn shifted left and clipped to the code column,
@@ -7596,6 +7644,85 @@ mod tests {
         };
         pump(&mut ui, "the commit and the push", &|u| u.r.op.is_none() && pushed().is_ok_and(|s| s == "Add b"));
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Horizontal scroll in the diff (FF-41): sideways over a diff moves
+    /// the code, not the line numbers, up to the widest line; repaints
+    /// match full paints (unified and side by side); wrapping turns it
+    /// off; a new file starts at the left edge.
+    #[test]
+    fn diff_scrolls_sideways() {
+        use std::sync::mpsc;
+        let mut te = TextEngine::new();
+        let Some(f) = load_fonts(&mut te) else { return };
+        let dir = std::env::temp_dir().join(format!("ffwd-ui-hscroll-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = Git { root: dir.clone() };
+        for a in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.name", "ffwd test"],
+            &["config", "user.email", "test@example.invalid"],
+            &["config", "commit.gpgsign", "false"],
+            &["config", "core.autocrlf", "false"],
+        ] {
+            g.output(a).unwrap();
+        }
+        std::fs::write(dir.join("a.txt"), format!("short\n{}\n", "x".repeat(400))).unwrap();
+        std::fs::write(dir.join("b.txt"), "b\n").unwrap();
+        g.output(&["add", "."]).unwrap();
+        g.output(&["commit", "-q", "-m", "long"]).unwrap();
+        let (tx, rx) = mpsc::channel::<(u64, Msg)>();
+        let tx = Arc::new(std::sync::Mutex::new(tx));
+        let sinks: SinkFactory = Arc::new(move |id| {
+            let tx = tx.clone();
+            Arc::new(move |m| {
+                if let Ok(t) = tx.lock() {
+                    let _ = t.send((id, m));
+                }
+            })
+        });
+        crate::work::start(dir.clone(), &sinks(1));
+        let empty = crate::settings::Settings::parse("");
+        let mut ui = Ui::new(te, f, empty.clone(), empty, Some((1, dir.clone())), sinks, 1280, 800, 1.0);
+        let pump = |ui: &mut Ui, what: &str, done: &dyn Fn(&Ui) -> bool| {
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while !done(ui) {
+                let left = until.saturating_duration_since(std::time::Instant::now());
+                assert!(!left.is_zero(), "timed out waiting for {what}");
+                if let Ok((id, m)) = rx.recv_timeout(left) {
+                    ui.on_tab_msg(id, m);
+                }
+            }
+        };
+        let on = |p: &'static str| move |u: &Ui| u.r.diff.as_ref().is_some_and(|d| &*d.path == p);
+        pump(&mut ui, "a.txt", &on("a.txt"));
+        let mut screen = vec![0u32; 1280 * 800];
+        ui.paint(&mut Canvas::new(&mut screen, 1280, 800), true);
+        let r = ui.diff_rect();
+        let (x, y) = (r.x + r.w / 2, r.y + r.h / 2);
+        ui.wheel_h(x, y, 300.0);
+        assert!(ui.code_left > 0.0, "scrolled sideways");
+        assert_partial_paint_is_full(&mut ui, &mut screen, "unified, scrolled");
+        ui.wheel_h(x, y, 1.0e6);
+        let max = ui.code_left;
+        assert!(max < 1.0e5, "stops at the widest line: {max}");
+        ui.wheel_h(x, y, -1.0e6);
+        assert_eq!(ui.code_left, 0.0, "back to the left edge");
+        ui.apply_diff_bar(diff_view::DiffBar::Split);
+        ui.wheel_h(x, y, 200.0);
+        assert!(ui.code_left > 0.0);
+        assert_partial_paint_is_full(&mut ui, &mut screen, "split, scrolled");
+        ui.apply_diff_bar(diff_view::DiffBar::Unified);
+        // The next file starts at the left edge.
+        ui.select_file(1);
+        pump(&mut ui, "b.txt", &on("b.txt"));
+        assert_eq!(ui.code_left, 0.0);
+        // Wrapping on: nothing to scroll.
+        ui.set_diff_wrap(true);
+        ui.wheel_h(x, y, 300.0);
+        assert_eq!(ui.code_left, 0.0);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Find in the diff (FF-34): `Ctrl+F` with the diff focused searches
