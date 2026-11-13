@@ -19,6 +19,8 @@ pub struct Ref {
     pub name: Box<str>,
     pub target: Oid,
     pub upstream: Option<Box<str>>,
+    /// The upstream branch no longer exists on the remote (git's "gone").
+    pub upstream_gone: bool,
     pub ahead: u32,
     pub behind: u32,
     pub is_head: bool,
@@ -90,6 +92,7 @@ pub fn load(git: &Git) -> Result<Refs, GitError> {
             name: name.into(),
             target,
             upstream: (!f[4].is_empty()).then(|| text(f[4])),
+            upstream_gone: f[5].trim_ascii() == b"gone",
             ahead,
             behind,
             is_head,

@@ -111,6 +111,10 @@ fn tree(
         it.current = r.is_head;
         if kind == SideKind::Branch {
             let mut b = String::new();
+            // An upstream that was deleted on the remote: say so (FF-36).
+            if r.upstream_gone {
+                b.push_str("gone");
+            }
             if r.ahead > 0 {
                 b.push_str(&format!("↑{}", r.ahead));
             }
@@ -702,6 +706,8 @@ impl Ui {
                 let color = match it.kind {
                     SideKind::Changes => MOD,
                     SideKind::Activity => DEL,
+                    // A gone upstream reads as a warning.
+                    SideKind::Branch if it.badge.starts_with("gone") => DEL,
                     SideKind::Branch => ACCENT,
                     _ => TEXT_4,
                 };
@@ -829,6 +835,7 @@ mod tests {
             ahead: 0,
             behind: 0,
             is_head: name == "main",
+            upstream_gone: false,
             time: 0,
         }
     }

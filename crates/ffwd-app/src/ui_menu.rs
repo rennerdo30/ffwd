@@ -302,6 +302,13 @@ impl Ui {
                 MenuAct::Name(NameAct::CreateBranch { at: name.into() }),
             ));
             v.push(item("Rename…", MenuAct::Name(NameAct::Rename { old: name.into() })));
+            // An upstream deleted on the remote (FF-36): stop tracking it.
+            if let Some(r) =
+                self.r.refs.refs.iter().find(|r| r.kind == RefKind::Local && &*r.name == name && r.upstream_gone)
+            {
+                let up = r.upstream.as_deref().unwrap_or("its upstream").to_string();
+                v.push(item(format!("Stop tracking {up} (gone)"), MenuAct::Run(RefOp::UnsetUpstream(name.into()))));
+            }
             if let Some(rm) = self.default_remote() {
                 v.push(item(format!("Push {name} to {rm}"), MenuAct::Run(RefOp::PushBranch(rm, name.into()))));
             }

@@ -128,6 +128,13 @@ pub fn rename_branch(git: &Git, old: &str, new: &str) -> R {
     Ok(format!("Renamed {old} to {new}"))
 }
 
+/// Stops `branch` tracking its upstream (for one that is gone on the
+/// remote). Nothing else changes; setting an upstream again is a push.
+pub fn unset_upstream(git: &Git, branch: &str) -> R {
+    run(git, &["branch", "--unset-upstream", branch])?;
+    Ok(format!("{branch} no longer tracks an upstream"))
+}
+
 /// Deletes a local branch. Without `force`, a branch with commits on no
 /// other branch is refused with `NotMerged`. The message names the
 /// command that brings the branch back.

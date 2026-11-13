@@ -80,7 +80,7 @@
 | Branch folders, autocomplete, move branches to a folder | Partial | Folders are shown |
 | Space becomes `-` or `_` in branch names; name validation | **Built** | Space types `-` (pasted whitespace too); git's ref-name rules are checked while typing, with the reason, and Enter refuses an invalid name (branches and tags) |
 | Sort references (alphabetical, recently used) | **Built** | Branches by name or by most recent commit (Branches header menu; setting `sidebar.branch_order`) |
-| Upstream state icons; warning for an invalid upstream | M1 | |
+| Upstream state icons; warning for an invalid upstream | Partial | Sidebar badges show ↑ahead ↓behind, and a red **gone** when the upstream was deleted on the remote; the branch menu offers *Stop tracking … (gone)*. Icons per state come later |
 | Change the tracking branch; track a remote branch (stash and re-apply) | M1 | |
 | Fast-forward a branch without checking it out; several at once | M2 | |
 | Select stale local branches | M2 | |

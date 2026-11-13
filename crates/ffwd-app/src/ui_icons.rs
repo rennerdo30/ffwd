@@ -289,6 +289,7 @@ pub(super) fn for_act(act: &super::menu::MenuAct) -> Option<Glyph> {
             R::Checkout(_) | R::PrCheckout(..) => Glyph::Checkout,
             R::CreateBranch(..) => Glyph::Branch,
             R::Rename(..) | R::StashRename(..) | R::RemoteRename(..) => Glyph::Edit,
+            R::UnsetUpstream(_) => Glyph::Ignore,
             R::DeleteBranch(..)
             | R::DeleteTag(_)
             | R::StashDrop(_)

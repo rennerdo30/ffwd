@@ -7797,6 +7797,71 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A gone upstream (FF-36): a branch whose upstream was deleted on the
+    /// remote shows "gone" in the sidebar, and its menu stops the tracking.
+    #[test]
+    fn gone_upstream_is_shown_and_can_be_dropped() {
+        use std::sync::mpsc;
+        let mut te = TextEngine::new();
+        let Some(f) = load_fonts(&mut te) else { return };
+        let base = std::env::temp_dir().join(format!("ffwd-ui-gone-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let dir = base.join("work");
+        std::fs::create_dir_all(&dir).unwrap();
+        Git { root: base.clone() }.output(&["init", "-q", "--bare", "-b", "main", "remote.git"]).unwrap();
+        let g = Git { root: dir.clone() };
+        let url = base.join("remote.git").to_string_lossy().replace('\\', "/");
+        for a in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.name", "ffwd test"],
+            &["config", "user.email", "test@example.invalid"],
+            &["config", "commit.gpgsign", "false"],
+            &["remote", "add", "origin", &url],
+            &["commit", "-q", "--allow-empty", "-m", "first"],
+            &["push", "-q", "-u", "origin", "main"],
+            &["branch", "feature"],
+            &["push", "-q", "-u", "origin", "feature"],
+            &["push", "-q", "origin", "--delete", "feature"],
+            &["fetch", "-q", "--prune"],
+        ] {
+            g.output(a).unwrap();
+        }
+        let (tx, rx) = mpsc::channel::<(u64, Msg)>();
+        let tx = Arc::new(std::sync::Mutex::new(tx));
+        let sinks: SinkFactory = Arc::new(move |id| {
+            let tx = tx.clone();
+            Arc::new(move |m| {
+                if let Ok(t) = tx.lock() {
+                    let _ = t.send((id, m));
+                }
+            })
+        });
+        crate::work::start(dir.clone(), &sinks(1));
+        let empty = crate::settings::Settings::parse("");
+        let mut ui = Ui::new(te, f, empty.clone(), empty, Some((1, dir.clone())), sinks, 1280, 800, 1.0);
+        let pump = |ui: &mut Ui, what: &str, done: &dyn Fn(&Ui) -> bool| {
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while !done(ui) {
+                let left = until.saturating_duration_since(std::time::Instant::now());
+                assert!(!left.is_zero(), "timed out waiting for {what}; notice {:?}", ui.notice);
+                if let Ok((id, m)) = rx.recv_timeout(left) {
+                    ui.on_tab_msg(id, m);
+                }
+            }
+        };
+        let feature = |u: &Ui| u.r.refs.refs.iter().find(|r| &*r.name == "feature").cloned();
+        pump(&mut ui, "the refs", &|u| feature(u).is_some());
+        assert!(feature(&ui).unwrap().upstream_gone, "git says the upstream is gone");
+        let badge = ui.r.side.iter().find(|i| i.key == "b:feature").map(|i| i.badge.clone());
+        assert_eq!(badge.as_deref(), Some("gone"));
+        let items = ui.ref_menu("b:feature");
+        let k = items.iter().position(|i| i.label == "Stop tracking origin/feature (gone)").unwrap();
+        ui.open_menu(100, 200, items);
+        ui.menu_activate(k);
+        pump(&mut ui, "the upstream dropped", &|u| feature(u).is_some_and(|r| r.upstream.is_none()));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     /// Find in the diff (FF-34): `Ctrl+F` with the diff focused searches
     /// the shown diff (case-insensitive), Enter steps through the matches
     /// and scrolls to them, the query stays for the next file, and Esc
