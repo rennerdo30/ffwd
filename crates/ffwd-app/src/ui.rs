@@ -9,10 +9,13 @@ use crate::fmt;
 use crate::theme::*;
 use crate::work::{DetailWorker, Msg, Sink};
 use ffwd_core::diff::{Details, FileDiff, LineKind};
+use ffwd_core::ops::Op;
 use ffwd_core::refs::{RefKind, Refs, StatusSummary};
 use ffwd_core::{Commit, Git, Graph, Oid};
 use ffwd_render::{Canvas, FontId, Rect, TextEngine};
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub struct Fonts {
@@ -75,11 +78,17 @@ pub enum Key {
     Backspace,
     Palette,
     Char(char),
+    /// Ctrl (Cmd on macOS) with a lowercase letter or digit.
+    Ctrl(char),
+    CtrlShift(char),
+    NextTab,
+    PrevTab,
 }
 
 #[derive(Clone, Copy, Default)]
 pub struct Layout {
     pub top: Rect,
+    pub tabs: Rect,
     pub status: Rect,
     pub side: Rect,
     pub list: Rect,
@@ -210,18 +219,45 @@ enum PAction {
     Goto(Oid),
     Command(&'static str),
     InstallUpdate,
+    OpenRepo(PathBuf),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum PMode {
+    /// Branches, tags, SHAs and commands.
+    Jump,
+    /// Repositories to open in a tab.
+    Repos,
 }
 
 pub struct Palette {
     pub query: String,
     items: Vec<PItem>,
     sel: usize,
+    mode: PMode,
 }
 
+const CMD_FETCH: &str = "Fetch all remotes";
+const CMD_PULL: &str = "Pull";
+const CMD_PUSH: &str = "Push";
+const CMD_OPEN: &str = "Open repository…";
+const CMD_CLOSE: &str = "Close tab";
+const CMD_REOPEN: &str = "Reopen closed tab";
+const CMD_UPDATES: &str = "Check for updates";
+
+/// Commands that work today; the rest of COMMANDS are listed so the
+/// palette shows the plan, and say so when chosen.
+const WORKING: &[&str] =
+    &[CMD_FETCH, CMD_PULL, CMD_PUSH, CMD_OPEN, CMD_CLOSE, CMD_REOPEN, CMD_UPDATES, LAYOUT_BELOW, LAYOUT_BESIDE];
+
 const COMMANDS: &[(&str, &str)] = &[
-    ("Fetch all remotes", "Ctrl Shift F"),
-    ("Pull", "Ctrl Shift L"),
-    ("Push", "Ctrl Shift P"),
+    (CMD_FETCH, "Ctrl Shift F"),
+    (CMD_PULL, "Ctrl Shift L"),
+    (CMD_PUSH, "Ctrl Shift K"),
+    (CMD_OPEN, "Ctrl O"),
+    (CMD_CLOSE, "Ctrl W"),
+    (CMD_REOPEN, "Ctrl Shift T"),
+    (CMD_UPDATES, ""),
     ("Commit staged changes", "Ctrl Enter"),
     ("Create branch here", "Ctrl B"),
     ("Create tag here", "Ctrl Shift G"),
@@ -242,18 +278,14 @@ const COMMANDS: &[(&str, &str)] = &[
 const LAYOUT_BELOW: &str = "Layout: details below the history";
 const LAYOUT_BESIDE: &str = "Layout: details beside the history";
 
-pub struct Ui {
-    pub s: f32,
-    pub w: usize,
-    pub h: usize,
-    pub lay: Layout,
-    pub te: TextEngine,
-    pub f: Fonts,
+/// Everything that belongs to one open repository. The active tab's state
+/// lives in `Ui::r`; inactive tabs keep theirs in `Tab::state`.
+#[derive(Default)]
+pub struct RepoState {
     pub repo_name: String,
     pub git: Option<Git>,
     pub error: Option<String>,
     pub tz: i64,
-    now: i64,
     pub commits: Vec<Commit>,
     pub graph: Graph,
     by_id: HashMap<Oid, u32>,
@@ -266,7 +298,6 @@ pub struct Ui {
     pub first_batch_ms: Option<f64>,
     pub sel: usize,
     pub top: usize,
-    pub focus: Focus,
     seq: u64,
     pub details: Option<Box<Details>>,
     cache: HashMap<Oid, Box<Details>>,
@@ -274,11 +305,67 @@ pub struct Ui {
     file_top: usize,
     pub diff: Option<Box<FileDiff>>,
     diff_top: usize,
-    pub palette: Option<Palette>,
     worker: Option<DetailWorker>,
+    /// A fetch, pull or push running for this repository.
+    op: Option<Op>,
+    /// After a reload, the commit to select again once it streams in.
+    reselect: Option<Oid>,
+}
+
+/// One repository tab.
+pub struct Tab {
+    /// Messages are tagged with this id; a reload gets a new one, so
+    /// results of the old loaders are dropped.
+    pub id: u64,
+    pub path: PathBuf,
+    pub name: String,
+    /// `None` while the tab is active (its state is in `Ui::r`).
+    state: Option<RepoState>,
+    /// Messages that arrived while the tab was in the background.
+    pending: Vec<Msg>,
+    started: bool,
+}
+
+/// Creates the message sink for a tab id (the window wraps messages into
+/// event-loop events, snapshots into a channel).
+pub type SinkFactory = Arc<dyn Fn(u64) -> Sink + Send + Sync>;
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum TopAction {
+    Repo,
+    Branch,
+    Fetch,
+    Pull,
+    Push,
+    Ai,
+}
+
+pub struct Ui {
+    pub s: f32,
+    pub w: usize,
+    pub h: usize,
+    pub lay: Layout,
+    pub te: TextEngine,
+    pub f: Fonts,
+    now: i64,
+    /// The active repository.
+    pub r: RepoState,
+    pub tabs: Vec<Tab>,
+    pub cur_tab: usize,
+    next_tab_id: u64,
+    closed_tabs: Vec<PathBuf>,
+    tab_hover: Option<usize>,
+    sinks: SinkFactory,
+    /// Recent repositories first, then ones found next to open ones.
+    known_repos: Vec<PathBuf>,
+    pub state: crate::settings::Settings,
+    pub title_dirty: bool,
+    pub focus: Focus,
+    pub palette: Option<Palette>,
     pub notice: Option<String>,
     update_available: bool,
     update_requested: bool,
+    update_check_requested: bool,
     pub stats: Stats,
     pub remote: bool,
     pub layout: DetailsLayout,
@@ -291,6 +378,7 @@ pub struct Ui {
     pub maximized: bool,
     pub active: bool,
     title_controls: Vec<(i32, i32)>,
+    top_buttons: Vec<(Rect, TopAction)>,
     search_rect: Rect,
     pub win_action: Option<WinAction>,
     pub damage: Damage,
@@ -300,22 +388,31 @@ fn now_secs() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64)
 }
 
+fn repo_name(p: &Path) -> String {
+    p.file_name().map_or_else(|| p.to_string_lossy().into_owned(), |n| n.to_string_lossy().into_owned())
+}
+
+/// Two spellings of one folder (case, separators) are the same tab.
+fn same_path(a: &Path, b: &Path) -> bool {
+    let norm = |p: &Path| p.to_string_lossy().replace('\\', "/").trim_end_matches('/').to_lowercase();
+    norm(a) == norm(b)
+}
+
 impl Ui {
+    /// `first` is the tab whose loaders already run (id and path); the other
+    /// tabs saved in `state` are restored but load only when activated.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         te: TextEngine,
         f: Fonts,
         settings: crate::settings::Settings,
-        repo: &std::path::Path,
-        sink: Sink,
+        state: crate::settings::Settings,
+        first: Option<(u64, PathBuf)>,
+        sinks: SinkFactory,
         w: usize,
         h: usize,
         s: f32,
     ) -> Ui {
-        let repo_name = repo.file_name().map_or("repository".into(), |n| n.to_string_lossy().into_owned());
-        // Details load as soon as the first rows arrive; git finds the
-        // repository from any folder inside it, so no discovery wait.
-        let worker = Some(DetailWorker::new(Git { root: repo.to_path_buf() }, &sink));
         let mut ui = Ui {
             s,
             w,
@@ -323,35 +420,22 @@ impl Ui {
             lay: Layout::default(),
             te,
             f,
-            repo_name,
-            git: None,
-            error: None,
-            tz: 0,
             now: now_secs(),
-            commits: Vec::new(),
-            graph: Graph::new(),
-            by_id: HashMap::new(),
-            refs: Refs::default(),
-            chips: HashMap::new(),
-            side: Vec::new(),
-            status: None,
-            log_done: false,
-            log_ms: 0.0,
-            first_batch_ms: None,
-            sel: 0,
-            top: 0,
+            r: RepoState::default(),
+            tabs: Vec::new(),
+            cur_tab: 0,
+            next_tab_id: first.as_ref().map_or(1, |f| f.0 + 1),
+            closed_tabs: Vec::new(),
+            tab_hover: None,
+            sinks,
+            known_repos: state.get_list("recent.repos").into_iter().map(PathBuf::from).collect(),
+            state,
+            title_dirty: true,
             focus: Focus::List,
-            seq: 0,
-            details: None,
-            cache: HashMap::new(),
-            sel_file: 0,
-            file_top: 0,
-            diff: None,
-            diff_top: 0,
             palette: None,
-            worker,
             update_available: false,
             update_requested: false,
+            update_check_requested: false,
             stats: Stats::default(),
             remote: false,
             layout: DetailsLayout::from_setting(settings.get("ui.layout")),
@@ -370,13 +454,313 @@ impl Ui {
             maximized: false,
             active: true,
             title_controls: Vec::new(),
+            top_buttons: Vec::new(),
             search_rect: Rect::default(),
             win_action: None,
             damage: Damage { full: true, ..Default::default() },
         };
+        // Saved tabs, then the one ffwd was started with.
+        let saved: Vec<PathBuf> = ui.state.get_list("session.tabs").into_iter().map(PathBuf::from).collect();
+        let saved_active = ui.state.get("session.active").map(PathBuf::from);
+        for p in &saved {
+            let id = ui.take_id();
+            ui.tabs.push(Tab {
+                id,
+                path: p.clone(),
+                name: repo_name(p),
+                state: Some(RepoState::default()),
+                pending: Vec::new(),
+                started: false,
+            });
+        }
+        let mut active = saved_active.and_then(|a| ui.tabs.iter().position(|t| same_path(&t.path, &a))).unwrap_or(0);
+        if let Some((id, path)) = first {
+            match ui.tabs.iter().position(|t| same_path(&t.path, &path)) {
+                Some(i) => {
+                    ui.tabs[i].id = id;
+                    ui.tabs[i].started = true;
+                    active = i;
+                }
+                None => {
+                    ui.tabs.push(Tab {
+                        id,
+                        path: path.clone(),
+                        name: repo_name(&path),
+                        state: Some(RepoState::default()),
+                        pending: Vec::new(),
+                        started: true,
+                    });
+                    active = ui.tabs.len() - 1;
+                }
+            }
+        }
+        if ui.tabs.is_empty() {
+            ui.r.repo_name = "ffwd".into();
+            ui.r.error = Some("No repository open. Press Ctrl+O to open one.".into());
+        } else {
+            ui.cur_tab = active;
+            ui.r = ui.tabs[active].state.take().unwrap_or_default();
+            ui.activate_current();
+        }
         ui.rebuild_side();
         ui.resize(w, h, s);
+        ui.scan_repos();
         ui
+    }
+
+    fn take_id(&mut self) -> u64 {
+        let id = self.next_tab_id;
+        self.next_tab_id += 1;
+        id
+    }
+
+    // ----------------------------------------------------------------- tabs
+
+    /// Makes `tabs[cur_tab]` (whose state is already in `self.r`) live:
+    /// starts its loaders the first time, replays what arrived in the
+    /// background, and repaints everything.
+    fn activate_current(&mut self) {
+        let Some(tab) = self.tabs.get_mut(self.cur_tab) else { return };
+        let (id, path) = (tab.id, tab.path.clone());
+        let pending = std::mem::take(&mut tab.pending);
+        let start = !tab.started;
+        tab.started = true;
+        if self.r.repo_name.is_empty() {
+            self.r.repo_name = tab.name.clone();
+        }
+        let sink = (self.sinks)(id);
+        if start {
+            crate::work::start(path.clone(), &sink);
+        }
+        if self.r.worker.is_none() {
+            // Git finds the repository from any folder inside it.
+            self.r.worker = Some(DetailWorker::new(Git { root: path }, &sink));
+        }
+        for m in pending {
+            self.on_msg(m);
+        }
+        self.palette = None;
+        self.title_dirty = true;
+        self.damage.full = true;
+        self.save_session();
+    }
+
+    pub fn switch_tab(&mut self, i: usize) {
+        if i >= self.tabs.len() || i == self.cur_tab {
+            return;
+        }
+        let old = std::mem::take(&mut self.r);
+        if let Some(t) = self.tabs.get_mut(self.cur_tab) {
+            t.state = Some(old);
+        }
+        self.cur_tab = i;
+        self.r = self.tabs[i].state.take().unwrap_or_default();
+        self.activate_current();
+    }
+
+    /// Opens `path` in a new tab, or switches to it when it is already open.
+    pub fn open_tab(&mut self, path: PathBuf) {
+        if let Some(i) = self.tabs.iter().position(|t| same_path(&t.path, &path)) {
+            self.switch_tab(i);
+            return;
+        }
+        let id = self.take_id();
+        let name = repo_name(&path);
+        self.tabs.push(Tab {
+            id,
+            path: path.clone(),
+            name,
+            state: Some(RepoState::default()),
+            pending: Vec::new(),
+            started: false,
+        });
+        self.remember_recent(&path);
+        let i = self.tabs.len() - 1;
+        if self.tabs.len() == 1 {
+            self.cur_tab = 0;
+            self.r = self.tabs[0].state.take().unwrap_or_default();
+            self.activate_current();
+        } else {
+            self.switch_tab(i);
+        }
+        self.scan_repos();
+    }
+
+    pub fn close_tab(&mut self, i: usize) {
+        if i >= self.tabs.len() {
+            return;
+        }
+        let tab = self.tabs.remove(i);
+        self.closed_tabs.push(tab.path);
+        if self.tabs.is_empty() {
+            self.r = RepoState { repo_name: "ffwd".into(), ..Default::default() };
+            self.r.error = Some("No repository open. Press Ctrl+O to open one.".into());
+            self.cur_tab = 0;
+            self.title_dirty = true;
+            self.damage.full = true;
+            self.save_session();
+            return;
+        }
+        if i == self.cur_tab {
+            // The closed tab's state is dropped; its loaders' messages find no
+            // tab and are discarded.
+            self.cur_tab = i.min(self.tabs.len() - 1);
+            self.r = self.tabs[self.cur_tab].state.take().unwrap_or_default();
+            self.activate_current();
+        } else {
+            if i < self.cur_tab {
+                self.cur_tab -= 1;
+            }
+            self.damage.rects.push(self.lay.tabs);
+            self.save_session();
+        }
+    }
+
+    pub fn reopen_closed_tab(&mut self) {
+        if let Some(p) = self.closed_tabs.pop() {
+            self.open_tab(p);
+        }
+    }
+
+    /// Reloads the active repository (after a fetch, pull or push) and
+    /// selects the same commit again once it is back.
+    fn reload_current(&mut self) {
+        let Some(tab) = self.tabs.get_mut(self.cur_tab) else { return };
+        let path = tab.path.clone();
+        let reselect = self.r.commits.get(self.r.sel).map(|c| c.id);
+        let id = self.take_id();
+        let tab = &mut self.tabs[self.cur_tab];
+        tab.id = id;
+        tab.started = false;
+        let name = std::mem::take(&mut self.r.repo_name);
+        let (git, tz, notice) = (self.r.git.take(), self.r.tz, self.notice.take());
+        self.r = RepoState { repo_name: name, git, tz, reselect, ..Default::default() };
+        self.notice = notice;
+        let _ = path;
+        self.activate_current();
+    }
+
+    /// Routes a loader message to its tab: applied now for the active tab,
+    /// kept for later otherwise, dropped for closed or reloaded tabs.
+    pub fn on_tab_msg(&mut self, id: u64, m: Msg) {
+        if let Msg::Repos(list) = m {
+            for p in list {
+                if !self.known_repos.iter().any(|k| same_path(k, &p)) {
+                    self.known_repos.push(p);
+                }
+            }
+            if self.palette.as_ref().is_some_and(|p| p.mode == PMode::Repos) {
+                self.filter_palette();
+            }
+            return;
+        }
+        match self.tabs.iter().position(|t| t.id == id) {
+            Some(i) if i == self.cur_tab => self.on_msg(m),
+            Some(i) => {
+                if let Msg::Repo(Ok((g, _))) = &m
+                    && let Some(n) = g.root.file_name()
+                {
+                    self.tabs[i].name = n.to_string_lossy().into_owned();
+                    self.damage.rects.push(self.lay.tabs);
+                }
+                self.tabs[i].pending.push(m);
+            }
+            None => {}
+        }
+    }
+
+    fn remember_recent(&mut self, path: &Path) {
+        let mut recent: Vec<String> = self.state.get_list("recent.repos");
+        recent.retain(|p| !same_path(Path::new(p), path));
+        recent.insert(0, path.to_string_lossy().into_owned());
+        recent.truncate(30);
+        self.state.set_list("recent.repos", &recent);
+        self.known_repos.retain(|p| !same_path(p, path));
+        self.known_repos.insert(0, path.to_path_buf());
+    }
+
+    fn save_session(&mut self) {
+        let tabs: Vec<String> = self.tabs.iter().map(|t| t.path.to_string_lossy().into_owned()).collect();
+        if self.state.get_list("session.tabs") != tabs {
+            self.state.set_list("session.tabs", &tabs);
+        }
+        if let Some(t) = self.tabs.get(self.cur_tab) {
+            let a = t.path.to_string_lossy().into_owned();
+            if self.state.get("session.active") != Some(a.as_str()) {
+                self.state.set_string("session.active", &a);
+            }
+            let p = t.path.clone();
+            if self.state.get_list("recent.repos").first().is_none_or(|f| !same_path(Path::new(f), &p)) {
+                self.remember_recent(&p);
+            }
+        }
+    }
+
+    /// Looks for repositories next to the open ones (and in `repos.roots`,
+    /// `;`-separated) on a worker, for the repository picker.
+    fn scan_repos(&mut self) {
+        let mut roots: Vec<PathBuf> = self
+            .settings
+            .get("repos.roots")
+            .map(|s| s.split(';').filter(|x| !x.trim().is_empty()).map(|x| PathBuf::from(x.trim())).collect())
+            .unwrap_or_default();
+        for t in &self.tabs {
+            if let Some(parent) = t.path.parent()
+                && !roots.iter().any(|r| same_path(r, parent))
+            {
+                roots.push(parent.to_path_buf());
+            }
+        }
+        if !roots.is_empty() {
+            crate::work::scan_repos(roots, &(self.sinks)(0));
+        }
+    }
+
+    pub fn window_title(&self) -> String {
+        if self.tabs.is_empty() { "ffwd".into() } else { format!("{} · ffwd", self.r.repo_name) }
+    }
+
+    // ------------------------------------------------------ top bar actions
+
+    fn start_op(&mut self, op: Op) {
+        if let Some(running) = self.r.op {
+            self.set_notice(format!("{} is still running.", running.name()));
+            return;
+        }
+        let Some((id, path)) = self.tabs.get(self.cur_tab).map(|t| (t.id, t.path.clone())) else {
+            self.set_notice("Open a repository first (Ctrl+O).".into());
+            return;
+        };
+        let git = self.r.git.clone().unwrap_or(Git { root: path });
+        self.r.op = Some(op);
+        self.set_notice(format!("{}…", op.verb()));
+        self.damage.rects.push(self.lay.top);
+        crate::work::run_op(git, op, &(self.sinks)(id));
+    }
+
+    fn top_action(&mut self, a: TopAction) {
+        match a {
+            TopAction::Fetch => self.start_op(Op::Fetch),
+            TopAction::Pull => self.start_op(Op::Pull),
+            TopAction::Push => self.start_op(Op::Push),
+            TopAction::Ai => self.open_palette_with("AI: "),
+            TopAction::Branch => self.open_palette(),
+            TopAction::Repo => self.open_repo_picker(),
+        }
+    }
+
+    pub fn open_repo_picker(&mut self) {
+        self.palette = Some(Palette { query: String::new(), items: Vec::new(), sel: 0, mode: PMode::Repos });
+        self.filter_palette();
+    }
+
+    pub fn request_update_check(&mut self) {
+        self.update_check_requested = true;
+        self.set_notice("Checking for updates…".into());
+    }
+
+    pub fn take_update_check_requested(&mut self) -> bool {
+        std::mem::take(&mut self.update_check_requested)
     }
 
     fn px(&self, v: f32) -> i32 {
@@ -391,7 +775,10 @@ impl Ui {
         self.h = h;
         self.s = s;
         let (wi, hi) = (w as i32, h as i32);
-        let top_h = self.px(46.0);
+        let bar_h = self.px(46.0);
+        // Repository tabs under the top bar.
+        let tabs_h = self.px(32.0);
+        let top_h = bar_h + tabs_h;
         let status_h = self.px(26.0);
         let side_w = self.px(236.0).min(wi / 4);
         let mid_h = (hi - top_h - status_h).max(0);
@@ -420,7 +807,8 @@ impl Ui {
         let sb_w = self.px(8.0);
         let list = Rect::new(list_x, top_h, list_w, list_h);
         self.lay = Layout {
-            top: Rect::new(0, 0, wi, top_h),
+            top: Rect::new(0, 0, wi, bar_h),
+            tabs: Rect::new(0, bar_h, wi, tabs_h),
             status: Rect::new(0, hi - status_h, wi, status_h),
             side: Rect::new(0, top_h, side_w, mid_h),
             list,
@@ -432,12 +820,12 @@ impl Ui {
             row_h,
             caption: if self.chrome == Chrome::Windows11 {
                 let cw = self.px(46.0) * 3;
-                Rect::new(wi - cw, 0, cw, top_h)
+                Rect::new(wi - cw, 0, cw, bar_h)
             } else {
                 Rect::default()
             },
         };
-        self.top = self.top.min(self.max_top());
+        self.r.top = self.r.top.min(self.max_top());
         self.damage.full = true;
     }
 
@@ -446,14 +834,14 @@ impl Ui {
     }
 
     fn max_top(&self) -> usize {
-        self.commits.len().saturating_sub(self.visible_rows())
+        self.r.commits.len().saturating_sub(self.visible_rows())
     }
 
     fn row_rect(&self, row: usize) -> Option<Rect> {
-        if row < self.top {
+        if row < self.r.top {
             return None;
         }
-        let i = (row - self.top) as i32;
+        let i = (row - self.r.top) as i32;
         let b = self.lay.list_body;
         let y = b.y + i * self.lay.row_h;
         (y < b.bottom()).then(|| Rect::new(self.lay.list.x, y, self.lay.list.w - self.lay.scrollbar.w, self.lay.row_h))
@@ -465,18 +853,22 @@ impl Ui {
         match m {
             Msg::Repo(Ok((git, tz))) => {
                 if let Some(n) = git.root.file_name() {
-                    self.repo_name = n.to_string_lossy().into_owned();
+                    self.r.repo_name = n.to_string_lossy().into_owned();
+                    if let Some(t) = self.tabs.get_mut(self.cur_tab) {
+                        t.name = self.r.repo_name.clone();
+                    }
+                    self.title_dirty = true;
                 }
-                self.tz = tz;
-                self.git = Some(git);
-                self.damage.rects.extend([self.lay.top, self.lay.list, self.lay.details]);
+                self.r.tz = tz;
+                self.r.git = Some(git);
+                self.damage.rects.extend([self.lay.top, self.lay.tabs, self.lay.list, self.lay.details]);
             }
             Msg::Repo(Err(e)) => {
-                self.error = Some(e);
+                self.r.error = Some(e);
                 self.damage.full = true;
             }
             Msg::Refs(Ok(r)) => {
-                self.refs = r;
+                self.r.refs = r;
                 self.index_chips();
                 self.rebuild_side();
                 self.damage.rects.extend([self.lay.side, self.lay.top]);
@@ -484,60 +876,86 @@ impl Ui {
             }
             Msg::Refs(Err(e)) => self.set_notice(format!("Could not read refs: {e}")),
             Msg::Status(s) => {
-                self.status = Some(s);
+                self.r.status = Some(s);
                 self.rebuild_side();
                 self.damage.rects.push(self.lay.side);
             }
             Msg::Log { batch, done, elapsed_ms } => {
-                let was_empty = self.commits.is_empty();
-                let start = self.commits.len();
+                let was_empty = self.r.commits.is_empty();
+                let start = self.r.commits.len();
                 for c in batch {
-                    self.graph.push(&c);
-                    self.by_id.insert(c.id, self.commits.len() as u32);
-                    self.commits.push(c);
+                    self.r.graph.push(&c);
+                    self.r.by_id.insert(c.id, self.r.commits.len() as u32);
+                    self.r.commits.push(c);
                 }
-                if self.first_batch_ms.is_none() {
-                    self.first_batch_ms = Some(elapsed_ms);
+                if self.r.first_batch_ms.is_none() {
+                    self.r.first_batch_ms = Some(elapsed_ms);
                 }
-                self.log_done = done;
-                self.log_ms = elapsed_ms;
-                if was_empty && !self.commits.is_empty() {
+                self.r.log_done = done;
+                self.r.log_ms = elapsed_ms;
+                if was_empty && !self.r.commits.is_empty() {
                     self.index_chips();
+                    if self.r.reselect.is_none() {
+                        self.select_head_or_first();
+                    }
+                }
+                if let Some(id) = self.r.reselect
+                    && let Some(&row) = self.r.by_id.get(&id)
+                {
+                    self.r.reselect = None;
+                    self.select(row as usize);
+                } else if done && self.r.reselect.take().is_some() {
                     self.select_head_or_first();
                 }
                 // Only rows that became visible need paint.
-                let end = (self.top + self.visible_rows() + 1).min(self.commits.len());
-                self.damage.rows.extend(start.max(self.top)..end);
+                let end = (self.r.top + self.visible_rows() + 1).min(self.r.commits.len());
+                self.damage.rows.extend(start.max(self.r.top)..end);
                 self.damage.rects.extend([self.lay.status, self.lay.scrollbar, self.lay.list_head]);
             }
             Msg::Details { seq, result } => match result {
                 Ok(d) => {
                     let id = d.id;
-                    if self.cache.len() > 512 {
-                        self.cache.clear();
+                    if self.r.cache.len() > 512 {
+                        self.r.cache.clear();
                     }
-                    self.cache.insert(id, d.clone());
-                    if seq == self.seq {
-                        self.details = Some(d);
-                        self.sel_file = 0;
-                        self.file_top = 0;
+                    self.r.cache.insert(id, d.clone());
+                    if seq == self.r.seq {
+                        self.r.details = Some(d);
+                        self.r.sel_file = 0;
+                        self.r.file_top = 0;
                         self.request_diff();
                         self.damage.rects.push(self.lay.details);
                     }
                 }
-                Err(e) if seq == self.seq => self.set_notice(format!("Could not load commit: {e}")),
+                Err(e) if seq == self.r.seq => self.set_notice(format!("Could not load commit: {e}")),
                 Err(_) => {}
             },
             Msg::Diff { seq, file, result } => {
-                if seq == self.seq && file == self.sel_file {
+                if seq == self.r.seq && file == self.r.sel_file {
                     match result {
-                        Ok(d) => self.diff = Some(d),
+                        Ok(d) => self.r.diff = Some(d),
                         Err(e) => self.set_notice(format!("Could not load diff: {e}")),
                     }
                     self.damage.rects.push(self.diff_rect());
                 }
             }
             Msg::WorkerPanic(e) => self.set_notice(format!("Internal error (window kept alive): {e}")),
+            Msg::OpProgress(line) => {
+                if let Some(op) = self.r.op {
+                    self.set_notice(format!("{}… {line}", op.verb()));
+                }
+            }
+            Msg::OpDone(out) => {
+                self.r.op = None;
+                self.set_notice(format!("{} ({:.1} s)", out.summary, out.ms / 1000.0));
+                self.damage.rects.push(self.lay.top);
+                // Refs, status and history changed: load them again.
+                if out.ok {
+                    self.reload_current();
+                }
+            }
+            // Handled in on_tab_msg; repeated here so a stray one is harmless.
+            Msg::Repos(_) => {}
         }
     }
 
@@ -548,7 +966,7 @@ impl Ui {
         }
         self.layout = l;
         self.settings.set_string("ui.layout", l.as_setting());
-        self.file_top = 0;
+        self.r.file_top = 0;
         self.resize(self.w, self.h, self.s);
     }
 
@@ -575,6 +993,9 @@ impl Ui {
 
     pub fn request_update_install(&mut self) {
         self.update_requested = self.update_available;
+        if !self.update_available {
+            self.set_notice("No update is waiting. Ctrl+K → Check for updates looks now.".into());
+        }
     }
 
     pub fn take_update_requested(&mut self) -> bool {
@@ -586,16 +1007,17 @@ impl Ui {
         crate::update::Policy {
             enabled: self.settings.get("update.check") != Some("false"),
             channel: self.settings.get("update.channel").map(str::to_owned),
+            force: false,
         }
     }
 
     fn index_chips(&mut self) {
-        self.chips.clear();
-        for (i, r) in self.refs.refs.iter().enumerate() {
-            self.chips.entry(r.target).or_default().push(i as u32);
+        self.r.chips.clear();
+        for (i, r) in self.r.refs.refs.iter().enumerate() {
+            self.r.chips.entry(r.target).or_default().push(i as u32);
         }
-        for v in self.chips.values_mut() {
-            let refs = &self.refs.refs;
+        for v in self.r.chips.values_mut() {
+            let refs = &self.r.refs.refs;
             v.sort_by_key(|&i| {
                 let r = &refs[i as usize];
                 (!r.is_head, r.kind, r.name.len())
@@ -615,11 +1037,12 @@ impl Ui {
         };
         v.push(item(0, SideKind::Header, "Workspace", String::new(), false, None));
         let changes = self
+            .r
             .status
             .map_or(String::new(), |s| if s.total() > 0 { fmt::num(s.total() as usize) } else { String::new() });
         v.push(item(0, SideKind::Changes, "Local Changes", changes, false, None));
         v.push(item(0, SideKind::All, "All Commits", String::new(), true, None));
-        let refs = &self.refs.refs;
+        let refs = &self.r.refs.refs;
         let locals: Vec<_> = refs.iter().filter(|r| r.kind == RefKind::Local).collect();
         v.push(item(0, SideKind::Header, "Branches", fmt::num(locals.len()), false, None));
         for r in locals.iter().take(14) {
@@ -662,56 +1085,56 @@ impl Ui {
                 v.push(item(0, SideKind::Tag, &r.name, String::new(), false, Some(r.target)));
             }
         }
-        v.push(item(0, SideKind::Header, "Stashes", fmt::num(self.refs.stashes.len()), false, None));
-        for (_, msg) in self.refs.stashes.iter().take(4) {
+        v.push(item(0, SideKind::Header, "Stashes", fmt::num(self.r.refs.stashes.len()), false, None));
+        for (_, msg) in self.r.refs.stashes.iter().take(4) {
             v.push(item(0, SideKind::Stash, msg, String::new(), false, None));
         }
-        if self.refs.worktrees.len() > 1 {
-            v.push(item(0, SideKind::Header, "Worktrees", fmt::num(self.refs.worktrees.len()), false, None));
-            for w in self.refs.worktrees.iter().take(4) {
+        if self.r.refs.worktrees.len() > 1 {
+            v.push(item(0, SideKind::Header, "Worktrees", fmt::num(self.r.refs.worktrees.len()), false, None));
+            for w in self.r.refs.worktrees.iter().take(4) {
                 let name = w.rsplit(['/', '\\']).next().unwrap_or(w);
                 v.push(item(0, SideKind::Worktree, name, String::new(), false, None));
             }
         }
-        self.side = v;
+        self.r.side = v;
     }
 
     fn select_head_or_first(&mut self) {
-        let head = self.refs.head.and_then(|h| self.by_id.get(&h).copied());
+        let head = self.r.refs.head.and_then(|h| self.r.by_id.get(&h).copied());
         self.select(head.map_or(0, |i| i as usize));
     }
 
     // ------------------------------------------------------------ selection
 
     fn damage_visible_rows(&mut self) {
-        let end = (self.top + self.visible_rows() + 1).min(self.commits.len());
-        self.damage.rows.extend(self.top..end);
+        let end = (self.r.top + self.visible_rows() + 1).min(self.r.commits.len());
+        self.damage.rows.extend(self.r.top..end);
     }
 
     pub fn select(&mut self, row: usize) {
-        if self.commits.is_empty() {
+        if self.r.commits.is_empty() {
             return;
         }
-        let row = row.min(self.commits.len() - 1);
-        let old = self.sel;
-        self.sel = row;
+        let row = row.min(self.r.commits.len() - 1);
+        let old = self.r.sel;
+        self.r.sel = row;
         self.damage.rows.extend([old, row]);
         let vis = self.visible_rows();
-        if row < self.top {
+        if row < self.r.top {
             self.set_top(row);
-        } else if row >= self.top + vis {
+        } else if row >= self.r.top + vis {
             self.set_top(row + 1 - vis);
         }
-        self.seq += 1;
-        self.diff = None;
-        self.diff_top = 0;
-        self.sel_file = 0;
-        self.file_top = 0;
-        let id = self.commits[row].id;
+        self.r.seq += 1;
+        self.r.diff = None;
+        self.r.diff_top = 0;
+        self.r.sel_file = 0;
+        self.r.file_top = 0;
+        let id = self.r.commits[row].id;
         // Same-frame answer: cached details show at once; otherwise the
         // header paints from the list data and the rest fills in.
-        self.details = self.cache.get(&id).cloned();
-        if self.details.is_some() {
+        self.r.details = self.r.cache.get(&id).cloned();
+        if self.r.details.is_some() {
             self.request_diff();
         } else {
             self.request_details();
@@ -720,26 +1143,26 @@ impl Ui {
     }
 
     fn request_details(&mut self) {
-        if let (Some(w), Some(c)) = (&self.worker, self.commits.get(self.sel)) {
-            w.details(self.seq, c.id);
+        if let (Some(w), Some(c)) = (&self.r.worker, self.r.commits.get(self.r.sel)) {
+            w.details(self.r.seq, c.id);
         }
     }
 
     fn request_diff(&mut self) {
-        if let (Some(w), Some(d)) = (&self.worker, &self.details)
-            && let Some(f) = d.files.get(self.sel_file)
+        if let (Some(w), Some(d)) = (&self.r.worker, &self.r.details)
+            && let Some(f) = d.files.get(self.r.sel_file)
         {
-            w.diff(self.seq, d.id, d.parents.clone(), self.sel_file, f.clone());
+            w.diff(self.r.seq, d.id, d.parents.clone(), self.r.sel_file, f.clone());
         }
     }
 
     pub fn set_top(&mut self, top: usize) {
         let top = top.min(self.max_top());
-        let d = top as i64 - self.top as i64;
+        let d = top as i64 - self.r.top as i64;
         if d == 0 {
             return;
         }
-        self.top = top;
+        self.r.top = top;
         if d.unsigned_abs() as usize >= self.visible_rows() {
             self.damage.rects.push(self.lay.list_body);
             self.damage_visible_rows();
@@ -750,24 +1173,24 @@ impl Ui {
     }
 
     fn select_file(&mut self, i: usize) {
-        let Some(d) = &self.details else { return };
+        let Some(d) = &self.r.details else { return };
         if d.files.is_empty() {
             return;
         }
         let i = i.min(d.files.len() - 1);
-        if i == self.sel_file && self.diff.is_some() {
+        if i == self.r.sel_file && self.r.diff.is_some() {
             return;
         }
-        self.sel_file = i;
+        self.r.sel_file = i;
         let vis = self.file_rows_visible();
-        if i < self.file_top {
-            self.file_top = i;
-        } else if i >= self.file_top + vis {
-            self.file_top = i + 1 - vis;
+        if i < self.r.file_top {
+            self.r.file_top = i;
+        } else if i >= self.r.file_top + vis {
+            self.r.file_top = i + 1 - vis;
         }
-        self.diff = None;
-        self.diff_top = 0;
-        self.seq += 1;
+        self.r.diff = None;
+        self.r.diff_top = 0;
+        self.r.seq += 1;
         self.request_diff();
         self.damage.rects.push(self.lay.details);
     }
@@ -775,6 +1198,26 @@ impl Ui {
     // ---------------------------------------------------------------- input
 
     pub fn key(&mut self, k: Key) {
+        // Global shortcuts work everywhere, also with the palette open.
+        let n = self.tabs.len();
+        match k {
+            Key::Ctrl('o') | Key::Ctrl('t') => return self.open_repo_picker(),
+            Key::Ctrl('w') => return self.close_tab(self.cur_tab),
+            Key::CtrlShift('t') => return self.reopen_closed_tab(),
+            Key::NextTab if n > 1 => return self.switch_tab((self.cur_tab + 1) % n),
+            Key::PrevTab if n > 1 => return self.switch_tab((self.cur_tab + n - 1) % n),
+            Key::Ctrl(d @ '1'..='9') => {
+                // Ctrl+9 is the last tab, as in browsers.
+                let i = if d == '9' { n.saturating_sub(1) } else { d as usize - '1' as usize };
+                return self.switch_tab(i);
+            }
+            Key::CtrlShift('f') => return self.start_op(Op::Fetch),
+            Key::CtrlShift('l') => return self.start_op(Op::Pull),
+            Key::CtrlShift('k') => return self.start_op(Op::Push),
+            Key::CtrlShift('u') => return self.request_update_install(),
+            Key::Ctrl(_) | Key::CtrlShift(_) | Key::NextTab | Key::PrevTab => return,
+            _ => {}
+        }
         if self.palette.is_some() {
             self.palette_key(k);
             return;
@@ -784,17 +1227,17 @@ impl Ui {
             (_, Key::Palette) => self.open_palette(),
             (_, Key::Tab) => self.cycle_focus(1),
             (_, Key::BackTab) => self.cycle_focus(-1),
-            (Focus::List, Key::Up) | (Focus::List, Key::Char('k')) => self.select(self.sel.saturating_sub(1)),
-            (Focus::List, Key::Down) | (Focus::List, Key::Char('j')) => self.select(self.sel + 1),
-            (Focus::List, Key::PageUp) => self.select(self.sel.saturating_sub(page)),
-            (Focus::List, Key::PageDown) => self.select(self.sel + page),
+            (Focus::List, Key::Up) | (Focus::List, Key::Char('k')) => self.select(self.r.sel.saturating_sub(1)),
+            (Focus::List, Key::Down) | (Focus::List, Key::Char('j')) => self.select(self.r.sel + 1),
+            (Focus::List, Key::PageUp) => self.select(self.r.sel.saturating_sub(page)),
+            (Focus::List, Key::PageDown) => self.select(self.r.sel + page),
             (Focus::List, Key::Home) => self.select(0),
             (Focus::List, Key::End) => self.select(usize::MAX),
             (Focus::List, Key::Enter) => self.cycle_focus(1),
             (Focus::Files, Key::Up) | (Focus::Files, Key::Char('k')) => {
-                self.select_file(self.sel_file.saturating_sub(1))
+                self.select_file(self.r.sel_file.saturating_sub(1))
             }
-            (Focus::Files, Key::Down) | (Focus::Files, Key::Char('j')) => self.select_file(self.sel_file + 1),
+            (Focus::Files, Key::Down) | (Focus::Files, Key::Char('j')) => self.select_file(self.r.sel_file + 1),
             (Focus::Files, Key::Enter) => self.cycle_focus(1),
             (Focus::Diff, Key::Up) | (Focus::Diff, Key::Char('k')) => self.scroll_diff(-1),
             (Focus::Diff, Key::Down) | (Focus::Diff, Key::Char('j')) => self.scroll_diff(1),
@@ -804,7 +1247,7 @@ impl Ui {
                 if self.focus != Focus::List {
                     self.focus = Focus::List;
                     self.damage.rects.push(self.lay.details);
-                    self.damage.rows.push(self.sel);
+                    self.damage.rows.push(self.r.sel);
                 }
             }
             (_, Key::Char('/')) => self.open_palette(),
@@ -817,14 +1260,14 @@ impl Ui {
         let i = order.iter().position(|f| *f == self.focus).unwrap_or(0) as i32;
         self.focus = order[((i + dir).rem_euclid(3)) as usize];
         self.damage.rects.push(self.lay.details);
-        self.damage.rows.push(self.sel);
+        self.damage.rows.push(self.r.sel);
     }
 
     fn scroll_diff(&mut self, d: i64) {
-        let n = self.diff.as_ref().map_or(0, |d| d.lines.len());
-        let top = (self.diff_top as i64 + d).clamp(0, n.saturating_sub(1) as i64) as usize;
-        if top != self.diff_top {
-            self.diff_top = top;
+        let n = self.r.diff.as_ref().map_or(0, |d| d.lines.len());
+        let top = (self.r.diff_top as i64 + d).clamp(0, n.saturating_sub(1) as i64) as usize;
+        if top != self.r.diff_top {
+            self.r.diff_top = top;
             self.damage.rects.push(self.diff_rect());
         }
     }
@@ -835,7 +1278,7 @@ impl Ui {
             return;
         }
         if self.lay.list.contains(x, y) {
-            self.set_top((self.top as i64 + n).max(0) as usize);
+            self.set_top((self.r.top as i64 + n).max(0) as usize);
         } else if self.diff_rect().contains(x, y) {
             self.scroll_diff(n);
         }
@@ -853,10 +1296,27 @@ impl Ui {
             self.close_palette();
             return;
         }
+        if self.lay.tabs.contains(x, y) {
+            let (rects, plus) = self.tab_rects();
+            if let Some(i) = rects.iter().position(|r| r.contains(x, y)) {
+                if self.tab_close_rect(rects[i]).contains(x, y) {
+                    self.close_tab(i);
+                } else {
+                    self.switch_tab(i);
+                }
+            } else if plus.contains(x, y) {
+                self.open_repo_picker();
+            }
+            return;
+        }
+        if let Some(&(_, a)) = self.top_buttons.iter().find(|(r, _)| r.contains(x, y)) {
+            self.top_action(a);
+            return;
+        }
         let b = self.lay.list_body;
         if b.contains(x, y) {
-            let row = self.top + ((y - b.y) / self.lay.row_h) as usize;
-            if row < self.commits.len() {
+            let row = self.r.top + ((y - b.y) / self.lay.row_h) as usize;
+            if row < self.r.commits.len() {
                 if self.focus != Focus::List {
                     self.focus = Focus::List;
                     self.damage.rects.push(self.lay.details);
@@ -867,20 +1327,20 @@ impl Ui {
         }
         let fr = self.files_rect();
         if fr.contains(x, y) {
-            let i = self.file_top + ((y - fr.y) / self.px(26.0)) as usize;
+            let i = self.r.file_top + ((y - fr.y) / self.px(26.0)) as usize;
             self.focus = Focus::Files;
-            self.damage.rows.push(self.sel);
+            self.damage.rows.push(self.r.sel);
             self.select_file(i);
             self.damage.rects.push(self.lay.details);
             return;
         }
         if self.lay.side.contains(x, y) {
             let mut yy = self.lay.side.y + self.px(8.0);
-            for it in &self.side {
+            for it in &self.r.side {
                 let h = if it.kind == SideKind::Header { self.px(32.0) } else { self.px(28.0) };
                 if y >= yy && y < yy + h {
                     if let Some(t) = it.target
-                        && let Some(&row) = self.by_id.get(&t)
+                        && let Some(&row) = self.r.by_id.get(&t)
                     {
                         self.select(row as usize);
                     }
@@ -897,7 +1357,7 @@ impl Ui {
     // -------------------------------------------------------------- palette
 
     pub fn open_palette(&mut self) {
-        self.palette = Some(Palette { query: String::new(), items: Vec::new(), sel: 0 });
+        self.palette = Some(Palette { query: String::new(), items: Vec::new(), sel: 0, mode: PMode::Jump });
         self.filter_palette();
     }
 
@@ -919,7 +1379,45 @@ impl Ui {
         let Some(p) = &mut self.palette else { return };
         let q = p.query.to_lowercase();
         let mut scored: Vec<(i32, PItem)> = Vec::new();
-        for r in &self.refs.refs {
+        if p.mode == PMode::Repos {
+            // Recent repositories rank first; open ones are marked.
+            for (i, path) in self.known_repos.iter().enumerate() {
+                let name = repo_name(path);
+                let full = path.to_string_lossy().into_owned();
+                let Some(sc) = fuzzy(&q, &name).or_else(|| fuzzy(&q, &full).map(|s| s - 10)) else { continue };
+                let open = self.tabs.iter().any(|t| same_path(&t.path, path));
+                scored.push((
+                    sc + 30 - (i as i32).min(30),
+                    PItem {
+                        label: name,
+                        hint: if open { format!("open · {full}") } else { full },
+                        kind: RefKind::Local,
+                        action: PAction::OpenRepo(path.clone()),
+                    },
+                ));
+            }
+            // A typed folder path opens directly (checked when opened, so no
+            // file system call happens per key press).
+            let raw = p.query.trim();
+            if raw.contains(['\\', '/']) || raw.contains(':') {
+                scored.push((
+                    1000,
+                    PItem {
+                        label: format!("Open {raw}"),
+                        hint: "folder".into(),
+                        kind: RefKind::Head,
+                        action: PAction::OpenRepo(PathBuf::from(raw)),
+                    },
+                ));
+            }
+            scored.sort_by_key(|x| std::cmp::Reverse(x.0));
+            p.items = scored.into_iter().take(10).map(|x| x.1).collect();
+            p.sel = 0;
+            let r = self.palette_rect(10);
+            self.damage.rects.push(r);
+            return;
+        }
+        for r in &self.r.refs.refs {
             if let Some(sc) = fuzzy(&q, &r.name) {
                 let hint = match r.kind {
                     RefKind::Local => "branch",
@@ -941,10 +1439,10 @@ impl Ui {
         for (c, keys) in COMMANDS {
             if let Some(sc) = fuzzy(&q, c) {
                 scored.push((
-                    sc - 2,
+                    sc - if WORKING.contains(c) { 2 } else { 6 },
                     PItem {
                         label: c.to_string(),
-                        hint: keys.to_string(),
+                        hint: if WORKING.contains(c) { keys.to_string() } else { "planned".into() },
                         kind: RefKind::Head,
                         action: PAction::Command(c),
                     },
@@ -963,7 +1461,7 @@ impl Ui {
             ));
         }
         if q.len() >= 4 && q.bytes().all(|b| b.is_ascii_hexdigit()) {
-            for c in self.commits.iter().filter(|c| c.id.to_string().starts_with(&q)).take(3) {
+            for c in self.r.commits.iter().filter(|c| c.id.to_string().starts_with(&q)).take(3) {
                 scored.push((
                     100,
                     PItem {
@@ -980,6 +1478,24 @@ impl Ui {
         p.sel = 0;
         let r = self.palette_rect(10);
         self.damage.rects.push(r);
+    }
+
+    fn run_command(&mut self, c: &str) {
+        match c {
+            CMD_FETCH => self.start_op(Op::Fetch),
+            CMD_PULL => self.start_op(Op::Pull),
+            CMD_PUSH => self.start_op(Op::Push),
+            CMD_OPEN => self.open_repo_picker(),
+            CMD_CLOSE => self.close_tab(self.cur_tab),
+            CMD_REOPEN => self.reopen_closed_tab(),
+            CMD_UPDATES => self.request_update_check(),
+            LAYOUT_BELOW => self.set_layout(DetailsLayout::Below),
+            LAYOUT_BESIDE => self.set_layout(DetailsLayout::Beside),
+            c if c.starts_with("AI:") || c.starts_with("Settings: AI") => self.set_notice(
+                "AI needs an endpoint: set [ai] endpoint in settings.toml (Ollama, LM Studio, OpenAI-compatible). The AI features come next (FF-12).".into(),
+            ),
+            c => self.set_notice(format!("“{c}” is planned for the daily-driver milestone (FF-12) and not built yet.")),
+        }
     }
 
     fn palette_key(&mut self, k: Key) {
@@ -1008,14 +1524,13 @@ impl Ui {
                 let action = p.items.get(p.sel).map(|i| i.action.clone());
                 self.close_palette();
                 match action {
-                    Some(PAction::Goto(id)) => match self.by_id.get(&id) {
+                    Some(PAction::Goto(id)) => match self.r.by_id.get(&id) {
                         Some(&row) => self.select(row as usize),
                         None => self.set_notice("That commit is not loaded yet.".into()),
                     },
-                    Some(PAction::Command(c)) if c == LAYOUT_BELOW => self.set_layout(DetailsLayout::Below),
-                    Some(PAction::Command(c)) if c == LAYOUT_BESIDE => self.set_layout(DetailsLayout::Beside),
-                    Some(PAction::Command(c)) => self.set_notice(format!("“{c}” is not in the proof of concept yet.")),
+                    Some(PAction::Command(c)) => self.run_command(c),
                     Some(PAction::InstallUpdate) => self.request_update_install(),
+                    Some(PAction::OpenRepo(path)) => self.open_tab(path),
                     None => {}
                 }
             }
@@ -1051,9 +1566,9 @@ impl Ui {
                     cv.scroll(full_rows, dy);
                     copy = Some((full_rows, dy));
                     let exposed: Vec<usize> = if d > 0 {
-                        (self.top + (rows - d) as usize..self.top + rows as usize + 1).collect()
+                        (self.r.top + (rows - d) as usize..self.r.top + rows as usize + 1).collect()
                     } else {
-                        (self.top..self.top + (-d) as usize).collect()
+                        (self.r.top..self.r.top + (-d) as usize).collect()
                     };
                     dmg.rows.extend(exposed);
                     rects.push(Rect::new(area.x, full_rows.bottom(), area.w, area.bottom() - full_rows.bottom()));
@@ -1092,6 +1607,9 @@ impl Ui {
         let l = self.lay;
         if !clip.intersect(l.top).is_empty() {
             self.paint_top(cv);
+        }
+        if !clip.intersect(l.tabs).is_empty() {
+            self.paint_tabs(cv);
         }
         if !clip.intersect(l.side).is_empty() {
             self.paint_side(cv);
@@ -1132,16 +1650,30 @@ impl Ui {
         self.chevrons(cv, mark.x as f32 + self.pf(6.5), cy, self.pf(10.0), ACCENT_TEXT);
         let (ui, semi, mono) = (self.f.ui, self.f.semi, self.f.mono);
         let base = (cy + self.pf(5.0)).round();
+        let mut buttons = Vec::new();
         let mut x = mark.right() as f32 + self.pf(12.0);
-        x = self.te.draw(cv, semi, self.pf(14.5), x, base, &self.repo_name.clone(), TEXT, self.pf(220.0));
+        let name_x = x;
+        x = self.te.draw(cv, semi, self.pf(14.5), x, base, &self.r.repo_name.clone(), TEXT, self.pf(220.0));
+        // Clicking the name (or the mark) opens another repository.
+        let name_r =
+            Rect::new(mark.x, (cy - self.pf(14.0)) as i32, (x - mark.x as f32) as i32 + self.px(4.0), self.px(28.0));
+        let _ = name_x;
+        buttons.push((name_r, TopAction::Repo));
+        controls.push((name_r.x, name_r.right()));
         x += self.pf(12.0);
         // Current branch pill.
-        let branch =
-            self.refs.head_branch.as_deref().unwrap_or(if self.git.is_some() { "detached" } else { "…" }).to_string();
+        let branch = self
+            .r
+            .refs
+            .head_branch
+            .as_deref()
+            .unwrap_or(if self.r.git.is_some() { "detached" } else { "…" })
+            .to_string();
         let bw = self.te.measure(semi, self.pf(12.5), &branch) + self.pf(36.0);
         let pill = Rect::new(x as i32, (cy - self.pf(13.0)) as i32, bw as i32, self.px(26.0));
         cv.round_border(pill, self.pf(13.0), BORDER, BG_INPUT);
         controls.push((pill.x, pill.right()));
+        buttons.push((pill, TopAction::Branch));
         self.branch_icon(cv, pill.x as f32 + self.pf(14.0), cy, TEXT_2);
         self.te.draw(cv, semi, self.pf(12.5), pill.x as f32 + self.pf(25.0), base - self.pf(0.5), &branch, TEXT, bw);
         // Search / command field.
@@ -1169,21 +1701,112 @@ impl Ui {
         );
         self.keycap(cv, search.right() as f32 - self.pf(12.0), cy, "Ctrl K", true);
         // Actions with ahead/behind from the current branch.
-        let head = self.refs.refs.iter().find(|r| r.is_head);
+        let head = self.r.refs.refs.iter().find(|r| r.is_head);
         let (ahead, behind) = head.map_or((0, 0), |h| (h.ahead, h.behind));
         let right = if self.lay.caption.is_empty() { r.right() } else { self.lay.caption.x };
         let mut bx = right as f32 - self.pf(12.0);
+        let busy = self.r.op;
+        let label =
+            |op: Op, idle: &'static str| if busy == Some(op) { format!("{}…", op.verb()) } else { idle.to_string() };
+        let (row_y, row_h) = ((cy - self.pf(14.0)) as i32, self.px(28.0));
+        let row = move |l: f32, r: f32| Rect::new(l as i32, row_y, (r - l) as i32, row_h);
         let ai = self.button(cv, bx, cy, "AI", None, true);
+        buttons.push((row(ai, bx), TopAction::Ai));
         bx = ai - self.pf(8.0);
-        let push = self.button(cv, bx, cy, "Push", (ahead > 0).then(|| format!("↑{ahead}")), false);
+        let push = self.button(cv, bx, cy, &label(Op::Push, "Push"), (ahead > 0).then(|| format!("↑{ahead}")), false);
+        buttons.push((row(push, bx), TopAction::Push));
         bx = push - self.pf(8.0);
-        let pull = self.button(cv, bx, cy, "Pull", (behind > 0).then(|| format!("↓{behind}")), false);
+        let pull = self.button(cv, bx, cy, &label(Op::Pull, "Pull"), (behind > 0).then(|| format!("↓{behind}")), false);
+        buttons.push((row(pull, bx), TopAction::Pull));
         bx = pull - self.pf(8.0);
-        let fetch = self.button(cv, bx, cy, "Fetch", None, false);
+        let fetch = self.button(cv, bx, cy, &label(Op::Fetch, "Fetch"), None, false);
+        buttons.push((row(fetch, bx), TopAction::Fetch));
         controls.push((fetch as i32, (right as f32 - self.pf(12.0)) as i32));
         self.title_controls = controls;
+        self.top_buttons = buttons;
         let _ = mono;
         self.paint_caption(cv);
+    }
+
+    /// Tab rectangles and the "+" button, left to right, sharing the row.
+    fn tab_rects(&self) -> (Vec<Rect>, Rect) {
+        let r = self.lay.tabs;
+        let plus_w = self.px(36.0);
+        let n = self.tabs.len().max(1) as i32;
+        let avail = (r.w - plus_w - self.px(8.0)).max(0);
+        let tw = (avail / n).clamp(self.px(80.0), self.px(240.0));
+        let rects: Vec<Rect> = (0..self.tabs.len() as i32).map(|i| Rect::new(r.x + i * tw, r.y, tw, r.h - 1)).collect();
+        let px = rects.last().map_or(r.x, |l| l.right()) + self.px(2.0);
+        (rects, Rect::new(px, r.y, plus_w, r.h - 1))
+    }
+
+    fn tab_close_rect(&self, t: Rect) -> Rect {
+        let s = self.px(22.0);
+        Rect::new(t.right() - s - self.px(6.0), t.y + (t.h - s) / 2, s, s)
+    }
+
+    fn tab_at(&self, x: i32, y: i32) -> Option<usize> {
+        if !self.lay.tabs.contains(x, y) {
+            return None;
+        }
+        self.tab_rects().0.iter().position(|r| r.contains(x, y))
+    }
+
+    fn paint_tabs(&mut self, cv: &mut Canvas) {
+        let r = self.lay.tabs;
+        cv.fill(r, BG_SIDEBAR);
+        cv.fill(Rect::new(r.x, r.bottom() - 1, r.w, 1), BORDER);
+        let (rects, plus) = self.tab_rects();
+        let (ui, semi) = (self.f.ui, self.f.semi);
+        for (i, t) in rects.iter().enumerate() {
+            if t.x >= r.right() {
+                break;
+            }
+            let active = i == self.cur_tab;
+            let hover = self.tab_hover == Some(i);
+            let bg = if active {
+                BG
+            } else if hover {
+                BG_HOVER
+            } else {
+                BG_SIDEBAR
+            };
+            cv.fill(Rect::new(t.x, t.y, t.w, t.h + if active { 1 } else { 0 }), bg);
+            if active {
+                cv.fill(Rect::new(t.x, t.y, t.w, self.px(2.0)), ACCENT);
+            }
+            // Separator between inactive tabs.
+            if !active && i + 1 != self.cur_tab {
+                cv.fill(Rect::new(t.right() - 1, t.y + self.px(8.0), 1, t.h - self.px(16.0)), BORDER);
+            }
+            let name = self.tabs[i].name.clone();
+            let base = (t.y as f32 + t.h as f32 / 2.0 + self.pf(4.5)).round();
+            let close_w = if active || hover { self.pf(28.0) } else { 0.0 };
+            let font = if active { semi } else { ui };
+            let max = t.w as f32 - self.pf(28.0) - close_w;
+            let tw = self.te.measure(font, self.pf(12.5), &name).min(max);
+            // Centred.
+            let tx = t.x as f32 + ((t.w as f32 - close_w - tw) / 2.0).max(self.pf(14.0));
+            self.te.draw(cv, font, self.pf(12.5), tx, base, &name, if active { TEXT } else { TEXT_3 }, max);
+            if active || hover {
+                let c = self.tab_close_rect(*t);
+                let (cx, cy, s) = (c.x as f32 + c.w as f32 / 2.0, c.y as f32 + c.h as f32 / 2.0, self.pf(3.5));
+                let w = self.pf(1.3);
+                cv.stroke(&[(cx - s, cy - s), (cx + s, cy + s)], w, TEXT_3);
+                cv.stroke(&[(cx - s, cy + s), (cx + s, cy - s)], w, TEXT_3);
+            }
+        }
+        // "+" opens another repository.
+        let (cx, cy, s) = (plus.x as f32 + plus.w as f32 / 2.0, plus.y as f32 + plus.h as f32 / 2.0, self.pf(5.0));
+        cv.stroke(&[(cx - s, cy), (cx + s, cy)], self.pf(1.5), TEXT_2);
+        cv.stroke(&[(cx, cy - s), (cx, cy + s)], self.pf(1.5), TEXT_2);
+    }
+
+    /// Middle click closes the tab under the pointer.
+    pub fn middle_click(&mut self, x: i32, y: i32) {
+        if let Some(i) = self.tab_at(x, y) {
+            self.close_tab(i);
+        }
     }
 
     /// Minimise, maximise/restore and close, with Windows 11 metrics and
@@ -1246,6 +1869,11 @@ impl Ui {
 
     /// Pointer moved in the client area (hover for minimise and close).
     pub fn pointer(&mut self, x: i32, y: i32) {
+        let th = self.tab_at(x, y);
+        if th != self.tab_hover {
+            self.tab_hover = th;
+            self.damage.rects.push(self.lay.tabs);
+        }
         let h = self.caption_button_at(x, y).filter(|&b| b != 1);
         if h != self.cap_hover {
             self.cap_hover = h;
@@ -1254,6 +1882,9 @@ impl Ui {
     }
 
     pub fn pointer_left(&mut self) {
+        if self.tab_hover.take().is_some() {
+            self.damage.rects.push(self.lay.tabs);
+        }
         if self.cap_hover.take().is_some() {
             self.damage.rects.push(self.lay.caption);
         }
@@ -1360,7 +1991,7 @@ impl Ui {
         cv.fill(Rect::new(r.right() - 1, r.y, 1, r.h), BORDER);
         let (ui, semi) = (self.f.ui, self.f.semi);
         let mut y = r.y + self.px(8.0);
-        let items = std::mem::take(&mut self.side);
+        let items = std::mem::take(&mut self.r.side);
         for it in &items {
             let h = if it.kind == SideKind::Header { self.px(32.0) } else { self.px(28.0) };
             if y > r.bottom() {
@@ -1488,7 +2119,7 @@ impl Ui {
             }
             y += h;
         }
-        self.side = items;
+        self.r.side = items;
     }
 
     fn lane_w(&self) -> f32 {
@@ -1496,7 +2127,7 @@ impl Ui {
     }
 
     fn graph_lanes_shown(&self) -> u16 {
-        self.graph.max_width.clamp(1, 10)
+        self.r.graph.max_width.clamp(1, 10)
     }
 
     fn list_columns(&self) -> (f32, f32, f32, f32) {
@@ -1520,10 +2151,10 @@ impl Ui {
             cv.fill(head, BG);
             cv.fill(Rect::new(head.x, head.bottom() - 1, head.w, 1), BORDER_SOFT);
             let base = (head.y as f32 + head.h as f32 / 2.0 + self.pf(4.0)).round();
-            let n = if self.log_done {
-                fmt::num(self.commits.len())
+            let n = if self.r.log_done {
+                fmt::num(self.r.commits.len())
             } else {
-                format!("{}…", fmt::num(self.commits.len()))
+                format!("{}…", fmt::num(self.r.commits.len()))
             };
             let title = format!("All commits  ·  {n}");
             self.te.draw(cv, semi, self.pf(11.5), l.x as f32 + self.pf(14.0), base, &title, TEXT_3, self.pf(260.0));
@@ -1533,9 +2164,9 @@ impl Ui {
         }
         let body = Rect::new(l.x, self.lay.list_body.y, l.w - self.lay.scrollbar.w, self.lay.list_body.h);
         if !clip.intersect(body).is_empty() {
-            let first = self.top + ((clip.y - body.y).max(0) / self.lay.row_h) as usize;
-            let last = self.top + ((clip.bottom() - body.y).max(0) / self.lay.row_h) as usize;
-            let mut y = body.y + (first - self.top) as i32 * self.lay.row_h;
+            let first = self.r.top + ((clip.y - body.y).max(0) / self.lay.row_h) as usize;
+            let last = self.r.top + ((clip.bottom() - body.y).max(0) / self.lay.row_h) as usize;
+            let mut y = body.y + (first - self.r.top) as i32 * self.lay.row_h;
             for row in first..=last {
                 if y >= body.bottom() {
                     break;
@@ -1550,15 +2181,15 @@ impl Ui {
         let sb = self.lay.scrollbar;
         if !clip.intersect(sb).is_empty() {
             cv.fill(sb, BG);
-            let n = self.commits.len().max(1);
+            let n = self.r.commits.len().max(1);
             let vis = self.visible_rows();
             if n > vis {
                 let th = ((sb.h as f32 * vis as f32 / n as f32) as i32).max(self.px(24.0));
-                let ty = sb.y + ((sb.h - th) as f32 * self.top as f32 / (n - vis) as f32) as i32;
+                let ty = sb.y + ((sb.h - th) as f32 * self.r.top as f32 / (n - vis) as f32) as i32;
                 cv.fill_round(Rect::new(sb.x + self.px(2.0), ty, sb.w - self.px(4.0), th), self.pf(3.0), 0x2a2f38);
             }
             // Selection marker on the scroll track.
-            let my = sb.y + (sb.h as f32 * self.sel as f32 / n as f32) as i32;
+            let my = sb.y + (sb.h as f32 * self.r.sel as f32 / n as f32) as i32;
             cv.fill(Rect::new(sb.x + self.px(1.0), my, sb.w - self.px(2.0), self.px(2.0)), ACCENT);
         }
     }
@@ -1576,11 +2207,11 @@ impl Ui {
         ui: FontId,
         semi: FontId,
     ) {
-        let selected = row == self.sel;
+        let selected = row == self.r.sel;
         let bg = if selected { if self.focus == Focus::List { BG_SELECT } else { BG_SELECT_DIM } } else { BG };
         cv.fill(r, bg);
-        if row >= self.commits.len() {
-            if !self.log_done && row < self.top + self.visible_rows() {
+        if row >= self.r.commits.len() {
+            if !self.r.log_done && row < self.r.top + self.visible_rows() {
                 // Placeholder bars while history streams in: solid, no animation.
                 let y = r.y + r.h / 2 - self.px(4.0);
                 cv.fill_round(Rect::new(text_x as i32, y, self.px(240.0), self.px(8.0)), self.pf(4.0), BG_HOVER);
@@ -1591,11 +2222,11 @@ impl Ui {
             cv.fill(Rect::new(r.x, r.y, self.px(3.0), r.h), ACCENT);
         }
         self.paint_graph(cv, row, r, bg);
-        let c = &self.commits[row];
+        let c = &self.r.commits[row];
         let base = (r.y as f32 + r.h as f32 / 2.0 + self.pf(4.5)).round();
         let mut x = text_x;
         // Ref chips.
-        let chips: Vec<u32> = self.chips.get(&c.id).cloned().unwrap_or_default();
+        let chips: Vec<u32> = self.r.chips.get(&c.id).cloned().unwrap_or_default();
         let max_x = author_x - self.pf(16.0);
         for (k, &ri) in chips.iter().enumerate() {
             if k == 3 {
@@ -1603,7 +2234,7 @@ impl Ui {
                 x = self.te.draw(cv, semi, self.pf(11.0), x, base, &more, TEXT_3, max_x - x) + self.pf(8.0);
                 break;
             }
-            let rf = &self.refs.refs[ri as usize];
+            let rf = &self.r.refs.refs[ri as usize];
             let (cbg, cfg) = match rf.kind {
                 _ if rf.is_head => (ACCENT, ACCENT_TEXT),
                 RefKind::Local => (LOCAL_BG, LOCAL_FG),
@@ -1635,13 +2266,13 @@ impl Ui {
         }
         let dim = if selected { TEXT_2 } else { TEXT_3 };
         self.te.draw(cv, ui, self.pf(12.5), author_x, base, &c.author, TEXT_2, date_x - author_x - self.pf(12.0));
-        let when = fmt::relative(c.time, self.now, self.tz);
+        let when = fmt::relative(c.time, self.now, self.r.tz);
         self.te.draw(cv, ui, self.pf(12.5), date_x, base, &when, dim, sha_x - date_x - self.pf(10.0));
         self.te.draw(cv, self.f.mono, self.pf(12.0), sha_x, base, &c.id.short(8), dim, self.pf(80.0));
     }
 
     fn paint_graph(&self, cv: &mut Canvas, row: usize, r: Rect, bg: u32) {
-        let Some(g) = self.graph.rows.get(row) else { return };
+        let Some(g) = self.r.graph.rows.get(row) else { return };
         let gx = self.lay.list.x as f32 + self.pf(10.0);
         let lw = self.lane_w();
         let shown = self.graph_lanes_shown();
@@ -1663,7 +2294,7 @@ impl Ui {
         }
         let cx = x(g.node);
         let color = lane(g.color);
-        let is_head = self.refs.head.is_some_and(|h| h == self.commits[row].id);
+        let is_head = self.r.refs.head.is_some_and(|h| h == self.r.commits[row].id);
         cv.fill_circle(cx, mid, self.pf(6.5), bg);
         if is_head {
             cv.fill_circle(cx, mid, self.pf(5.5), ACCENT);
@@ -1692,7 +2323,7 @@ impl Ui {
 
     fn files_rect(&self) -> Rect {
         let d = self.lay.info;
-        let n = self.details.as_ref().map_or(4, |x| x.files.len().clamp(1, self.file_rows_visible()));
+        let n = self.r.details.as_ref().map_or(4, |x| x.files.len().clamp(1, self.file_rows_visible()));
         Rect::new(d.x, d.y + self.header_h() + self.px(34.0), d.w, n as i32 * self.px(26.0))
     }
 
@@ -1715,8 +2346,8 @@ impl Ui {
             DetailsLayout::Below => cv.fill(Rect::new(d.x, d.y, d.w, 1), BORDER),
         }
         let d = self.lay.info;
-        let Some(c) = self.commits.get(self.sel).cloned() else {
-            let msg = if let Some(e) = &self.error { e.clone() } else { "Reading history…".into() };
+        let Some(c) = self.r.commits.get(self.r.sel).cloned() else {
+            let msg = if let Some(e) = &self.r.error { e.clone() } else { "Reading history…".into() };
             self.te.draw(
                 cv,
                 self.f.ui,
@@ -1741,7 +2372,7 @@ impl Ui {
             self.te.draw(cv, semi, self.pf(16.0), x0, y, &line, TEXT, maxw);
             y += self.pf(22.0);
         }
-        let body: Vec<String> = match &self.details {
+        let body: Vec<String> = match &self.r.details {
             Some(det) => {
                 det.message.lines().skip(1).skip_while(|l| l.trim().is_empty()).map(|s| s.to_string()).collect()
             }
@@ -1777,7 +2408,7 @@ impl Ui {
             TEXT_3,
             x0 + maxw - end - self.pf(8.0),
         );
-        let when = format!("{}  ·  {}", fmt::date_time(c.time, self.tz), fmt::relative(c.time, self.now, self.tz));
+        let when = format!("{}  ·  {}", fmt::date_time(c.time, self.r.tz), fmt::relative(c.time, self.now, self.r.tz));
         self.te.draw(cv, ui, self.pf(12.0), mx, meta_y + self.pf(14.0), &when, TEXT_3, maxw);
         let sha_y = meta_y + self.pf(40.0);
         let mut sx = self.te.draw(cv, mono, self.pf(12.0), x0, sha_y, &c.id.short(12), TEXT_2, maxw);
@@ -1790,7 +2421,7 @@ impl Ui {
         cv.fill(Rect::new(d.x + 1, fh_y, d.w - 1, 1), BORDER_SOFT);
         let fbase = fh_y as f32 + self.pf(23.0);
         let focus_files = self.focus == Focus::Files;
-        match &self.details {
+        match &self.r.details {
             None => {
                 self.te.draw(cv, semi, self.pf(11.5), x0, fbase, "CHANGED FILES", TEXT_3, maxw);
                 let fr = self.files_rect();
@@ -1842,10 +2473,10 @@ impl Ui {
                 );
                 let fr = self.files_rect();
                 let rh = self.px(26.0);
-                for (k, f) in det.files.iter().enumerate().skip(self.file_top).take(self.file_rows_visible()) {
-                    let ry = fr.y + (k - self.file_top) as i32 * rh;
+                for (k, f) in det.files.iter().enumerate().skip(self.r.file_top).take(self.file_rows_visible()) {
+                    let ry = fr.y + (k - self.r.file_top) as i32 * rh;
                     let row = Rect::new(d.x + self.px(10.0), ry, d.w - self.px(20.0), rh);
-                    if k == self.sel_file {
+                    if k == self.r.sel_file {
                         cv.fill_round(row, self.pf(6.0), if focus_files { BG_SELECT } else { BG_SELECT_DIM });
                     }
                     let cy = ry as f32 + rh as f32 / 2.0;
@@ -1927,10 +2558,10 @@ impl Ui {
         cv.fill(Rect::new(bar.x, bar.bottom() - 1, bar.w, 1), BORDER_SOFT);
         let base = (bar.y as f32 + bar.h as f32 / 2.0 + self.pf(4.5)).round();
         let pad = self.pf(16.0);
-        let Some(diff) = self.diff.clone() else {
-            let label = match self.details.as_ref().and_then(|d| d.files.get(self.sel_file)) {
+        let Some(diff) = self.r.diff.clone() else {
+            let label = match self.r.details.as_ref().and_then(|d| d.files.get(self.r.sel_file)) {
                 Some(f) => f.path.to_string(),
-                None if self.details.is_some() => "No file changes".into(),
+                None if self.r.details.is_some() => "No file changes".into(),
                 None => String::new(),
             };
             self.te.draw(cv, semi, self.pf(12.5), r.x as f32 + pad, base, &label, TEXT_2, r.w as f32 - 2.0 * pad);
@@ -1971,7 +2602,7 @@ impl Ui {
         let fs = self.pf(12.0);
         let old_clip = cv.clip();
         let rows = (body.h / lh + 1) as usize;
-        for (k, line) in diff.lines.iter().skip(self.diff_top).take(rows).enumerate() {
+        for (k, line) in diff.lines.iter().skip(self.r.diff_top).take(rows).enumerate() {
             let y = body.y + k as i32 * lh;
             let row = Rect::new(body.x, y, body.w, lh);
             if old_clip.intersect(row).is_empty() {
@@ -2040,21 +2671,21 @@ impl Ui {
         let base = (r.y as f32 + r.h as f32 / 2.0 + self.pf(4.0)).round();
         let cy = r.y as f32 + r.h as f32 / 2.0;
         let mut x = self.pf(14.0);
-        let (dot, msg) = if let Some(e) = &self.error {
+        let (dot, msg) = if let Some(e) = &self.r.error {
             (DEL, e.clone())
         } else if let Some(n) = &self.notice {
             (MOD, n.clone())
-        } else if !self.log_done {
-            (MOD, format!("Reading history · {} commits", fmt::num(self.commits.len())))
+        } else if !self.r.log_done {
+            (MOD, format!("Reading history · {} commits", fmt::num(self.r.commits.len())))
         } else {
             (ADD, "Ready".to_string())
         };
         cv.fill_circle(x + self.pf(3.0), cy, self.pf(3.5), dot);
         x += self.pf(14.0);
         x = self.te.draw(cv, ui, self.pf(12.0), x, base, &msg, TEXT_2, self.pf(520.0));
-        if self.log_done && self.error.is_none() {
-            let mut facts = format!("{} commits in {:.0} ms", fmt::num(self.commits.len()), self.log_ms);
-            if let Some(fb) = self.first_batch_ms {
+        if self.r.log_done && self.r.error.is_none() {
+            let mut facts = format!("{} commits in {:.0} ms", fmt::num(self.r.commits.len()), self.r.log_ms);
+            if let Some(fb) = self.r.first_batch_ms {
                 facts.push_str(&format!(" · first rows {fb:.0} ms"));
             }
             if let Some(ff) = self.stats.first_frame_ms {
@@ -2089,7 +2720,7 @@ impl Ui {
             }
         }
         let Some(p) = &self.palette else { return };
-        let (query, sel) = (p.query.clone(), p.sel);
+        let (query, sel, mode) = (p.query.clone(), p.sel, p.mode);
         let items: Vec<(String, String, RefKind, bool)> = p
             .items
             .iter()
@@ -2110,7 +2741,11 @@ impl Ui {
                 self.pf(15.0),
                 qx,
                 base,
-                "Type a branch, tag, SHA or command",
+                if mode == PMode::Repos {
+                    "Open a repository: type its name or a folder path"
+                } else {
+                    "Type a branch, tag, SHA or command"
+                },
                 TEXT_3,
                 r.w as f32 - self.pf(80.0),
             );
@@ -2164,6 +2799,12 @@ impl Ui {
                     self.pf(1.5),
                     color,
                 );
+            } else if mode == PMode::Repos {
+                // Folder: a body with a small tab on its top left.
+                let (w, h) = (self.pf(12.0), self.pf(9.0));
+                let body = Rect::new((icx - w / 2.0) as i32, (cy - h / 2.0 + self.pf(1.0)) as i32, w as i32, h as i32);
+                cv.fill(Rect::new(body.x, body.y - self.px(2.0), (w * 0.45) as i32, self.px(3.0)), TEXT_3);
+                cv.round_border(body, self.pf(2.0), TEXT_3, if k == sel { BG_SELECT } else { BG_INPUT });
             } else {
                 self.branch_icon(cv, icx, cy, color);
             }
@@ -2267,4 +2908,18 @@ fn merge_rects(mut v: Vec<Rect>) -> Vec<Rect> {
         }
     }
     v
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn same_folder_in_two_spellings_is_one_tab() {
+        assert!(same_path(Path::new(r"E:\Development\Kwil"), Path::new("e:/development/kwil/")));
+        assert!(!same_path(Path::new(r"E:\Development\kwil"), Path::new(r"E:\Development\kwil2")));
+        #[cfg(windows)]
+        assert_eq!(repo_name(Path::new(r"E:\Development\ffwd")), "ffwd");
+        assert_eq!(repo_name(Path::new("dev/ffwd")), "ffwd");
+    }
 }

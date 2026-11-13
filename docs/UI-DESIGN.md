@@ -43,6 +43,20 @@ The capture above is the real PoC UI. `ffwd --snapshot` rendered it offscreen fr
 - **Linux:** server-side decorations from the desktop.
 - **Icon:** the window icon is drawn from the logo's geometry at startup; `ffwd --icon-png out.png 256` writes it as a PNG for packaging.
 
+## Repository tabs
+
+Like other clients: one tab per repository under the top bar.
+- Click a tab to switch; × or a middle click closes it; `+` opens another repository.
+- **Open repository** (`Ctrl+O`, `Ctrl+T`, `+` or a click on the repository name): a picker listing recent repositories first, then repositories found next to the open ones (and in `repos.roots` in `settings.toml`, `;`-separated). Typing a folder path opens it directly.
+- Each tab keeps its own history, selection and loaders. Background tabs collect their updates and apply them when shown; saved tabs from the last session load only when first shown.
+- The open tabs and the active one are restored on the next start (`%APPDATA%\ffwd\state.toml`).
+
+## Top bar actions
+
+- **Fetch / Pull / Push** run `git` on a worker with the user's own config and credential helper. The button reads "Fetching…" while it runs, the status bar shows git's progress line and then the result; the history reloads and keeps the selected commit. Push of a branch without an upstream pushes to `origin` and sets it.
+- **AI** opens the AI commands; until an endpoint is configured they say how to set one.
+- Commands in `Ctrl+K` that are not built yet are marked **planned**.
+
 ## Interaction (keyboard first)
 
 | Key | Action |
@@ -53,6 +67,11 @@ The capture above is the real PoC UI. `ffwd --snapshot` rendered it offscreen fr
 | `Enter` | Move focus into the next pane |
 | `Esc` | Back to the history |
 | `Ctrl+K` / `Ctrl+P` / `/` | Palette: jump to a branch, tag or SHA, or run a command |
+| `Ctrl+O` / `Ctrl+T` | Open a repository in a tab |
+| `Ctrl+W` / `Ctrl+Shift+T` | Close the tab / reopen the last closed one |
+| `Ctrl+Tab` / `Ctrl+Shift+Tab` / `Ctrl+1…9` | Next, previous, n-th tab (9 = last) |
+| `Ctrl+Shift+F` / `L` / `K` | Fetch / Pull / Push |
+| `Ctrl+Shift+U` | Install a found update |
 
 Mouse: click to select rows and files, click a sidebar ref to jump to its commit, and use the wheel over the history or the diff.
 

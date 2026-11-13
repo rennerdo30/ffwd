@@ -49,6 +49,9 @@ On macOS and Linux: `scripts/run.sh` and `scripts/check.sh`, or `cargo run --rel
 | `↑ ↓` / `j k` | Move through history, files or diff |
 | `Tab` / `Shift+Tab` | Switch between history, files and diff |
 | `Ctrl+K` / `Ctrl+P` / `/` | Jump to a branch, tag or SHA, or find a command |
+| `Ctrl+O` / `Ctrl+T` | Open another repository in a tab |
+| `Ctrl+Tab` / `Ctrl+W` | Next tab / close tab |
+| `Ctrl+Shift+F` / `L` / `K` | Fetch / Pull / Push |
 | `Esc` | Back to history |
 
 Offscreen rendering and startup traces:

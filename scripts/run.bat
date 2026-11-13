@@ -1,7 +1,7 @@
 @echo off
 rem Build and start ffwd from this checkout, to check the current state.
 rem
-rem   scripts\run.bat                  open this repository
+rem   scripts\run.bat                  reopen the tabs of the last session (or this repository)
 rem   scripts\run.bat E:\some\repo     open another repository
 rem   scripts\run.bat --release        optimized build (slower to build, the real speed)
 rem   scripts\run.bat --pull           update to the latest main first (fast-forward only)
@@ -36,7 +36,8 @@ if defined PULL (
     echo Updating to the latest main...
     git pull --ff-only origin main || (echo Pull failed. Fix the checkout first. & exit /b 1)
 )
-if not defined REPO set REPO="%CD%"
+rem First run ever (no saved tabs): open this checkout.
+if not defined REPO if not exist "%APPDATA%\ffwd\state.toml" set REPO="%CD%"
 if defined FFWD_RUN_DRY_RUN (echo Repo: !REPO! & echo Options: !FFWD_ARGS! & echo Profile: %RELEASE% & exit /b 0)
 
 echo Building ffwd %RELEASE%...

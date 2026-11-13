@@ -41,23 +41,37 @@ pub fn installed() -> bool {
 pub struct Policy {
     pub enabled: bool,
     pub channel: Option<String>,
+    /// Check for updates now: ignores the daily limit and says why when
+    /// updates are off.
+    pub force: bool,
 }
 
 pub enum Outcome {
     Found(Candidate),
     UpToDate,
     Skipped,
+    /// Updates are off for this copy; the reason, for an explicit check.
+    Off(String),
 }
 
 /// Runs the daily check if it is due. Called on a worker.
 fn check(policy: &Policy) -> Result<Outcome, String> {
-    if cfg!(debug_assertions) || std::env::var_os("FFWD_NO_UPDATE").is_some() || !policy.enabled {
-        return Ok(Outcome::Skipped);
+    let off = if cfg!(debug_assertions) {
+        Some("This is a development build; updates are off. Installed release builds check daily.")
+    } else if std::env::var_os("FFWD_NO_UPDATE").is_some() {
+        Some("Updates are off (FFWD_NO_UPDATE is set).")
+    } else if !policy.enabled {
+        Some("Updates are off (update.check = false in settings.toml).")
+    } else {
+        None
+    };
+    if let Some(why) = off {
+        return Ok(if policy.force { Outcome::Off(why.into()) } else { Outcome::Skipped });
     }
     let current = Version::parse(env!("CARGO_PKG_VERSION")).map_err(|e| e.to_string())?;
     let Some(dir) = data_dir() else { return Ok(Outcome::Skipped) };
     let stamp = dir.join("update-check");
-    if !ffwd_update::due(&stamp, SystemTime::now()) {
+    if !policy.force && !ffwd_update::due(&stamp, SystemTime::now()) {
         return Ok(Outcome::Skipped);
     }
     let channel = Channel::from_setting(policy.channel.as_deref(), &current);

@@ -9,6 +9,7 @@ pub mod diff;
 pub mod git;
 pub mod graph;
 pub mod log;
+pub mod ops;
 pub mod refs;
 
 pub use git::{Git, GitError};

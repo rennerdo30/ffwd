@@ -10,14 +10,22 @@ use std::time::{Duration, Instant};
 
 pub fn run(args: &Args, t0: Instant) -> i32 {
     let Some(out) = &args.snapshot else { return 2 };
-    let (tx, rx) = mpsc::channel::<Msg>();
-    let tx = Mutex::new(tx);
-    let sink: Sink = Arc::new(move |m| {
-        if let Ok(t) = tx.lock() {
-            let _ = t.send(m);
-        }
+    let (tx, rx) = mpsc::channel::<(u64, Msg)>();
+    let tx = Arc::new(Mutex::new(tx));
+    let sinks: crate::ui::SinkFactory = Arc::new(move |id| {
+        let tx = tx.clone();
+        let sink: Sink = Arc::new(move |m| {
+            if let Ok(t) = tx.lock() {
+                let _ = t.send((id, m));
+            }
+        });
+        sink
     });
-    work::start(args.repo.clone(), &sink);
+    let repo = match &args.repo {
+        Some(r) => r.clone(),
+        None => std::env::current_dir().unwrap_or_default(),
+    };
+    work::start(repo.clone(), &sinks(1));
     let mut te = TextEngine::new();
     let Some(fonts) = load_fonts(&mut te) else {
         eprintln!("ffwd: no usable UI font found");
@@ -28,29 +36,33 @@ pub fn run(args: &Args, t0: Instant) -> i32 {
     // `--layout below|beside` picks the layout.
     let layout = args.layout.as_deref().unwrap_or("below");
     let settings = crate::settings::Settings::parse(&format!("[ui]\nlayout = \"{layout}\"\n"));
-    let mut ui = Ui::new(te, fonts, settings, &args.repo, sink, w, h, args.scale.unwrap_or(1.0));
+    // Extra tabs (--tab) are shown, not loaded; the user's session is not read.
+    let tabs: Vec<String> = args.tabs.iter().map(|p| p.to_string_lossy().into_owned()).collect();
+    let state =
+        crate::settings::Settings::parse(&format!("[session]\ntabs = \"{}\"\n", tabs.join("|").replace('\\', "\\\\")));
+    let mut ui = Ui::new(te, fonts, settings, state, Some((1, repo.clone())), sinks, w, h, args.scale.unwrap_or(1.0));
     let deadline = Instant::now() + Duration::from_secs(30);
     let mut selected = false;
     let mut have_refs = false;
     let mut have_status = false;
     loop {
         let left = deadline.saturating_duration_since(Instant::now());
-        let Ok(m) = rx.recv_timeout(left) else { break };
+        let Ok((id, m)) = rx.recv_timeout(left) else { break };
         have_refs |= matches!(m, Msg::Refs(_));
         have_status |= matches!(m, Msg::Status(_));
         let repo_err = matches!(m, Msg::Repo(Err(_)));
-        ui.on_msg(m);
+        ui.on_tab_msg(id, m);
         if repo_err {
             break;
         }
-        if ui.log_done && have_refs && have_status && !selected {
+        if ui.r.log_done && have_refs && have_status && !selected {
             if let Some(n) = args.select {
                 ui.select(n);
             }
             selected = true;
         }
-        let diff_ready = ui.diff.is_some() || ui.details.as_ref().is_some_and(|d| d.files.is_empty());
-        if selected && ui.details.is_some() && diff_ready {
+        let diff_ready = ui.r.diff.is_some() || ui.r.details.as_ref().is_some_and(|d| d.files.is_empty());
+        if selected && ui.r.details.is_some() && diff_ready {
             break;
         }
     }
@@ -69,6 +81,21 @@ pub fn run(args: &Args, t0: Instant) -> i32 {
     if let Some(q) = &args.palette {
         ui.open_palette_with(q);
     }
+    if let Some(q) = &args.picker {
+        // Let the repository scan arrive (bounded wait).
+        let until = Instant::now() + Duration::from_secs(5);
+        while let Ok((id, m)) = rx.recv_timeout(until.saturating_duration_since(Instant::now())) {
+            let done = matches!(m, Msg::Repos(_));
+            ui.on_tab_msg(id, m);
+            if done {
+                break;
+            }
+        }
+        ui.open_repo_picker();
+        for c in q.chars() {
+            ui.key(Key::Char(c));
+        }
+    }
     let mut px = vec![0u32; w * h];
     let mut cv = Canvas::new(&mut px, w, h);
     let t = Instant::now();
@@ -82,9 +109,9 @@ pub fn run(args: &Args, t0: Instant) -> i32 {
     let step = ui.paint(&mut cv2, false);
     eprintln!(
         "snapshot: {} commits, log {:.0} ms (first rows {:.0} ms), full paint {:.2} ms; key Down repaints {} px ({:.1} % of window) in {:.2} ms",
-        ui.commits.len(),
-        ui.log_ms,
-        ui.first_batch_ms.unwrap_or(0.0),
+        ui.r.commits.len(),
+        ui.r.log_ms,
+        ui.r.first_batch_ms.unwrap_or(0.0),
         full_ms,
         ui.stats.last_damage_px,
         100.0 * ui.stats.last_damage_px as f64 / (w * h) as f64,

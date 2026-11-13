@@ -15,9 +15,11 @@ pub struct Settings {
     values: BTreeMap<String, String>,
     /// Lines that did not parse, reported once in the status bar.
     pub errors: Vec<String>,
+    /// Where changes are saved; `None` for in-memory settings (snapshots).
+    file: Option<PathBuf>,
 }
 
-pub fn path() -> Option<PathBuf> {
+fn config_dir() -> Option<PathBuf> {
     #[cfg(windows)]
     let base = std::env::var_os("APPDATA").map(PathBuf::from);
     #[cfg(target_os = "macos")]
@@ -26,19 +28,46 @@ pub fn path() -> Option<PathBuf> {
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")));
-    // Tests and agent runs can point ffwd at a private file.
+    base.map(|b| b.join("ffwd"))
+}
+
+/// The user's settings file. `FFWD_SETTINGS` points tests and agent runs
+/// at a private file.
+pub fn path() -> Option<PathBuf> {
     if let Some(p) = std::env::var_os("FFWD_SETTINGS") {
         return Some(PathBuf::from(p));
     }
-    base.map(|b| b.join("ffwd").join("settings.toml"))
+    config_dir().map(|d| d.join("settings.toml"))
 }
+
+/// ffwd's own state (open tabs, recent repositories), next to the settings
+/// but separate, so the user's file stays theirs. `FFWD_STATE` overrides.
+pub fn state_path() -> Option<PathBuf> {
+    if let Some(p) = std::env::var_os("FFWD_STATE") {
+        return Some(PathBuf::from(p));
+    }
+    config_dir().map(|d| d.join("state.toml"))
+}
+
+/// One writer at a time, in order: quick successive changes never race.
+static WRITER: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 impl Settings {
     pub fn load() -> Settings {
-        match path().and_then(|p| std::fs::read_to_string(p).ok()) {
+        Settings::load_from(path())
+    }
+
+    pub fn load_state() -> Settings {
+        Settings::load_from(state_path())
+    }
+
+    fn load_from(file: Option<PathBuf>) -> Settings {
+        let mut s = match file.as_ref().and_then(|p| std::fs::read_to_string(p).ok()) {
             Some(text) => Settings::parse(&text),
             None => Settings::default(),
-        }
+        };
+        s.file = file;
+        s
     }
 
     pub fn parse(text: &str) -> Settings {
@@ -70,29 +99,38 @@ impl Settings {
         self.values.get(key).map(|s| s.as_str())
     }
 
-    /// Sets `key` (`section.name`) to a string and saves the file in the
-    /// background. Returns the new file text (for tests).
-    pub fn set_string(&mut self, key: &str, value: &str) -> Option<String> {
+    /// Sets `key` (`section.name`) to a string. The file is read, rewritten
+    /// and replaced on a worker thread, never on the UI thread.
+    pub fn set_string(&mut self, key: &str, value: &str) {
         self.values.insert(key.to_string(), value.to_string());
-        let p = path()?;
-        let old = std::fs::read_to_string(&p).unwrap_or_default();
-        let new = rewrite(&old, key, &format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\"")));
-        let text = new.clone();
+        let Some(p) = self.file.clone() else { return };
+        let (key, value) = (key.to_string(), format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\"")));
         std::thread::spawn(move || {
+            let _guard = WRITER.lock();
+            let old = std::fs::read_to_string(&p).unwrap_or_default();
+            let text = rewrite(&old, &key, &value);
             if let Some(dir) = p.parent() {
                 let _ = std::fs::create_dir_all(dir);
             }
             // Write to a temporary file, then rename: a crash never leaves
-            // a half-written settings file.
+            // a half-written file.
             let tmp = p.with_extension("toml.tmp");
             if std::fs::write(&tmp, text).is_ok() {
                 let _ = std::fs::rename(&tmp, &p);
             }
         });
-        Some(new)
+    }
+
+    /// A list stored as one string, entries separated by `|` (a character
+    /// that cannot appear in Windows paths).
+    pub fn get_list(&self, key: &str) -> Vec<String> {
+        self.get(key).map(|s| s.split('|').filter(|x| !x.is_empty()).map(str::to_string).collect()).unwrap_or_default()
+    }
+
+    pub fn set_list(&mut self, key: &str, items: &[String]) {
+        self.set_string(key, &items.join("|"));
     }
 }
-
 fn full_key(section: &str, key: &str) -> String {
     if section.is_empty() { key.to_string() } else { format!("{section}.{key}") }
 }
@@ -181,6 +219,14 @@ mod tests {
         assert_eq!(s.get("ui.zoom"), Some("2"));
         assert_eq!(s.get("ai.endpoint"), Some("http://x/#a"));
         assert_eq!(s.errors.len(), 1);
+    }
+
+    #[test]
+    fn lists_round_trip() {
+        let mut s = Settings::parse("");
+        s.set_list("session.tabs", &[r"E:\a".into(), r"E:\b c".into()]);
+        assert_eq!(s.get_list("session.tabs"), vec![r"E:\a".to_string(), r"E:\b c".to_string()]);
+        assert!(Settings::parse("").get_list("x.y").is_empty());
     }
 
     #[test]

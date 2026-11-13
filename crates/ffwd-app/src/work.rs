@@ -14,10 +14,79 @@ pub enum Msg {
     Repo(Result<(Git, i64), String>),
     Refs(Result<Refs, String>),
     Status(StatusSummary),
-    Log { batch: Vec<Commit>, done: bool, elapsed_ms: f64 },
-    Details { seq: u64, result: Result<Box<Details>, String> },
-    Diff { seq: u64, file: usize, result: Result<Box<FileDiff>, String> },
+    Log {
+        batch: Vec<Commit>,
+        done: bool,
+        elapsed_ms: f64,
+    },
+    Details {
+        seq: u64,
+        result: Result<Box<Details>, String>,
+    },
+    Diff {
+        seq: u64,
+        file: usize,
+        result: Result<Box<FileDiff>, String>,
+    },
     WorkerPanic(String),
+    /// Repositories found for the "Open repository" picker.
+    Repos(Vec<PathBuf>),
+    OpProgress(String),
+    OpDone(ffwd_core::ops::Outcome),
+}
+
+/// Runs a fetch, pull or push on a worker, reporting progress and the outcome.
+pub fn run_op(git: Git, op: ffwd_core::ops::Op, sink: &Sink) {
+    spawn("op", sink, move |sink| {
+        let out = ffwd_core::ops::run(&git, op, |line| sink(Msg::OpProgress(line)));
+        sink(Msg::OpDone(out));
+    });
+}
+
+/// Finds Git repositories in `roots` and one level below them (a folder
+/// with a `.git` folder), for the repository picker. Bounded: at most 2,000
+/// folders are looked at.
+pub fn scan_repos(roots: Vec<PathBuf>, sink: &Sink) {
+    spawn("scan", sink, move |sink| {
+        let mut found = Vec::new();
+        let looked = std::cell::Cell::new(0usize);
+        let visit = |dir: &std::path::Path, found: &mut Vec<PathBuf>| {
+            looked.set(looked.get() + 1);
+            // A main repository has a .git folder; linked worktrees (a .git
+            // file) belong to their repository and are not listed here.
+            if dir.join(".git").is_dir() {
+                found.push(dir.to_path_buf());
+                return false;
+            }
+            true
+        };
+        for root in roots {
+            if !visit(&root, &mut found) {
+                continue;
+            }
+            let Ok(rd) = std::fs::read_dir(&root) else { continue };
+            for e in rd.flatten().take(2000) {
+                if looked.get() > 2000 {
+                    break;
+                }
+                let p = e.path();
+                let hidden = p.file_name().is_some_and(|n| n.to_string_lossy().starts_with(['.', '_']));
+                if !hidden && p.is_dir() && visit(&p, &mut found) {
+                    // One level deeper for folders that group repositories.
+                    if let Ok(inner) = std::fs::read_dir(&p) {
+                        for e in inner.flatten().take(200) {
+                            if e.path().is_dir() {
+                                visit(&e.path(), &mut found);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        found.sort();
+        found.dedup();
+        sink(Msg::Repos(found));
+    });
 }
 
 pub type Sink = Arc<dyn Fn(Msg) + Send + Sync>;
@@ -94,8 +163,19 @@ fn parse_tz(s: &str) -> Option<i64> {
 }
 
 enum Req {
-    Details { seq: u64, id: Oid },
-    Diff { seq: u64, id: Oid, parents: Vec<Oid>, file: usize, change: Box<diff::FileChange> },
+    /// The tab closed or reloaded: the worker thread ends.
+    Stop,
+    Details {
+        seq: u64,
+        id: Oid,
+    },
+    Diff {
+        seq: u64,
+        id: Oid,
+        parents: Vec<Oid>,
+        file: usize,
+        change: Box<diff::FileChange>,
+    },
 }
 
 /// One long-lived worker for commit details and diffs. It only keeps the
@@ -127,6 +207,7 @@ impl DetailWorker {
                     }
                 };
                 match req {
+                    Req::Stop => return,
                     Req::Details { seq, id } => {
                         let result = diff::details(&git, id).map(Box::new).map_err(|e| e.to_string());
                         sink(Msg::Details { seq, result });
@@ -155,6 +236,17 @@ impl DetailWorker {
         let (m, cv) = &*self.slot;
         if let Ok(mut g) = m.lock() {
             g.1 = Some(Req::Diff { seq, id, parents, file, change: Box::new(change) });
+            cv.notify_one();
+        }
+    }
+}
+
+impl Drop for DetailWorker {
+    fn drop(&mut self) {
+        let (m, cv) = &*self.slot;
+        if let Ok(mut g) = m.lock() {
+            g.0 = Some(Req::Stop);
+            g.1 = None;
             cv.notify_one();
         }
     }

@@ -24,7 +24,11 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 pub struct Args {
-    pub repo: PathBuf,
+    /// The repository named on the command line; without one, ffwd
+    /// restores the tabs of the last session.
+    pub repo: Option<PathBuf>,
+    /// Extra tabs for snapshots (`--tab <path>`, repeatable).
+    pub tabs: Vec<PathBuf>,
     pub snapshot: Option<PathBuf>,
     pub smoke: bool,
     pub size: (usize, usize),
@@ -33,11 +37,14 @@ pub struct Args {
     pub focus: Option<String>,
     pub palette: Option<String>,
     pub layout: Option<String>,
+    /// Snapshot with the repository picker open on this query.
+    pub picker: Option<String>,
 }
 
 fn parse_args() -> Result<Args, String> {
     let mut a = Args {
-        repo: std::env::current_dir().map_err(|e| e.to_string())?,
+        repo: None,
+        tabs: Vec::new(),
         snapshot: None,
         smoke: false,
         size: (1600, 1000),
@@ -46,6 +53,7 @@ fn parse_args() -> Result<Args, String> {
         focus: None,
         palette: None,
         layout: None,
+        picker: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -75,6 +83,8 @@ fn parse_args() -> Result<Args, String> {
             "--focus" => a.focus = Some(val("--focus")?),
             "--palette" => a.palette = Some(val("--palette")?),
             "--layout" => a.layout = Some(val("--layout")?),
+            "--picker" => a.picker = Some(val("--picker")?),
+            "--tab" => a.tabs.push(PathBuf::from(val("--tab")?)),
             "-h" | "--help" => {
                 println!(
                     "usage: ffwd [repo] [--snapshot out.png [--size WxH] [--scale S] [--select N] [--focus files|diff] [--palette Q]] [--smoke]"
@@ -82,7 +92,7 @@ fn parse_args() -> Result<Args, String> {
                 std::process::exit(0);
             }
             s if s.starts_with('-') => return Err(format!("unknown option {s}")),
-            s => a.repo = PathBuf::from(s),
+            s => a.repo = Some(PathBuf::from(s)),
         }
     }
     Ok(a)

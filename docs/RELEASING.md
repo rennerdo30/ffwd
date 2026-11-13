@@ -34,6 +34,8 @@ The setup's file name `ffwd-<version>-setup.exe` and `SHA256SUMS.txt` are the co
 
 ## Updates in the app
 
+Updates need two things: a **published** release (drafts are invisible) and a copy **installed by the setup**. Development builds (`cargo run`, `scripts\run.bat`) never update; `Ctrl+K` → **Check for updates** says so, and in an installed copy it checks right away.
+
 - An installed copy checks once after its first frame, at most once a day. The check runs on a worker thread.
 - A found update shows in the status bar. `Ctrl+Shift+U` (or "Install update" in `Ctrl+K`) installs it:
   1. ffwd downloads the setup and `SHA256SUMS.txt` into a fresh temporary folder;
