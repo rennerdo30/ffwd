@@ -75,6 +75,7 @@ These hold for every change. A change that breaks one of them is a defect, even 
 - `docs/FEATURES.md`: the feature inventory, mapped to ffwd milestones.
 - `docs/UI-DESIGN.md`: layout, interaction model, theme, keyboard map.
 - `docs/BUILD.md`: build settings, sccache, linker, measured build times.
+- `docs/RELEASING.md`, `docs/INSTALL.md`: releases (drafts only, the owner publishes), setup, updater. Never run `scripts/test-installer.ps1` or a built setup on the owner PC; they run on CI runners only.
 - `docs/decisions/`: architecture decision records.
 - `assets/logo/`: the SVG logo and its derived files.
 - `scripts/`: owner test scripts, batch files on Windows (owner, 2026-11-13): `run.bat`, `snapshot.bat`, `bench-startup.bat`, `check.bat` (`.sh` twins for macOS/Linux). Agents set `FFWD_NO_OPEN=1` for `snapshot.bat` so no viewer opens on the owner's screen; never run `run.bat` (visible window).

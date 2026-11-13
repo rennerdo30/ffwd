@@ -18,6 +18,7 @@ winit = "0.30.13"
 softbuffer = "0.4.8"
 raw-window-handle = "0.6.2"
 png = "0.18.1"
+ffwd-update = { path = "../ffwd-update" }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = [

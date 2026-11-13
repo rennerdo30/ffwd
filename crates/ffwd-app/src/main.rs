@@ -16,6 +16,7 @@ mod settings;
 mod snapshot;
 mod theme;
 mod ui;
+mod update;
 mod window;
 mod work;
 
@@ -50,6 +51,10 @@ fn parse_args() -> Result<Args, String> {
     while let Some(arg) = it.next() {
         let mut val = |name: &str| it.next().ok_or_else(|| format!("{name} needs a value"));
         match arg.as_str() {
+            "--version" => {
+                println!("ffwd {}", env!("CARGO_PKG_VERSION"));
+                std::process::exit(0);
+            }
             "--snapshot" => a.snapshot = Some(PathBuf::from(val("--snapshot")?)),
             // Writes the app icon as a PNG (for packaging), then exits.
             "--icon-png" => {

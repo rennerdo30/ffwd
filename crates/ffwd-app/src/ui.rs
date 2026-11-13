@@ -209,6 +209,7 @@ struct PItem {
 enum PAction {
     Goto(Oid),
     Command(&'static str),
+    InstallUpdate,
 }
 
 pub struct Palette {
@@ -276,6 +277,8 @@ pub struct Ui {
     pub palette: Option<Palette>,
     worker: Option<DetailWorker>,
     pub notice: Option<String>,
+    update_available: bool,
+    update_requested: bool,
     pub stats: Stats,
     pub remote: bool,
     pub layout: DetailsLayout,
@@ -347,6 +350,8 @@ impl Ui {
             diff_top: 0,
             palette: None,
             worker,
+            update_available: false,
+            update_requested: false,
             stats: Stats::default(),
             remote: false,
             layout: DetailsLayout::from_setting(settings.get("ui.layout")),
@@ -557,6 +562,31 @@ impl Ui {
     fn set_notice(&mut self, n: String) {
         self.notice = Some(n);
         self.damage.rects.push(self.lay.status);
+    }
+
+    pub fn offer_update(&mut self, version: &ffwd_update::Version) {
+        self.update_available = true;
+        self.set_notice(crate::update::notice(version));
+    }
+
+    pub fn set_update_message(&mut self, message: String) {
+        self.set_notice(message);
+    }
+
+    pub fn request_update_install(&mut self) {
+        self.update_requested = self.update_available;
+    }
+
+    pub fn take_update_requested(&mut self) -> bool {
+        std::mem::take(&mut self.update_requested)
+    }
+
+    /// Settings `[update] check` (default true) and `channel`.
+    pub fn update_policy(&self) -> crate::update::Policy {
+        crate::update::Policy {
+            enabled: self.settings.get("update.check") != Some("false"),
+            channel: self.settings.get("update.channel").map(str::to_owned),
+        }
     }
 
     fn index_chips(&mut self) {
@@ -921,6 +951,17 @@ impl Ui {
                 ));
             }
         }
+        if self.update_available && fuzzy(&q, "Install update").is_some() {
+            scored.push((
+                70,
+                PItem {
+                    label: "Install update".into(),
+                    hint: "Ctrl Shift U".into(),
+                    kind: RefKind::Head,
+                    action: PAction::InstallUpdate,
+                },
+            ));
+        }
         if q.len() >= 4 && q.bytes().all(|b| b.is_ascii_hexdigit()) {
             for c in self.commits.iter().filter(|c| c.id.to_string().starts_with(&q)).take(3) {
                 scored.push((
@@ -974,6 +1015,7 @@ impl Ui {
                     Some(PAction::Command(c)) if c == LAYOUT_BELOW => self.set_layout(DetailsLayout::Below),
                     Some(PAction::Command(c)) if c == LAYOUT_BESIDE => self.set_layout(DetailsLayout::Beside),
                     Some(PAction::Command(c)) => self.set_notice(format!("“{c}” is not in the proof of concept yet.")),
+                    Some(PAction::InstallUpdate) => self.request_update_install(),
                     None => {}
                 }
             }

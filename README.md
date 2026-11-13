@@ -26,6 +26,10 @@ Desktop Git clients are often slow. They render late, stutter on big repositorie
 - **Your work is safe.** Destructive actions will ask first and be undoable.
 - **AI on your terms (planned).** Point ffwd at any OpenAI-compatible endpoint, preferably a local one (Ollama, llama.cpp, LM Studio), for commit messages, explanations and reviews. It is off until you configure it, and you see exactly what is sent.
 
+## Install
+
+No release is published yet. Once one is, Windows gets a per-user setup that updates itself, and macOS and Linux get archives: see [Installing ffwd](docs/INSTALL.md).
+
 ## Try the proof of concept
 
 You need Rust (the toolchain installs itself from `rust-toolchain.toml`) and Git. On Windows, double-click or run the scripts:
@@ -36,6 +40,7 @@ You need Rust (the toolchain installs itself from `rust-toolchain.toml`) and Git
 | `scripts\snapshot.bat [repo] [--select N] [--focus diff] [--palette Q]` | Render the UI offscreen to `artifacts\snapshot.png` and open it |
 | `scripts\bench-startup.bat [repo] [runs]` | Measure startup in a hidden window, one JSON line per run |
 | `scripts\check.bat` | The CI checks: format, clippy, tests |
+| `scripts\package.bat` | Build the Windows setup, the zip and `SHA256SUMS.txt` into `artifacts\installer` |
 
 On macOS and Linux: `scripts/run.sh` and `scripts/check.sh`, or `cargo run --release -- path/to/a/repo`.
 
@@ -59,6 +64,7 @@ FFWD_TRACE=1 ffwd path/to/repo
 - [UI design](docs/UI-DESIGN.md)
 - [Feature plan, the feature plan](docs/FEATURES.md)
 - [Building and fast iteration](docs/BUILD.md)
+- [Releasing and updates](docs/RELEASING.md)
 - [Architecture decisions](docs/decisions)
 - [Contributor and agent rules, including the performance rules](AGENTS.md)
 

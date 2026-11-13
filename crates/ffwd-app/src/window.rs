@@ -23,7 +23,10 @@ pub enum UserEvent {
     Msg(Msg),
     SmokeTimeout,
     /// The Windows frame changed the maximise button or window state.
+    #[cfg_attr(not(windows), allow(dead_code))]
     Frame,
+    UpdateFound(Result<crate::update::Outcome, String>),
+    UpdateFinished(Result<(), String>),
 }
 
 struct Gfx {
@@ -49,6 +52,9 @@ struct App {
     smoke_reported: bool,
     proxy: EventLoopProxy<UserEvent>,
     title_sent: Option<crate::ui::TitleGeometry>,
+    update_offer: Option<ffwd_update::Candidate>,
+    updates_started: bool,
+    update_installing: bool,
 }
 
 pub fn run(args: &Args, t0: Instant) -> i32 {
@@ -104,6 +110,9 @@ pub fn run(args: &Args, t0: Instant) -> i32 {
         smoke_reported: false,
         proxy: event_loop.create_proxy(),
         title_sent: None,
+        update_offer: None,
+        updates_started: false,
+        update_installing: false,
     };
     if let Err(e) = event_loop.run_app(&mut app) {
         eprintln!("ffwd: event loop failed: {e}");
@@ -241,6 +250,46 @@ impl App {
         if let Some(k) = k {
             ui.key(k);
         }
+        if ctrl
+            && self.mods.shift_key()
+            && matches!(&ev.logical_key, WKey::Character(s) if s.eq_ignore_ascii_case("u"))
+            && let Some(ui) = &mut self.ui
+        {
+            ui.request_update_install();
+        }
+        self.process_update_request();
+    }
+
+    /// One update check per run, after the first frame; never in agent runs.
+    fn start_update_check(&mut self) {
+        if self.updates_started || self.smoke {
+            return;
+        }
+        self.updates_started = true;
+        let Some(policy) = self.ui.as_ref().map(|ui| ui.update_policy()) else { return };
+        let proxy = Mutex::new(self.proxy.clone());
+        crate::update::spawn_check(policy, move |r| {
+            if let Ok(p) = proxy.lock() {
+                let _ = p.send_event(UserEvent::UpdateFound(r));
+            }
+        });
+    }
+
+    fn process_update_request(&mut self) {
+        if !self.ui.as_mut().is_some_and(|ui| ui.take_update_requested()) || self.update_installing {
+            return;
+        }
+        let Some(c) = self.update_offer.clone() else { return };
+        self.update_installing = true;
+        if let Some(ui) = &mut self.ui {
+            ui.set_update_message(format!("Downloading ffwd {}…", c.version));
+        }
+        let proxy = Mutex::new(self.proxy.clone());
+        crate::update::spawn_install(c, move |r| {
+            if let Ok(p) = proxy.lock() {
+                let _ = p.send_event(UserEvent::UpdateFinished(r));
+            }
+        });
     }
 }
 
@@ -356,6 +405,7 @@ impl ApplicationHandler<UserEvent> for App {
         trace(self.t0, "shown");
         self.gfx = Some(gfx);
         self.render();
+        self.start_update_check();
         self.smoke_check(el);
     }
 
@@ -378,6 +428,34 @@ impl ApplicationHandler<UserEvent> for App {
                     #[cfg(not(windows))]
                     let state = (false, false);
                     ui.set_frame_state(state, g.window.is_maximized());
+                }
+            }
+            UserEvent::UpdateFound(result) => match result {
+                Ok(crate::update::Outcome::Found(c)) => {
+                    if let Some(ui) = &mut self.ui {
+                        ui.offer_update(&c.version);
+                    }
+                    self.update_offer = Some(c);
+                }
+                Ok(_) => {}
+                // A failed background check is not worth an alarm; it is
+                // shown quietly and retried tomorrow.
+                Err(e) => {
+                    if let Some(ui) = &mut self.ui {
+                        ui.set_update_message(format!("Update check failed: {e}"));
+                    }
+                }
+            },
+            UserEvent::UpdateFinished(result) => {
+                self.update_installing = false;
+                match result {
+                    // The setup waits for ffwd to close, installs and restarts it.
+                    Ok(()) => el.exit(),
+                    Err(e) => {
+                        if let Some(ui) = &mut self.ui {
+                            ui.set_update_message(format!("Update failed: {e}"));
+                        }
+                    }
                 }
             }
             UserEvent::SmokeTimeout => {
