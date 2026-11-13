@@ -28,6 +28,8 @@ pub enum UserEvent {
     #[cfg_attr(not(windows), allow(dead_code))]
     Frame,
     UpdateFound(Result<crate::update::Outcome, String>),
+    /// The font thread is done: build the UI and paint it (FF-8).
+    FontsReady,
     UpdateFinished(Result<(), String>),
 }
 
@@ -51,6 +53,9 @@ struct App {
     /// The cursor last given to the window (set only when it changes).
     shown_cursor: crate::ui::Cursor,
     font_thread: Option<std::thread::JoinHandle<Option<Loaded>>>,
+    /// The window is up (with a chrome-only frame) and waits for fonts:
+    /// whether the Windows 11 frame hook is installed.
+    waiting_fonts: Option<bool>,
     sinks: SinkFactory,
     pending: Vec<(u64, Msg)>,
     /// The repository given on the command line, already loading as tab 1.
@@ -114,7 +119,20 @@ pub fn run(args: &Args, t0: Instant) -> i32 {
         });
     }
     let smoke = args.smoke;
+    let fonts_proxy = Mutex::new(event_loop.create_proxy());
     let font_thread = Some(std::thread::spawn(move || {
+        // Wakes the event loop when the window is already up without the
+        // fonts; on drop, so a panicking worker still ends the wait (the
+        // join then reports it).
+        struct Wake(Mutex<EventLoopProxy<UserEvent>>);
+        impl Drop for Wake {
+            fn drop(&mut self) {
+                if let Ok(p) = self.0.lock() {
+                    let _ = p.send_event(UserEvent::FontsReady);
+                }
+            }
+        }
+        let _wake = Wake(fonts_proxy);
         let mut te = TextEngine::new();
         // Settings and session state are read here too, so file I/O stays
         // off the UI thread.
@@ -132,6 +150,7 @@ pub fn run(args: &Args, t0: Instant) -> i32 {
         ui: None,
         shown_cursor: crate::ui::Cursor::Default,
         font_thread,
+        waiting_fonts: None,
         sinks,
         pending: Vec::new(),
         first: args.repo.clone(),
@@ -378,6 +397,79 @@ impl App {
             }
         });
     }
+
+    /// Plain chrome in the theme's colours (top bar, tabs, sidebar, status
+    /// bar), presented before the fonts are ready.
+    fn present_chrome(&mut self) {
+        let Some(g) = &mut self.gfx else { return };
+        let (w, h) = self.size;
+        if w == 0 || h == 0 {
+            return;
+        }
+        let s = g.window.scale_factor() as f32;
+        let px = |v: f32| (v * s).round() as usize;
+        let Ok(mut buf) = g.surface.buffer_mut() else { return };
+        if buf.len() < w * h {
+            return;
+        }
+        let (bar, tabs, status) = (px(46.0).min(h), px(32.0), px(26.0));
+        let side = px(236.0).min(w / 4);
+        for y in 0..h {
+            let row = &mut buf[y * w..(y + 1) * w];
+            if y < bar {
+                row.fill(crate::theme::BG_BAR);
+            } else if y < bar + tabs || y + status >= h {
+                row.fill(crate::theme::BG_SIDEBAR);
+            } else {
+                row[..side].fill(crate::theme::BG_SIDEBAR);
+                row[side..].fill(crate::theme::BG);
+            }
+        }
+        if buf.present().is_ok() {
+            trace(self.t0, "chrome presented");
+        }
+    }
+
+    /// Builds the UI once the fonts are parsed and paints it.
+    fn finish_start(&mut self, el: &ActiveEventLoop, framed: bool) {
+        let Some(Loaded { te, fonts, settings, state }) = self.font_thread.take().and_then(|t| t.join().ok()).flatten()
+        else {
+            eprintln!("ffwd: no usable UI font found");
+            self.exit_code = 1;
+            el.exit();
+            return;
+        };
+        trace(self.t0, "fonts ready");
+        let Some(window) = self.gfx.as_ref().map(|g| g.window.clone()) else { return };
+        let sz = window.inner_size();
+        self.size = (sz.width as usize, sz.height as usize);
+        let mut ui = Ui::new(
+            te,
+            fonts,
+            settings,
+            state,
+            self.first.clone().map(|p| (1, p)),
+            self.sinks.clone(),
+            self.size.0,
+            self.size.1,
+            window.scale_factor() as f32,
+        );
+        ui.remote = platform::is_remote_session();
+        if ui.chrome == Chrome::Windows11 && !framed {
+            // Without the frame hook the system caption stays; no second set of buttons.
+            ui.chrome = Chrome::Native;
+            ui.resize(self.size.0, self.size.1, window.scale_factor() as f32);
+        }
+        for (id, m) in self.pending.drain(..) {
+            ui.on_tab_msg(id, m);
+        }
+        self.ui = Some(ui);
+        trace(self.t0, "ui built");
+        self.after_input();
+        self.render();
+        self.start_update_check();
+        self.smoke_check(el);
+    }
 }
 
 impl ApplicationHandler<UserEvent> for App {
@@ -445,38 +537,8 @@ impl ApplicationHandler<UserEvent> for App {
         #[cfg(not(windows))]
         let framed = false;
         trace(self.t0, "title bar themed");
-        let Some(Loaded { te, fonts, settings, state }) = self.font_thread.take().and_then(|t| t.join().ok()).flatten()
-        else {
-            eprintln!("ffwd: no usable UI font found");
-            self.exit_code = 1;
-            el.exit();
-            return;
-        };
-        trace(self.t0, "fonts ready");
         let sz = window.inner_size();
         self.size = (sz.width as usize, sz.height as usize);
-        let mut ui = Ui::new(
-            te,
-            fonts,
-            settings,
-            state,
-            self.first.clone().map(|p| (1, p)),
-            self.sinks.clone(),
-            self.size.0,
-            self.size.1,
-            window.scale_factor() as f32,
-        );
-        ui.remote = platform::is_remote_session();
-        if ui.chrome == Chrome::Windows11 && !framed {
-            // Without the frame hook the system caption stays; no second set of buttons.
-            ui.chrome = Chrome::Native;
-            ui.resize(self.size.0, self.size.1, window.scale_factor() as f32);
-        }
-        for (id, m) in self.pending.drain(..) {
-            ui.on_tab_msg(id, m);
-        }
-        self.ui = Some(ui);
-        trace(self.t0, "ui built");
         let mut gfx = Gfx { window, surface, hwnd };
         if let (Some(w), Some(h)) = (NonZeroU32::new(sz.width), NonZeroU32::new(sz.height)) {
             let _ = gfx.surface.resize(w, h);
@@ -493,10 +555,13 @@ impl ApplicationHandler<UserEvent> for App {
         }
         trace(self.t0, "shown");
         self.gfx = Some(gfx);
-        self.after_input();
-        self.render();
-        self.start_update_check();
-        self.smoke_check(el);
+        if self.font_thread.as_ref().is_some_and(|t| t.is_finished()) {
+            return self.finish_start(el, framed);
+        }
+        // Fonts are still parsing: the window shows its chrome now (rule 3)
+        // and the UI follows on FontsReady.
+        self.present_chrome();
+        self.waiting_fonts = Some(framed);
     }
 
     fn user_event(&mut self, el: &ActiveEventLoop, ev: UserEvent) {
@@ -560,6 +625,11 @@ impl ApplicationHandler<UserEvent> for App {
                     }
                 }
             }
+            UserEvent::FontsReady => {
+                if let Some(framed) = self.waiting_fonts.take() {
+                    self.finish_start(el, framed);
+                }
+            }
             UserEvent::SmokeTimeout => {
                 eprintln!("ffwd: smoke timed out after 30 s");
                 self.exit_code = 3;
@@ -601,6 +671,10 @@ impl ApplicationHandler<UserEvent> for App {
                 }
             }
             WindowEvent::RedrawRequested => {
+                if self.ui.is_none() && self.waiting_fonts.is_some() {
+                    // Resized or exposed while the fonts still load.
+                    return self.present_chrome();
+                }
                 self.render();
                 self.smoke_check(el);
                 return;

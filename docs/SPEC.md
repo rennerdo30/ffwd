@@ -29,7 +29,7 @@ Reference machine: the owner's Windows PC (Ryzen 9 9950X3D, NVMe). A mid-range l
 
 | Measure | Target | Hard limit | PoC, measured 2026-11-13 |
 |---|---|---|---|
-| Launch to first frame (window and chrome painted) | ≤ 30 ms | 60 ms | **23 to 34 ms** (release, `--smoke`, 2160×1350 px) |
+| Launch to first frame (window and chrome painted) | ≤ 30 ms | 60 ms | **21 to 30 ms**, median 22 ms (release, `--smoke`, 2160×1350 px; 2026-11-14, FF-8) |
 | Launch to first commit rows, repository with 1k commits | ≤ 60 ms | 120 ms | 45 to 90 ms (`git log` process; see §4) |
 | Launch to first commit rows, 1M commits | ≤ 150 ms | 300 ms | not measured yet |
 | Key press to pixels (selection, scroll, palette) | ≤ 1 frame (8.3 ms at 120 Hz) | 16 ms | 0.4 to 0.9 ms paint |
@@ -99,7 +99,7 @@ Proposal, to be measured in M1 before deciding: read in-process with gitoxide (h
 ## 7. Known PoC limits (from the 2026-11-13 review)
 
 - **History memory grows with the repository.** Every commit row and its graph row stay in memory, about 150 to 250 bytes each, so 1M commits need roughly 150 to 250 MB. M1 replaces this with a compact columnar store and a string arena, measured against the 300 MB budget in §3. It comes together with the backend decision, because gitoxide can re-read rows on demand.
-- **Font loading is on the startup path.** The UI thread waits for the font worker before the first frame. Measured, the wait is 0 to 6 ms, inside the 30 ms first-frame budget. If it ever grows, the fix is a first frame of solid chrome with the text following.
+- **Font loading is off the startup path** (FF-8, 2026-11-14). The window is shown as soon as it exists. If the font worker is not done by then, a frame of plain chrome in the theme's colours is presented (`FFWD_TRACE` mark "chrome presented"), and the full UI follows when the worker wakes the event loop. The frame hook's `SetWindowPos(SWP_FRAMECHANGED)` on the hidden window had cost 10 to 97 ms; with `SWP_NOREDRAW` it takes 1.4 to 2 ms.
 - **Remote mode is re-checked on focus and resize, not on `WM_WTSSESSION_CHANGE`.** RDP connects and disconnects trigger both, but a direct session notification is still the proper signal. Remote mode changes no behaviour yet, because the PoC has no animations.
 
 ## 8. Open questions for the owner

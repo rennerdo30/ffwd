@@ -21,9 +21,9 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{TME_LEAVE, TME_NONCLIENT, 
 use windows_sys::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     GetClientRect, HTCAPTION, HTCLIENT, HTMAXBUTTON, HTTOP, HTTOPLEFT, HTTOPRIGHT, IsZoomed, NCCALCSIZE_PARAMS,
-    SM_CXPADDEDBORDER, SM_CYFRAME, SW_MAXIMIZE, SW_RESTORE, SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
-    SetWindowPos, ShowWindow, WM_NCCALCSIZE, WM_NCHITTEST, WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN, WM_NCLBUTTONUP,
-    WM_NCMOUSELEAVE, WM_NCMOUSEMOVE,
+    SM_CXPADDEDBORDER, SM_CYFRAME, SW_MAXIMIZE, SW_RESTORE, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE,
+    SWP_NOOWNERZORDER, SWP_NOREDRAW, SWP_NOSIZE, SWP_NOZORDER, SetWindowPos, ShowWindow, WM_NCCALCSIZE, WM_NCHITTEST,
+    WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN, WM_NCLBUTTONUP, WM_NCMOUSELEAVE, WM_NCMOUSEMOVE,
 };
 
 /// Title-row geometry in physical client pixels, set by the UI on layout.
@@ -67,13 +67,30 @@ pub fn install(hwnd: isize, repaint: impl Fn() + Send + Sync + 'static) -> bool 
     // SAFETY: hwnd is our live top-level window, owned by this (the UI)
     // thread, so subclassing it here is allowed. `subclass_proc` matches
     // SUBCLASSPROC and lives for the whole process. SetWindowPos with
-    // SWP_FRAMECHANGED only makes Windows recompute the frame.
+    // SWP_FRAMECHANGED only makes Windows recompute the frame. The window is
+    // still hidden, so no redraw or activation is needed: without
+    // SWP_NOREDRAW this call took 10–97 ms at start-up, with it 1.4–2 ms
+    // (FF-8, owner PC, release build).
     unsafe {
         let hwnd = hwnd as HWND;
         if SetWindowSubclass(hwnd, Some(subclass_proc), 1, 0) == 0 {
             return false;
         }
-        SetWindowPos(hwnd, std::ptr::null_mut(), 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER);
+        SetWindowPos(
+            hwnd,
+            std::ptr::null_mut(),
+            0,
+            0,
+            0,
+            0,
+            SWP_FRAMECHANGED
+                | SWP_NOMOVE
+                | SWP_NOSIZE
+                | SWP_NOZORDER
+                | SWP_NOACTIVATE
+                | SWP_NOOWNERZORDER
+                | SWP_NOREDRAW,
+        );
     }
     true
 }
