@@ -23,6 +23,8 @@ pub enum Msg {
         seq: u64,
         result: Result<Box<Details>, String>,
     },
+    /// Ignored paths for Local Changes (FF-35).
+    Ignored(Result<Vec<String>, String>),
     /// Two commits compared (FF-33): `b`'s details against `a`.
     Compared {
         seq: u64,
@@ -379,6 +381,13 @@ pub enum ChangeOp {
     SaveResolved(String, String),
     /// Continue the stopped operation.
     Continue(&'static str),
+}
+
+/// Lists ignored files and folders (Local Changes, on request).
+pub fn ignored_load(git: Git, sink: &Sink) {
+    spawn("ignored", sink, move |sink| {
+        sink(Msg::Ignored(ffwd_core::changes::ignored(&git).map_err(|e| e.to_string())));
+    });
 }
 
 pub fn changes_load(git: Git, sink: &Sink) {

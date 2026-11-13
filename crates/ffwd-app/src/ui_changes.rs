@@ -48,6 +48,8 @@ pub struct Changes {
     pub conflicts: usize,
     /// Untracked files left out of the list (`changes.hide_untracked`).
     pub hidden_untracked: usize,
+    /// Ignored paths, merged into the list while `changes.show_ignored`.
+    ignored: Vec<Entry>,
     pub side: Side,
     pub sel: usize,
     tops: [usize; 2],
@@ -90,6 +92,7 @@ impl Default for Changes {
             counts: [0, 0],
             conflicts: 0,
             hidden_untracked: 0,
+            ignored: Vec::new(),
             side: Side::Unstaged,
             sel: 0,
             tops: [0, 0],
@@ -222,7 +225,37 @@ impl Ui {
 
     pub(super) fn reload_changes(&mut self) {
         if let (Some(g), Some(s)) = (self.git_for_tab(), self.tab_sink()) {
+            if self.show_ignored() {
+                crate::work::ignored_load(g.clone(), &s);
+            }
             crate::work::changes_load(g, &s);
+        }
+    }
+
+    /// Whether ignored files show in Local Changes (`changes.show_ignored`).
+    pub(super) fn show_ignored(&self) -> bool {
+        self.settings.get("changes.show_ignored") == Some("true")
+    }
+
+    pub(super) fn set_show_ignored(&mut self, show: bool) {
+        self.settings.set_string("changes.show_ignored", if show { "true" } else { "false" });
+        if !show {
+            self.r.changes.ignored.clear();
+        }
+        self.reload_changes();
+        self.changes_dirty_all();
+    }
+
+    /// Ignored paths arrived: kept, and the list reloads to merge them.
+    pub(super) fn on_ignored(&mut self, r: Result<Vec<String>, String>) {
+        match r {
+            Ok(paths) => {
+                self.r.changes.ignored = paths.iter().map(|p| Entry::ignored_entry(p)).collect();
+                if let (Some(g), Some(s)) = (self.git_for_tab(), self.tab_sink()) {
+                    crate::work::changes_load(g, &s);
+                }
+            }
+            Err(e) => self.set_notice(format!("Could not list ignored files: {e}")),
         }
     }
 
@@ -232,7 +265,7 @@ impl Ui {
     }
 
     /// Rows `top..top + n` of a side, cloned (only what is shown).
-    fn side_rows(&self, side: Side, top: usize, n: usize) -> Vec<Entry> {
+    pub(super) fn side_rows(&self, side: Side, top: usize, n: usize) -> Vec<Entry> {
         self.r.changes.status.as_ref().map_or_else(Vec::new, |s| {
             s.entries.iter().filter(|e| in_side(e, side)).skip(top).take(n).cloned().collect()
         })
@@ -284,8 +317,11 @@ impl Ui {
                 if self.hide_untracked() {
                     st.entries.retain(|e| !e.untracked());
                 }
+                if self.show_ignored() {
+                    st.entries.extend(self.r.changes.ignored.iter().cloned());
+                }
                 let c = &mut self.r.changes;
-                c.hidden_untracked = before - st.entries.len();
+                c.hidden_untracked = before.saturating_sub(st.entries.iter().filter(|e| !e.ignored()).count());
                 c.counts = [Side::Unstaged, Side::Staged].map(|s| st.entries.iter().filter(|e| in_side(e, s)).count());
                 c.conflicts = st.entries.iter().filter(|e| e.conflicted).count();
                 c.status = Some(st);
@@ -416,6 +452,9 @@ impl Ui {
 
     fn toggle_selected(&mut self) {
         let Some(e) = self.selected_entry() else { return };
+        if e.ignored() {
+            return self.set_notice(format!("{} is ignored: it isn't part of the repository.", e.path));
+        }
         if e.conflicted {
             // Staging it now would mark the markers as the resolution.
             self.r.changes.focus = CFocus::Diff;
@@ -511,6 +550,9 @@ impl Ui {
             return self.set_notice("Discard works on unstaged changes; unstage first.".into());
         }
         let Some(e) = self.selected_entry() else { return };
+        if e.ignored() {
+            return self.set_notice(format!("{} is ignored: it isn't part of the repository.", e.path));
+        }
         let path = e.path.to_string();
         let armed = self.r.changes.armed.take();
         if let Some((t, paths)) = armed
@@ -922,12 +964,20 @@ impl Ui {
                     .iter()
                     .find(|h| h.1 == CHit::ListOptions)
                     .unwrap_or(&(Rect::default(), CHit::ListOptions));
-                let item = super::menu::MenuItem {
-                    label: if hide { "Show untracked files".into() } else { "✓ Show untracked files".into() },
-                    act: Some(super::menu::MenuAct::HideUntracked(!hide)),
-                    danger: false,
-                };
-                self.open_menu(b.x, b.bottom(), vec![item]);
+                let shown = self.show_ignored();
+                let items = vec![
+                    super::menu::MenuItem {
+                        label: if hide { "Show untracked files".into() } else { "✓ Show untracked files".into() },
+                        act: Some(super::menu::MenuAct::HideUntracked(!hide)),
+                        danger: false,
+                    },
+                    super::menu::MenuItem {
+                        label: if shown { "✓ Show ignored files".into() } else { "Show ignored files".into() },
+                        act: Some(super::menu::MenuAct::ShowIgnored(!shown)),
+                        danger: false,
+                    },
+                ];
+                self.open_menu(b.x, b.bottom(), items);
                 return true;
             }
             Some(CHit::PushAfter) => {
@@ -1074,6 +1124,7 @@ impl Ui {
                     b'D' => DEL,
                     b'R' | b'C' => REN,
                     b'U' => DEL,
+                    b'I' => TEXT_4,
                     _ => MOD,
                 };
                 let badge = Rect::new(row.x + self.px(8.0), (cy - self.pf(8.0)) as i32, self.px(16.0), self.px(16.0));

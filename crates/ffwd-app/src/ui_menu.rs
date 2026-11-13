@@ -31,6 +31,8 @@ pub enum MenuAct {
     DiffTab(u8),
     /// Local Changes: hide (true) or show untracked files.
     HideUntracked(bool),
+    /// Local Changes: show (true) or hide ignored files.
+    ShowIgnored(bool),
     /// Wrap long diff lines (FF-41).
     DiffWrap(bool),
     /// Code text size in points.
@@ -617,6 +619,7 @@ impl Ui {
             Some(MenuAct::DiffShowWs(on)) => self.set_diff_view(Some(on), None),
             Some(MenuAct::DiffTab(t)) => self.set_diff_view(None, Some(t)),
             Some(MenuAct::HideUntracked(h)) => self.set_hide_untracked(h),
+            Some(MenuAct::ShowIgnored(s)) => self.set_show_ignored(s),
             Some(MenuAct::DiffWrap(on)) => self.set_diff_wrap(on),
             Some(MenuAct::CodeSize(s)) => self.set_code_size(s),
             Some(MenuAct::TabColor(i, c)) => self.set_tab_color(i, c),
@@ -1170,7 +1173,7 @@ impl Ui {
             let deleted = e.unstaged == b'D' || (side == ffwd_core::changes::Side::Staged && e.staged == b'D');
             let (mut v, full) = file_items(&e.path, !deleted);
             v.push(sep());
-            if !e.conflicted {
+            if !e.conflicted && !e.ignored() {
                 let staged = side == ffwd_core::changes::Side::Staged;
                 v.push(item(if staged { "Unstage" } else { "Stage" }, MenuAct::StageToggle(!staged)));
                 if !staged {

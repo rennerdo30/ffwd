@@ -22,6 +22,16 @@ impl Entry {
         self.unstaged == b'?'
     }
 
+    /// An ignored file or folder (shown only on request; FF-35).
+    pub fn ignored(&self) -> bool {
+        self.unstaged == b'!'
+    }
+
+    /// An ignored path as an entry of the unstaged list.
+    pub fn ignored_entry(path: &str) -> Entry {
+        Entry { path: path.into(), old_path: None, staged: b'.', unstaged: b'!', conflicted: false }
+    }
+
     /// Shown in the staged list.
     pub fn in_staged(&self) -> bool {
         !self.conflicted && self.staged != b'.' && self.staged != b'?'
@@ -38,6 +48,7 @@ impl Entry {
             _ if self.conflicted => b'U',
             Side::Staged => self.staged,
             Side::Unstaged if self.untracked() => b'A',
+            Side::Unstaged if self.ignored() => b'I',
             Side::Unstaged => self.unstaged,
         }
     }
@@ -66,6 +77,22 @@ impl WorkStatus {
 pub const MAX_ENTRIES: usize = 200_000;
 
 /// Reads the working tree's state (`git status --porcelain=v2 -z`).
+/// The most ignored paths listed.
+pub const MAX_IGNORED: usize = 10_000;
+
+/// Ignored files, a wholly ignored folder as one `dir/` entry (so a
+/// `target/` or `node_modules/` stays one line), at most [`MAX_IGNORED`].
+pub fn ignored(git: &Git) -> Result<Vec<String>, GitError> {
+    let out =
+        git.output_limited(&["ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory"], 8 << 20)?;
+    Ok(out
+        .split(|&b| b == 0)
+        .filter(|p| !p.is_empty())
+        .take(MAX_IGNORED)
+        .map(|p| String::from_utf8_lossy(p).into_owned())
+        .collect())
+}
+
 pub fn load(git: &Git) -> Result<WorkStatus, GitError> {
     let out = git.output_limited(&["status", "--porcelain=v2", "-z", "--untracked-files=all"], 256 << 20)?;
     Ok(parse_status(&out))
@@ -408,6 +435,29 @@ pub fn message(subject: &str, description: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn ignored_paths_fold_folders() {
+        use crate::git::Git;
+        let dir = std::env::temp_dir().join(format!("ffwd-ignored-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("target/debug")).unwrap();
+        let g = Git { root: dir.clone() };
+        g.output(&["init", "-q", "-b", "main"]).unwrap();
+        std::fs::write(dir.join(".gitignore"), "target/\n*.log\n").unwrap();
+        std::fs::write(dir.join("target/debug/a.o"), "x").unwrap();
+        std::fs::write(dir.join("target/debug/b.o"), "x").unwrap();
+        std::fs::write(dir.join("run.log"), "x").unwrap();
+        std::fs::write(dir.join("kept.txt"), "x").unwrap();
+        let mut v = super::ignored(&g).unwrap();
+        v.sort();
+        assert_eq!(v, ["run.log", "target/"], "a whole folder is one entry");
+        let e = super::Entry::ignored_entry("run.log");
+        assert!(e.ignored() && e.in_unstaged() && !e.untracked());
+        assert_eq!(e.letter(super::Side::Unstaged), b'I');
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     use super::*;
     use std::path::PathBuf;
 

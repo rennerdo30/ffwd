@@ -1478,6 +1478,7 @@ impl Ui {
             Msg::Agent(e) => self.on_agent_event(e),
             Msg::RepoSettings(p, s) => self.on_repo_settings(p, s),
             Msg::Changes(r) => self.on_changes(r),
+            Msg::Ignored(r) => self.on_ignored(r),
             Msg::ChangesDiff { seq, result } => self.on_changes_diff(seq, result),
             Msg::ChangesOp { commit, result } => self.on_changes_op(commit, result),
             Msg::LastMessage(m) => self.on_last_message(m),
@@ -7942,6 +7943,86 @@ mod tests {
         });
         assert!(ui.ref_menu("b:feature").iter().any(|i| i.label == "Change upstream…"));
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Show ignored files (FF-35): the Unstaged list's "…" lists them (a
+    /// wholly ignored folder as one row, letter I), Space on one only
+    /// explains, and turning it off removes them; remembered.
+    #[test]
+    fn ignored_files_can_be_shown() {
+        use std::sync::mpsc;
+        let mut te = TextEngine::new();
+        let Some(f) = load_fonts(&mut te) else { return };
+        let dir = std::env::temp_dir().join(format!("ffwd-ui-ignored-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("target/debug")).unwrap();
+        let g = Git { root: dir.clone() };
+        for a in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.name", "ffwd test"],
+            &["config", "user.email", "test@example.invalid"],
+            &["config", "commit.gpgsign", "false"],
+            &["config", "core.autocrlf", "false"],
+        ] {
+            g.output(a).unwrap();
+        }
+        std::fs::write(dir.join(".gitignore"), "target/\n").unwrap();
+        std::fs::write(dir.join("a.txt"), "a\n").unwrap();
+        g.output(&["add", "."]).unwrap();
+        g.output(&["commit", "-q", "-m", "first"]).unwrap();
+        std::fs::write(dir.join("a.txt"), "changed\n").unwrap();
+        std::fs::write(dir.join("target/debug/x.o"), "x").unwrap();
+        let (tx, rx) = mpsc::channel::<(u64, Msg)>();
+        let tx = Arc::new(std::sync::Mutex::new(tx));
+        let sinks: SinkFactory = Arc::new(move |id| {
+            let tx = tx.clone();
+            Arc::new(move |m| {
+                if let Ok(t) = tx.lock() {
+                    let _ = t.send((id, m));
+                }
+            })
+        });
+        crate::work::start(dir.clone(), &sinks(1));
+        let empty = crate::settings::Settings::parse("");
+        let mut ui = Ui::new(te, f, empty.clone(), empty, Some((1, dir.clone())), sinks, 1280, 800, 1.0);
+        let pump = |ui: &mut Ui, what: &str, done: &dyn Fn(&Ui) -> bool| {
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while !done(ui) {
+                let left = until.saturating_duration_since(std::time::Instant::now());
+                assert!(!left.is_zero(), "timed out waiting for {what}");
+                if let Ok((id, m)) = rx.recv_timeout(left) {
+                    ui.on_tab_msg(id, m);
+                }
+            }
+        };
+        pump(&mut ui, "the repository", &|u| u.r.git.is_some());
+        ui.enter_changes();
+        let unstaged = |u: &Ui| u.side_len(changes_view_side(true));
+        pump(&mut ui, "the change", &|u| unstaged(u) == 1);
+        let mut screen = vec![0u32; 1280 * 800];
+        ui.paint(&mut Canvas::new(&mut screen, 1280, 800), true);
+        let pick = |ui: &mut Ui, label: &str| {
+            let (b, _) = *ui.r.changes.hits.iter().find(|h| h.1 == changes_view::CHit::ListOptions).unwrap();
+            ui.click(b.x + 4, b.y + b.h / 2);
+            let k = ui.menu.as_ref().unwrap().items.iter().position(|i| i.label.ends_with(label)).unwrap();
+            ui.menu_activate(k);
+        };
+        pick(&mut ui, "Show ignored files");
+        assert_eq!(ui.settings.get("changes.show_ignored"), Some("true"));
+        pump(&mut ui, "the ignored folder", &|u| unstaged(u) == 2);
+        assert_partial_paint_is_full(&mut ui, &mut screen, "ignored shown");
+        let rows = ui.side_rows(changes_view_side(true), 0, 2);
+        let k = rows.iter().position(|e| &*e.path == "target/").expect("a wholly ignored folder is one row");
+        assert_eq!(rows[k].letter(changes_view_side(true)), b'I');
+        ui.select_change(changes_view_side(true), k);
+        ui.key(Key::Char(' '));
+        assert!(ui.notice.as_deref().is_some_and(|n| n.contains("is ignored")), "{:?}", ui.notice);
+        let mut screen2 = vec![0u32; 1280 * 800];
+        ui.paint(&mut Canvas::new(&mut screen2, 1280, 800), true);
+        pick(&mut ui, "Show ignored files");
+        pump(&mut ui, "ignored hidden again", &|u| unstaged(u) == 1);
+        assert_partial_paint_is_full(&mut ui, &mut screen2, "ignored hidden");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Find in the diff (FF-34): `Ctrl+F` with the diff focused searches
