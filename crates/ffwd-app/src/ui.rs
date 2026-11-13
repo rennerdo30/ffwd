@@ -90,6 +90,32 @@ pub struct Layout {
     pub row_h: i32,
     /// Minimise, maximise and close, drawn by ffwd (Windows 11 frame).
     pub caption: Rect,
+    /// Commit header and file list (the whole details pane when beside).
+    pub info: Rect,
+}
+
+/// Where the commit details go (setting `ui.layout`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum DetailsLayout {
+    /// Under the history, with the diff on the right.
+    Below,
+    /// To the right of the history, diff under the file list.
+    Beside,
+}
+
+impl DetailsLayout {
+    pub fn from_setting(s: Option<&str>) -> DetailsLayout {
+        match s {
+            Some("beside") => DetailsLayout::Beside,
+            _ => DetailsLayout::Below,
+        }
+    }
+    pub fn as_setting(self) -> &'static str {
+        match self {
+            DetailsLayout::Below => "below",
+            DetailsLayout::Beside => "beside",
+        }
+    }
 }
 
 /// How the window's title row is made.
@@ -208,7 +234,12 @@ const COMMANDS: &[(&str, &str)] = &[
     ("AI: Draft commit message", "Ctrl Shift I"),
     ("AI: Review branch against main", ""),
     ("Settings: AI endpoint", ""),
+    (LAYOUT_BELOW, ""),
+    (LAYOUT_BESIDE, ""),
 ];
+
+const LAYOUT_BELOW: &str = "Layout: details below the history";
+const LAYOUT_BESIDE: &str = "Layout: details beside the history";
 
 pub struct Ui {
     pub s: f32,
@@ -247,6 +278,8 @@ pub struct Ui {
     pub notice: Option<String>,
     pub stats: Stats,
     pub remote: bool,
+    pub layout: DetailsLayout,
+    pub settings: crate::settings::Settings,
     pub chrome: Chrome,
     cap_hover: Option<u8>,
     cap_pressed: Option<u8>,
@@ -265,7 +298,17 @@ fn now_secs() -> i64 {
 }
 
 impl Ui {
-    pub fn new(te: TextEngine, f: Fonts, repo: &std::path::Path, sink: Sink, w: usize, h: usize, s: f32) -> Ui {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        te: TextEngine,
+        f: Fonts,
+        settings: crate::settings::Settings,
+        repo: &std::path::Path,
+        sink: Sink,
+        w: usize,
+        h: usize,
+        s: f32,
+    ) -> Ui {
         let repo_name = repo.file_name().map_or("repository".into(), |n| n.to_string_lossy().into_owned());
         // Details load as soon as the first rows arrive; git finds the
         // repository from any folder inside it, so no discovery wait.
@@ -304,9 +347,11 @@ impl Ui {
             diff_top: 0,
             palette: None,
             worker,
-            notice: None,
             stats: Stats::default(),
             remote: false,
+            layout: DetailsLayout::from_setting(settings.get("ui.layout")),
+            notice: settings.errors.first().cloned(),
+            settings,
             chrome: if cfg!(windows) {
                 Chrome::Windows11
             } else if cfg!(target_os = "macos") {
@@ -344,23 +389,41 @@ impl Ui {
         let top_h = self.px(46.0);
         let status_h = self.px(26.0);
         let side_w = self.px(236.0).min(wi / 4);
-        let det_w = ((wi as f32 * 0.40) as i32).clamp(self.px(420.0), self.px(780.0)).min(wi / 2);
         let mid_h = (hi - top_h - status_h).max(0);
         let list_x = side_w;
-        let list_w = (wi - side_w - det_w).max(0);
+        let (list_w, list_h, details) = match self.layout {
+            DetailsLayout::Beside => {
+                let det_w = ((wi as f32 * 0.40) as i32).clamp(self.px(420.0), self.px(780.0)).min(wi / 2);
+                let list_w = (wi - side_w - det_w).max(0);
+                (list_w, mid_h, Rect::new(list_x + list_w, top_h, det_w, mid_h))
+            }
+            DetailsLayout::Below => {
+                let list_w = (wi - side_w).max(0);
+                let list_h = ((mid_h as f32 * 0.46) as i32).max(self.px(150.0)).min(mid_h);
+                (list_w, list_h, Rect::new(list_x, top_h + list_h, list_w, mid_h - list_h))
+            }
+        };
+        let info = match self.layout {
+            DetailsLayout::Beside => details,
+            DetailsLayout::Below => {
+                let iw = ((details.w as f32 * 0.38) as i32).clamp(self.px(360.0), self.px(620.0)).min(details.w);
+                Rect::new(details.x, details.y, iw, details.h)
+            }
+        };
         let head_h = self.px(30.0);
         let row_h = self.px(30.0).max(12);
         let sb_w = self.px(8.0);
-        let list = Rect::new(list_x, top_h, list_w, mid_h);
+        let list = Rect::new(list_x, top_h, list_w, list_h);
         self.lay = Layout {
             top: Rect::new(0, 0, wi, top_h),
             status: Rect::new(0, hi - status_h, wi, status_h),
             side: Rect::new(0, top_h, side_w, mid_h),
             list,
             list_head: Rect::new(list_x, top_h, list_w, head_h),
-            list_body: Rect::new(list_x, top_h + head_h, list_w - sb_w, mid_h - head_h),
-            scrollbar: Rect::new(list_x + list_w - sb_w, top_h + head_h, sb_w, mid_h - head_h),
-            details: Rect::new(list_x + list_w, top_h, det_w, mid_h),
+            list_body: Rect::new(list_x, top_h + head_h, list_w - sb_w, list_h - head_h),
+            scrollbar: Rect::new(list_x + list_w - sb_w, top_h + head_h, sb_w, list_h - head_h),
+            details,
+            info,
             row_h,
             caption: if self.chrome == Chrome::Windows11 {
                 let cw = self.px(46.0) * 3;
@@ -471,6 +534,17 @@ impl Ui {
             }
             Msg::WorkerPanic(e) => self.set_notice(format!("Internal error (window kept alive): {e}")),
         }
+    }
+
+    /// Switches the details layout and saves it as `ui.layout`.
+    pub fn set_layout(&mut self, l: DetailsLayout) {
+        if l == self.layout {
+            return;
+        }
+        self.layout = l;
+        self.settings.set_string("ui.layout", l.as_setting());
+        self.file_top = 0;
+        self.resize(self.w, self.h, self.s);
     }
 
     pub fn set_remote(&mut self, remote: bool) {
@@ -897,6 +971,8 @@ impl Ui {
                         Some(&row) => self.select(row as usize),
                         None => self.set_notice("That commit is not loaded yet.".into()),
                     },
+                    Some(PAction::Command(c)) if c == LAYOUT_BELOW => self.set_layout(DetailsLayout::Below),
+                    Some(PAction::Command(c)) if c == LAYOUT_BESIDE => self.set_layout(DetailsLayout::Beside),
                     Some(PAction::Command(c)) => self.set_notice(format!("“{c}” is not in the proof of concept yet.")),
                     None => {}
                 }
@@ -1563,17 +1639,27 @@ impl Ui {
     }
 
     fn file_rows_visible(&self) -> usize {
-        8
+        match self.layout {
+            DetailsLayout::Beside => 8,
+            DetailsLayout::Below => {
+                let free = self.lay.info.h - self.header_h() - self.px(34.0) - self.px(8.0);
+                (free / self.px(26.0).max(1)).max(1) as usize
+            }
+        }
     }
 
     fn files_rect(&self) -> Rect {
-        let d = self.lay.details;
+        let d = self.lay.info;
         let n = self.details.as_ref().map_or(4, |x| x.files.len().clamp(1, self.file_rows_visible()));
         Rect::new(d.x, d.y + self.header_h() + self.px(34.0), d.w, n as i32 * self.px(26.0))
     }
 
     fn diff_rect(&self) -> Rect {
         let d = self.lay.details;
+        if self.layout == DetailsLayout::Below {
+            let i = self.lay.info;
+            return Rect::new(i.right(), d.y, (d.right() - i.right()).max(0), d.h);
+        }
         let f = self.files_rect();
         let y = f.bottom() + self.px(10.0);
         Rect::new(d.x, y, d.w, (d.bottom() - y).max(0))
@@ -1582,7 +1668,11 @@ impl Ui {
     fn paint_details(&mut self, cv: &mut Canvas) {
         let d = self.lay.details;
         cv.fill(d, BG_PANEL);
-        cv.fill(Rect::new(d.x, d.y, 1, d.h), BORDER);
+        match self.layout {
+            DetailsLayout::Beside => cv.fill(Rect::new(d.x, d.y, 1, d.h), BORDER),
+            DetailsLayout::Below => cv.fill(Rect::new(d.x, d.y, d.w, 1), BORDER),
+        }
+        let d = self.lay.info;
         let Some(c) = self.commits.get(self.sel).cloned() else {
             let msg = if let Some(e) = &self.error { e.clone() } else { "Reading history…".into() };
             self.te.draw(

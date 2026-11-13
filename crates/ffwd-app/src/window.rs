@@ -36,7 +36,7 @@ struct App {
     t0: Instant,
     smoke: bool,
     ui: Option<Ui>,
-    font_thread: Option<std::thread::JoinHandle<Option<(TextEngine, crate::ui::Fonts)>>>,
+    font_thread: Option<std::thread::JoinHandle<Option<(TextEngine, crate::ui::Fonts, crate::settings::Settings)>>>,
     sink: Sink,
     pending: Vec<Msg>,
     repo_name: String,
@@ -80,7 +80,9 @@ pub fn run(args: &Args, t0: Instant) -> i32 {
     }
     let font_thread = Some(std::thread::spawn(move || {
         let mut te = TextEngine::new();
-        let f = load_fonts(&mut te).map(|f| (te, f));
+        // Settings are read here too, so file I/O stays off the UI thread.
+        let settings = crate::settings::Settings::load();
+        let f = load_fonts(&mut te).map(|f| (te, f, settings));
         trace(t0, "fonts parsed (worker)");
         f
     }));
@@ -307,7 +309,7 @@ impl ApplicationHandler<UserEvent> for App {
         #[cfg(not(windows))]
         let framed = false;
         trace(self.t0, "title bar themed");
-        let Some((te, fonts)) = self.font_thread.take().and_then(|t| t.join().ok()).flatten() else {
+        let Some((te, fonts, settings)) = self.font_thread.take().and_then(|t| t.join().ok()).flatten() else {
             eprintln!("ffwd: no usable UI font found");
             self.exit_code = 1;
             el.exit();
@@ -316,8 +318,16 @@ impl ApplicationHandler<UserEvent> for App {
         trace(self.t0, "fonts ready");
         let sz = window.inner_size();
         self.size = (sz.width as usize, sz.height as usize);
-        let mut ui =
-            Ui::new(te, fonts, &self.repo, self.sink.clone(), self.size.0, self.size.1, window.scale_factor() as f32);
+        let mut ui = Ui::new(
+            te,
+            fonts,
+            settings,
+            &self.repo,
+            self.sink.clone(),
+            self.size.0,
+            self.size.1,
+            window.scale_factor() as f32,
+        );
         ui.remote = platform::is_remote_session();
         if ui.chrome == Chrome::Windows11 && !framed {
             // Without the frame hook the system caption stays; no second set of buttons.

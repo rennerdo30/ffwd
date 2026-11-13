@@ -24,7 +24,11 @@ pub fn run(args: &Args, t0: Instant) -> i32 {
         return 1;
     };
     let (w, h) = args.size;
-    let mut ui = Ui::new(te, fonts, &args.repo, sink, w, h, args.scale.unwrap_or(1.0));
+    // Snapshots ignore the user's settings so they are reproducible;
+    // `--layout below|beside` picks the layout.
+    let layout = args.layout.as_deref().unwrap_or("below");
+    let settings = crate::settings::Settings::parse(&format!("[ui]\nlayout = \"{layout}\"\n"));
+    let mut ui = Ui::new(te, fonts, settings, &args.repo, sink, w, h, args.scale.unwrap_or(1.0));
     let deadline = Instant::now() + Duration::from_secs(30);
     let mut selected = false;
     let mut have_refs = false;

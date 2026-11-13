@@ -12,6 +12,7 @@ mod fmt;
 mod frame;
 mod icon;
 mod platform;
+mod settings;
 mod snapshot;
 mod theme;
 mod ui;
@@ -30,6 +31,7 @@ pub struct Args {
     pub select: Option<usize>,
     pub focus: Option<String>,
     pub palette: Option<String>,
+    pub layout: Option<String>,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -42,6 +44,7 @@ fn parse_args() -> Result<Args, String> {
         select: None,
         focus: None,
         palette: None,
+        layout: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -66,6 +69,7 @@ fn parse_args() -> Result<Args, String> {
             "--select" => a.select = Some(val("--select")?.parse().map_err(|_| "bad row")?),
             "--focus" => a.focus = Some(val("--focus")?),
             "--palette" => a.palette = Some(val("--palette")?),
+            "--layout" => a.layout = Some(val("--layout")?),
             "-h" | "--help" => {
                 println!(
                     "usage: ffwd [repo] [--snapshot out.png [--size WxH] [--scale S] [--select N] [--focus files|diff] [--palette Q]] [--smoke]"
