@@ -96,7 +96,7 @@
 | Rebase | **Built** | Backup ref first |
 | Merge or rebase by drag and drop on the sidebar | M2 | |
 | Conflict prediction before merge, cherry-pick, revert, apply patch | M2 | `git merge-tree` on a worker |
-| Interactive rebase: dialog, quick actions, multi-select, amend during rebase, `--update-refs` | M2 | |
+| Interactive rebase: dialog, quick actions, multi-select, amend during rebase, `--update-refs` | Partial | Plan view with pick, reword, squash, fixup, drop and reordering; no editor ever opens; backup ref; autostash. Multi-select, edit stops and `--update-refs` come later |
 | Reorder and squash by drag and drop in the commit list | M2 | |
 | Squash, drop, cherry-pick several commits | M2 | |
 | Cherry-pick and revert, merge commits too | Partial | Single commits are built; merge commits come later |

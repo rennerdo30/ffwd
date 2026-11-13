@@ -27,6 +27,8 @@ pub enum Hot {
     Files(usize),
     /// A row of the activity log.
     Activity(usize),
+    /// An element of the interactive rebase plan.
+    Rebase(usize),
     /// An element of the find bar.
     Find(usize),
     /// A control in the diff bar.
@@ -92,6 +94,9 @@ impl Ui {
         if let Some(&(_, a)) = self.top_buttons.iter().find(|(r, _)| r.contains(x, y)) {
             return Some(Hot::Top(a));
         }
+        if self.r.rebase.is_some() {
+            return self.rebase_hit_at(x, y).map(Hot::Rebase);
+        }
         if self.r.activity_view {
             return self.activity_hit_at(x, y).map(Hot::Activity);
         }
@@ -145,6 +150,7 @@ impl Ui {
             Hot::Change(i) => self.r.changes.hits.get(i).map_or(self.lay.list, |h| h.0.inset(-2, -2)),
             Hot::Files(i) => self.files_hit_rect(i),
             Hot::Activity(i) => self.activity_hit_rect(i),
+            Hot::Rebase(i) => self.rebase_hit_rect(i),
         }
     }
 

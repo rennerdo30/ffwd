@@ -100,6 +100,19 @@ The capture above is the real PoC UI. `ffwd --snapshot` rendered it offscreen fr
 - **Keys:** `↑`/`↓` move; `j`/`k`/Space scroll the detail; `Ctrl+C` copies the entry with its commands and output; `Esc` goes back to the history.
 - **Privacy and memory:** the log lives in memory only, capped at 500 entries and 200 commands of 16 KB output each; nothing is written to disk.
 
+## Interactive rebase (FF-37)
+
+- **Open:** a commit's menu ("Interactive rebase <branch> from <sha>…"), `Ctrl+Shift+R` on the selected commit, or the palette. The plan holds that commit and everything above it up to HEAD, newest first like the history.
+- **Per commit:** an action pill (click cycles it) or keys `p` pick, `r` reword (edit the message in place, `Enter` keeps it), `s` squash, `f` fixup, `d` drop. Squash and fixup fold into the commit below (older); dropped commits are struck through.
+- **Order:** `Shift+K` / `Shift+J` or the arrows on the selected row.
+- **Run:** `Ctrl+Enter` or **Start rebase**. The footer says why a plan cannot run (for example the oldest kept commit squashing into nothing).
+- **Safety:**
+  - ffwd keeps the current tip as `refs/ffwd/backup/rebase-i-<time>`;
+  - uncommitted changes are stashed and restored (`--autostash`);
+  - Git never opens an editor;
+  - conflicts stop the rebase, and the Local Changes banner continues or aborts it;
+  - ranges with merge commits are refused (history stays linear).
+
 ## Stashes (FF-38)
 
 - **Save:** `Ctrl+Shift+S` (or the palette's "Stash changes") opens a dialog with an optional message. Untracked files are included by default; `Tab` toggles that.

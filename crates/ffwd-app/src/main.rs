@@ -67,6 +67,8 @@ pub struct Args {
     pub stash_dialog: bool,
     /// Runs two harmless failing operations, then shows the activity log.
     pub activity: bool,
+    /// Opens the interactive rebase plan from this history row (read only).
+    pub rebase_from: Option<usize>,
     /// Snapshot with the find bar searching messages for this text.
     pub find: Option<String>,
     /// Snapshot with the diff side by side.
@@ -101,6 +103,7 @@ fn parse_args() -> Result<Args, String> {
         prompt: false,
         stash_dialog: false,
         activity: false,
+        rebase_from: None,
         find: None,
         diff_split: false,
         file: None,
@@ -144,6 +147,7 @@ fn parse_args() -> Result<Args, String> {
             "--prompt" => a.prompt = true,
             "--stash-dialog" => a.stash_dialog = true,
             "--activity" => a.activity = true,
+            "--rebase-from" => a.rebase_from = Some(val("--rebase-from")?.parse().map_err(|_| "bad row")?),
             "--find" => a.find = Some(val("--find")?),
             "--diff-split" => a.diff_split = true,
             "--file" => a.file = Some(val("--file")?.parse().map_err(|_| "bad file index")?),

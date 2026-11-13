@@ -15,6 +15,8 @@ pub enum MenuAct {
     Ask(Box<Ask>),
     Name(NameAct),
     Copy(String),
+    /// Interactive rebase from this commit (FF-37).
+    RebaseFrom(String),
 }
 
 #[derive(Clone, Debug)]
@@ -145,6 +147,7 @@ impl Ui {
             v.push(item(format!("Revert {short}"), MenuAct::Run(RefOp::Revert(sha.clone()))));
             v.push(sep());
             v.push(item(format!("Reset {h} to {short}…"), MenuAct::Ask(Box::new(self.reset_ask(&sha, &short, h)))));
+            v.push(item(format!("Interactive rebase {h} from {short}…"), MenuAct::RebaseFrom(sha.clone())));
         }
         v.push(sep());
         v.push(item("Copy SHA", MenuAct::Copy(sha.clone())));
@@ -359,6 +362,7 @@ impl Ui {
         self.close_menu();
         match act {
             Some(MenuAct::Run(op)) => self.run_refop(op),
+            Some(MenuAct::RebaseFrom(sha)) => self.open_rebase(sha),
             Some(MenuAct::Ask(a)) => self.open_dialog(DialogKind::Ask(*a)),
             Some(MenuAct::Name(n)) => {
                 let field = match &n {

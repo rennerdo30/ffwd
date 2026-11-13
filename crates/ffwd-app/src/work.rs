@@ -77,6 +77,9 @@ pub enum Msg {
     },
     /// An operation for the activity log (FF-48).
     Activity(Box<crate::ui::ActivityEntry>),
+    /// The commits an interactive rebase would rewrite (FF-37).
+    #[allow(clippy::type_complexity)]
+    RebasePlan(Result<(Option<String>, Vec<ffwd_core::rebase::Step>), String>),
     /// A branch, tag or history operation ended.
     RefOp(Result<String, ffwd_core::refops::OpError>),
     /// What a discard removed (for Ctrl+Z).
@@ -130,6 +133,8 @@ pub enum RefOp {
     RemoteTest(String),
     /// A fetch, pull or push chosen in a dialog (the UI starts it itself).
     Sync(ffwd_core::ops::Op),
+    /// Interactive rebase onto a base (`None`: the root), steps oldest first.
+    RebaseInteractive(Option<String>, Vec<ffwd_core::rebase::Step>),
 }
 
 impl RefOp {
@@ -160,6 +165,7 @@ impl RefOp {
             RefOp::RemoteFetch(n) => format!("Fetch {n}"),
             RefOp::RemoteTest(n) => format!("Test {n}"),
             RefOp::Sync(op) => op.name().to_string(),
+            RefOp::RebaseInteractive(_, steps) => format!("Interactive rebase of {} commits", steps.len()),
         }
     }
 
@@ -187,6 +193,7 @@ impl RefOp {
             RefOp::RemoteFetch(_) => "Fetching",
             RefOp::RemoteTest(_) => "Testing the connection",
             RefOp::Sync(op) => op.verb(),
+            RefOp::RebaseInteractive(..) => "Rebasing",
         }
     }
 }
@@ -221,6 +228,7 @@ pub fn refop(git: Git, op: RefOp, sink: &Sink) {
                 ffwd_core::remotes::test(&git, n, std::time::Duration::from_secs(30), Default::default())
             }
             RefOp::Sync(_) => Err(r::OpError::Failed("internal: a sync runs through start_op".into())),
+            RefOp::RebaseInteractive(base, steps) => ffwd_core::rebase::run_plan(&git, base.as_deref(), steps),
         });
         let (ok, summary) = match &res {
             Ok(m) => (true, m.clone()),

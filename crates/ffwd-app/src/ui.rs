@@ -30,6 +30,8 @@ mod diff_view;
 pub use activity_view::Entry as ActivityEntry;
 #[path = "ui_files.rs"]
 mod files_view;
+#[path = "ui_rebase.rs"]
+mod rebase_view;
 pub use files_view::{Loaded as FileLoaded, TreeResult as FilesTreeResult};
 #[path = "ui_menu.rs"]
 mod menu;
@@ -281,6 +283,7 @@ const CMD_PICK: &str = "Cherry-pick this commit";
 const CMD_REVERT: &str = "Revert this commit";
 const CMD_STASH: &str = "Stash changes";
 const CMD_ACTIVITY: &str = "Activity log";
+const CMD_REBASE_I: &str = "Interactive rebase from here";
 const CMD_ADD_REMOTE: &str = "Add remote…";
 const CMD_CANCEL_OP: &str = "Cancel the running fetch, pull or push";
 
@@ -304,6 +307,7 @@ const WORKING: &[&str] = &[
     CMD_REVERT,
     CMD_STASH,
     CMD_ACTIVITY,
+    CMD_REBASE_I,
     CMD_ADD_REMOTE,
     CMD_CANCEL_OP,
     CMD_SETTINGS,
@@ -336,7 +340,7 @@ const COMMANDS: &[(&str, &str)] = &[
     (CMD_TAG, "Ctrl Shift G"),
     (CMD_PICK, ""),
     (CMD_REVERT, ""),
-    ("Interactive rebase from here", "Ctrl Shift R"),
+    (CMD_REBASE_I, "Ctrl Shift R"),
     (CMD_STASH, "Ctrl Shift S"),
     (CMD_ACTIVITY, ""),
     (CMD_ADD_REMOTE, ""),
@@ -399,6 +403,8 @@ pub struct RepoState {
     pub files: files_view::Files,
     /// The activity log view (FF-48); the log itself is app-wide.
     pub activity_view: bool,
+    /// The interactive rebase plan, shown over the other views (FF-37).
+    pub rebase: Option<rebase_view::RebaseState>,
     /// The find bar over the commit list (FF-34).
     pub search: Option<search_view::Search>,
 }
@@ -1209,6 +1215,7 @@ impl Ui {
             }
             Msg::ConflictFile { seq, path, result } => self.on_conflict_file(seq, path, result),
             Msg::Activity(e) => self.on_activity(*e),
+            Msg::RebasePlan(r) => self.on_rebase_plan(r),
             Msg::FilesTree(r) => self.on_files_tree(r),
             Msg::FileContent { seq, result } => self.on_file_content(seq, result),
             Msg::FileBlame { seq, result } => self.on_file_blame(seq, result),
@@ -1392,6 +1399,15 @@ impl Ui {
         if self.menu.is_some() {
             return self.menu_key(k);
         }
+        // The rebase plan takes the keys while it is open (like a dialog),
+        // unless the palette or a panel is on top.
+        if self.r.rebase.is_some()
+            && self.palette.is_none()
+            && self.settings_view.is_none()
+            && self.agent_view.is_none()
+        {
+            return self.rebase_key(k);
+        }
         if matches!(k, Key::Ctrl('.'))
             && self.settings_view.is_none()
             && self.agent_view.is_none()
@@ -1463,6 +1479,7 @@ impl Ui {
             Key::CtrlShift('k') => return self.start_op(Op::Push),
             Key::CtrlShift('u') => return self.request_update_install(),
             Key::CtrlShift('s') => return self.open_stash_dialog(),
+            Key::CtrlShift('r') if !self.r.changes_view => return self.rebase_from_selection(),
             Key::Ctrl('b') if !self.r.changes_view => return self.selected_commit_command(CMD_BRANCH),
             Key::CtrlShift('g') if !self.r.changes_view => return self.selected_commit_command(CMD_TAG),
             Key::Ctrl(_) | Key::CtrlShift(_) | Key::NextTab | Key::PrevTab => return,
@@ -1561,6 +1578,8 @@ impl Ui {
             self.agents_wheel(n);
         } else if self.lay.side.contains(x, y) {
             self.side_wheel(n);
+        } else if self.r.rebase.is_some() {
+            self.rebase_wheel(n);
         } else if self.r.activity_view {
             self.activity_wheel(x, y, n);
         } else if self.r.files_view {
@@ -1595,6 +1614,9 @@ impl Ui {
         }
         if self.agent_view.is_some() {
             return self.agents_click(x, y);
+        }
+        if self.r.rebase.is_some() && self.palette.is_none() && self.rebase_area().contains(x, y) {
+            return self.rebase_click(x, y);
         }
         if let Some(b) = self.caption_button_at(x, y) {
             if b != 1 {
@@ -1835,6 +1857,14 @@ impl Ui {
         self.open_dialog(DialogKind::Name { act: NameAct::StashSave, field: TextField::default(), checkout: true });
     }
 
+    /// Interactive rebase from the selected commit (palette, Ctrl+Shift+R).
+    fn rebase_from_selection(&mut self) {
+        match self.r.commits.get(self.r.sel).map(|c| c.id.to_string()) {
+            Some(sha) => self.open_rebase(sha),
+            None => self.set_notice("Select a commit first.".into()),
+        }
+    }
+
     /// Logs a finished fetch, pull or push (FF-48).
     fn log_sync(&mut self, out: &ffwd_core::ops::Outcome) {
         let Some(g) = self.r.git.clone() else { return };
@@ -1885,6 +1915,7 @@ impl Ui {
             CMD_BRANCH | CMD_TAG | CMD_PICK | CMD_REVERT => self.selected_commit_command(c),
             CMD_STASH => self.open_stash_dialog(),
             CMD_ACTIVITY => self.enter_activity(),
+            CMD_REBASE_I => self.rebase_from_selection(),
             CMD_ADD_REMOTE => self.open_dialog(DialogKind::Name {
                 act: NameAct::AddRemoteUrl,
                 field: TextField::default(),
@@ -2068,7 +2099,11 @@ impl Ui {
         if !clip.intersect(l.side).is_empty() {
             self.paint_side(cv);
         }
-        if self.r.activity_view {
+        if self.r.rebase.is_some() {
+            if !clip.intersect(self.rebase_area()).is_empty() {
+                self.paint_rebase(cv);
+            }
+        } else if self.r.activity_view {
             if !clip.intersect(self.activity_layout().area).is_empty() {
                 self.paint_activity(cv);
             }
@@ -4143,6 +4178,93 @@ mod tests {
         ui.key(Key::Esc);
         assert!(!ui.r.activity_view);
         assert_partial_paint_is_full(&mut ui, &mut screen, "leave the log");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Interactive rebase from the keyboard (FF-37): Ctrl+Shift+R on a
+    /// commit opens the plan; r rewords, f folds a commit into the one
+    /// below, Shift+K moves one up, Ctrl+Enter runs it; partial repaints
+    /// match full ones while the plan is open.
+    #[test]
+    fn interactive_rebase_plan_with_keys() {
+        use std::sync::mpsc;
+        let mut te = TextEngine::new();
+        let Some(f) = load_fonts(&mut te) else { return };
+        let dir = std::env::temp_dir().join(format!("ffwd-ui-rebase-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = Git { root: dir.clone() };
+        for a in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.name", "ffwd test"],
+            &["config", "user.email", "test@example.invalid"],
+            &["config", "commit.gpgsign", "false"],
+        ] {
+            g.output(a).unwrap();
+        }
+        for (f, m) in [("a", "one"), ("b", "two"), ("c", "three"), ("d", "four")] {
+            std::fs::write(dir.join(f), f).unwrap();
+            g.output(&["add", "."]).unwrap();
+            g.output(&["commit", "-q", "-m", m]).unwrap();
+        }
+        let (tx, rx) = mpsc::channel::<(u64, Msg)>();
+        let tx = Arc::new(std::sync::Mutex::new(tx));
+        let sinks: SinkFactory = Arc::new(move |id| {
+            let tx = tx.clone();
+            Arc::new(move |m| {
+                if let Ok(t) = tx.lock() {
+                    let _ = t.send((id, m));
+                }
+            })
+        });
+        crate::work::start(dir.clone(), &sinks(1));
+        let empty = crate::settings::Settings::parse("");
+        let mut ui = Ui::new(te, f, empty.clone(), empty, Some((1, dir.clone())), sinks, 1280, 800, 1.0);
+        let pump = |ui: &mut Ui, what: &str, done: &dyn Fn(&Ui) -> bool| {
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while !done(ui) {
+                let left = until.saturating_duration_since(std::time::Instant::now());
+                assert!(!left.is_zero(), "timed out waiting for {what}; notice: {:?}", ui.notice);
+                if let Ok((id, m)) = rx.recv_timeout(left) {
+                    ui.on_tab_msg(id, m);
+                }
+            }
+        };
+        pump(&mut ui, "history", &|u| u.r.log_done && u.r.commits.len() == 4 && u.r.refs.head_branch.is_some());
+        assert!(ui.commit_menu(2).iter().any(|i| i.label.starts_with("Interactive rebase main from")));
+        // Rows: four, three, two, one. Rebase from "two".
+        ui.key(Key::Down);
+        ui.key(Key::Down);
+        assert_eq!(&*ui.r.commits[ui.r.sel].subject, "two");
+        let mut screen = vec![0u32; 1280 * 800];
+        ui.paint(&mut Canvas::new(&mut screen, 1280, 800), true);
+        ui.key(Key::CtrlShift('r'));
+        pump(&mut ui, "the plan", &|u| matches!(u.r.rebase, Some(rebase_view::RebaseState::Ready(_))));
+        assert_partial_paint_is_full(&mut ui, &mut screen, "open the plan");
+        // Row 0 "four": reword (the field starts with the subject).
+        ui.key(Key::Char('r'));
+        for c in ", reworded".chars() {
+            ui.key(Key::Char(c));
+        }
+        ui.key(Key::Enter);
+        assert_partial_paint_is_full(&mut ui, &mut screen, "reword");
+        // Row 1 "three": fold into "two".
+        ui.key(Key::Down);
+        ui.key(Key::Char('f'));
+        assert_partial_paint_is_full(&mut ui, &mut screen, "fixup");
+        ui.pointer(700, 160);
+        assert_partial_paint_is_full(&mut ui, &mut screen, "hover");
+        ui.key(Key::CtrlEnter);
+        assert!(ui.r.rebase.is_none(), "starting closes the plan");
+        pump(&mut ui, "the rebase", &|u| u.notice.as_deref().is_some_and(|n| n.starts_with("Rebased")));
+        let log = String::from_utf8(g.output(&["log", "--format=%s"]).unwrap()).unwrap();
+        assert_eq!(log.lines().collect::<Vec<_>>(), ["four, reworded", "two", "one"]);
+        // A new plan after the reload; Esc cancels it.
+        pump(&mut ui, "the new history", &|u| u.r.log_done && u.r.commits.len() == 3 && u.r.refs.head_branch.is_some());
+        ui.key(Key::CtrlShift('r'));
+        pump(&mut ui, "a second plan", &|u| matches!(u.r.rebase, Some(rebase_view::RebaseState::Ready(_))));
+        ui.key(Key::Esc);
+        assert!(ui.r.rebase.is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

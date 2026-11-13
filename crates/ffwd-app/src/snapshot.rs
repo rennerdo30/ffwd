@@ -148,6 +148,19 @@ pub fn run(args: &Args, t0: Instant) -> i32 {
         }
         ui.enter_activity();
     }
+    if let Some(row) = args.rebase_from {
+        // Only the plan: it is read on a worker and changes nothing.
+        ui.snapshot_rebase(row);
+        let until = Instant::now() + Duration::from_secs(10);
+        while let Ok((id, m)) = rx.recv_timeout(until.saturating_duration_since(Instant::now())) {
+            let done = matches!(m, Msg::RebasePlan(_));
+            ui.on_tab_msg(id, m);
+            if done {
+                break;
+            }
+        }
+        ui.snapshot_rebase_demo();
+    }
     if args.diff_split {
         ui.diff_split = true;
     }
