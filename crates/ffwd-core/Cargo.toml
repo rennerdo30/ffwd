@@ -1,0 +1,10 @@
+[package]
+name = "ffwd-core"
+description = "Repository model for ffwd: history streaming, refs, graph lanes, diffs. No UI dependencies."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]

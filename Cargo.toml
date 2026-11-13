@@ -1,0 +1,38 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0-poc"
+edition = "2024"
+rust-version = "1.100"
+license = "MIT"
+publish = false
+
+# Fastest iteration (docs/BUILD.md):
+# - workspace crates: incremental, small debug info, fast to relink;
+# - dependencies: optimised once, no debug info, cached by sccache.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+opt-level = 2
+debug = false
+
+# The CPU renderer paints every pixel; unoptimised it would distort every
+# interactive check, so it is optimised even in dev builds.
+[profile.dev.package.ffwd-render]
+opt-level = 2
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+# Unwinding stays on: a panicking worker is caught and reported, the window
+# survives (AGENTS.md performance rule 7).
+panic = "unwind"
+strip = true
+
+[profile.profiling]
+inherits = "release"
+debug = "line-tables-only"
+strip = "none"

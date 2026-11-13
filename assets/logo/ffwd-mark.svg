@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <title>ffwd</title>
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FF8A3D"/>
+      <stop offset="0.55" stop-color="#FF5A4E"/>
+      <stop offset="1" stop-color="#FF2E7E"/>
+    </linearGradient>
+    <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.18"/>
+      <stop offset="0.5" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+  </defs>  <rect width="512" height="512" rx="116" fill="url(#tile)"/>
+  <rect width="512" height="512" rx="116" fill="url(#sheen)"/>
+  <!-- A commit, its branch line, and the fast-forward it takes. -->
+    <g fill="#FFFFFF" stroke="#FFFFFF" stroke-linejoin="round" stroke-linecap="round" transform="translate(256 256) scale(1.12) translate(-260 -256)">
+      <circle cx="116" cy="256" r="30" stroke="none"/>
+      <path d="M146 256 H190" stroke-width="26" fill="none"/>
+      <path d="M196 162 L294 256 L196 350 Z" stroke-width="30"/>
+      <path d="M306 162 L404 256 L306 350 Z" stroke-width="30"/>
+    </g></svg>

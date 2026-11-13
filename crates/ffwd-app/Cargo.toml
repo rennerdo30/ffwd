@@ -1,0 +1,28 @@
+[package]
+name = "ffwd"
+description = "ffwd: a fast, keyboard-first Git client."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "ffwd"
+path = "src/main.rs"
+
+[dependencies]
+ffwd-core = { path = "../ffwd-core" }
+ffwd-render = { path = "../ffwd-render" }
+winit = "0.30.13"
+softbuffer = "0.4.8"
+raw-window-handle = "0.6.2"
+png = "0.18.1"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Dwm",
+    "Win32_Graphics_Gdi",
+    "Win32_UI_WindowsAndMessaging",
+] }

@@ -1,0 +1,67 @@
+# UI design
+
+Status: first design, shown in the proof of concept (2026-11-13).
+
+![ffwd proof of concept: history, details and diff](images/poc-history.png)
+
+The capture above is the real PoC UI. `ffwd --snapshot` rendered it offscreen from the Kwil repository, using the same paint code that the window uses.
+
+## Layout
+
+```
+┌ top bar ──────────────────────────────────────────────────────────────────┐
+│ ▶▶ repo  ⑂ branch      [ Jump to branch, commit or command   Ctrl K ]  Fetch Pull↓ Push↑ AI │
+├ sidebar ──┬ history ───────────────────────────────┬ details ─────────────┤
+│ WORKSPACE │ graph │ refs · subject │ author │ date │ sha │ subject, body  │
+│ BRANCHES  │                                        │ author, date, SHA    │
+│ REMOTES   │  virtualised rows, one per commit      │ FILES (status, +/−)  │
+│ TAGS      │                                        │ diff of the file     │
+│ STASHES   │                                        │                      │
+├───────────┴────────────────────────────────────────┴──────────────────────┤
+│ ● state · measured timings                     session · renderer · paint │
+└───────────────────────────────────────────────────────────────────────────┘
+```
+
+- **The top bar holds one input for everything:** branches, tags, SHAs and commands, with `Ctrl+K`, `Ctrl+P` or `/`. actions (Fetch, Pull, Push) stay visible with live ahead/behind counts. The AI button is the single entry point to AI features.
+- **The sidebar is the map, not a second list.**
+  - Local Changes shows a count badge.
+  - The current branch is marked in the accent colour and shows its ahead/behind counts.
+  - Remotes, tags, stashes and worktrees are grouped, and long sections end in "N more".
+- **The history list shows:**
+  - the graph;
+  - ref chips: the current branch in accent, local in green, remote in blue, tags in amber;
+  - the subject, with a "…" marker when the commit has a body;
+  - the author, a relative date and a short SHA.
+  The selected row has a 3 px accent bar, and the scroll track marks where the selection is.
+- **The details pane has three layers that arrive at different times.** The header (subject, author, date, SHA, parents) paints in the same frame as the selection, from the history row. The body, the files and the diff fill in behind it. Placeholders are solid, still bars, never spinners.
+- **The status bar tells the truth:** what is loading, real measured timings, the session type (local or remote) and the renderer.
+
+## Interaction (keyboard first)
+
+| Key | Action |
+|---|---|
+| `↑ ↓` / `j k` | Move the selection (history, files) or scroll (diff) |
+| `PgUp PgDn Home End` | Page through the focused pane |
+| `Tab` / `Shift+Tab` | Move focus: history → files → diff |
+| `Enter` | Move focus into the next pane |
+| `Esc` | Back to the history |
+| `Ctrl+K` / `Ctrl+P` / `/` | Palette: jump to a branch, tag or SHA, or run a command |
+
+Mouse: click to select rows and files, click a sidebar ref to jump to its commit, and use the wheel over the history or the diff.
+
+Planned M1 keys follow common Git-client conventions (for example `Ctrl+Shift+G` for create tag, `Ctrl+Shift+T` to restore a tab, `Ctrl+↑/↓` for hunk navigation), so that switching costs nothing.
+
+## Visual language
+
+- **Dark by default, solid fills only.** Depth comes from value steps (sidebar `#0C0E11`, list `#111317`, panels `#13161A`, inputs `#1B1F25`), not from shadows or blur. This rule keeps remote sessions cheap, and it looks calm.
+- **One accent:** ffwd coral `#FF6A3D`, used for the current branch, focus, the selection bar and the logo. Graph lanes use ten distinct hues that are easy to tell apart on dark.
+- **Type:** Inter for the UI and Cascadia Mono for SHAs and diffs, falling back to the system fonts. Both are open-licensed and can be bundled later.
+- **Density:** 30 px rows at 100 %, scaled by the OS DPI factor. Text is never smaller than 11 px.
+- **No motion.** There are no animations. In local sessions, smooth scrolling may come later as an option, driven only while a scroll is running.
+
+## Next design steps
+
+1. The Local Changes view: staged and unstaged lists, line and hunk staging, and the commit box with an AI draft.
+2. Side-by-side diff with token highlights.
+3. Interactive rebase as an editable list in the history pane.
+4. A light theme, with theme files in the Kwil format.

@@ -1,0 +1,11 @@
+[package]
+name = "ffwd-render"
+description = "CPU canvas, vector primitives and text for the ffwd UI. No windowing."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+fontdue = "0.9.5"
