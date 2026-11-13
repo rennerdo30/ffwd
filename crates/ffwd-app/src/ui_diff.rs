@@ -33,6 +33,11 @@ pub fn code_size_from(settings: &crate::settings::Settings) -> u8 {
     settings.get("diff.font_size").and_then(|t| t.parse::<u8>().ok()).filter(|t| CODE_SIZES.contains(t)).unwrap_or(12)
 }
 
+/// Whether long diff lines wrap (`diff.wrap`; unified view).
+pub fn wrap_from(settings: &crate::settings::Settings) -> bool {
+    settings.get("diff.wrap") == Some("true")
+}
+
 /// Whether whitespace characters are shown, and the tab width.
 pub fn view_from(settings: &crate::settings::Settings) -> (bool, u8) {
     let ws = settings.get("diff.show_whitespace") == Some("true");
@@ -428,6 +433,90 @@ impl Ui {
         self.damage.full = true;
     }
 
+    /// The code column of a unified diff body: its left edge (where text
+    /// starts) and the width text may use before it wraps, a whole number
+    /// of code characters so rows break between glyphs.
+    pub(super) fn code_column(&mut self, body: Rect) -> (f32, f32) {
+        let gut_w = (self.code_px(38.0) * 2.0 + self.pf(8.0)) as i32;
+        let tx = (body.x + gut_w) as f32 + self.pf(8.0);
+        // Text starts 14 px after `tx` and ends clear of the overview strip.
+        let w = (body.right() as f32 - tx - self.pf(14.0) - self.pf(24.0)).max(self.pf(40.0));
+        let cw = self.te.measure(self.f.mono, self.code_fs(), "M").max(1.0);
+        (tx + self.pf(14.0), ((w / cw).floor().max(4.0)) * cw)
+    }
+
+    /// How many rows diff line `i` takes in `body` (FF-41 word wrap):
+    /// one, or with wrapping on (unified view) as many as its text needs.
+    pub(super) fn diff_rows(&mut self, diff: &FileDiff, i: usize, body: Rect) -> usize {
+        let Some(line) = diff.lines.get(i) else { return 1 };
+        if !self.diff_wrap || !matches!(line.kind, LineKind::Add | LineKind::Del | LineKind::Context) {
+            return 1;
+        }
+        let per = self.wrap_chars(body);
+        let n = super::diff_find::shown_text(&line.text, self.diff_tab).chars().count();
+        n.div_ceil(per).clamp(1, 64)
+    }
+
+    /// Characters per wrapped row in `body`.
+    pub(super) fn wrap_chars(&mut self, body: Rect) -> usize {
+        let (_, w) = self.code_column(body);
+        let cw = self.te.measure(self.f.mono, self.code_fs(), "M").max(1.0);
+        ((w / cw).round() as usize).max(4)
+    }
+
+    /// The line at screen `y` in a unified body painted from line `top`,
+    /// walking rows the way the painter does.
+    pub(super) fn diff_line_at_y(&mut self, diff: &FileDiff, top: usize, body: Rect, y: i32) -> Option<usize> {
+        if y < body.y {
+            return None;
+        }
+        let lh = self.code_lh().max(1);
+        if !self.diff_wrap {
+            let i = top + ((y - body.y) / lh) as usize;
+            return (i < diff.lines.len()).then_some(i);
+        }
+        let mut yy = body.y;
+        for i in top..diff.lines.len() {
+            let h = lh * self.diff_rows(diff, i, body) as i32;
+            if y < yy + h {
+                return Some(i);
+            }
+            yy += h;
+            if yy >= body.bottom() {
+                break;
+            }
+        }
+        None
+    }
+
+    /// Where line `i` sits in a unified body painted from `top`: its y and
+    /// height, if it is on screen.
+    pub(super) fn diff_line_y(&mut self, diff: &FileDiff, top: usize, body: Rect, i: usize) -> Option<(i32, i32)> {
+        if i < top {
+            return None;
+        }
+        let lh = self.code_lh();
+        let mut y = body.y;
+        for k in top..=i.min(diff.lines.len().saturating_sub(1)) {
+            let h = lh * self.diff_rows(diff, k, body) as i32;
+            if k == i {
+                return (y < body.bottom()).then_some((y, h));
+            }
+            y += h;
+            if y >= body.bottom() {
+                return None;
+            }
+        }
+        None
+    }
+
+    /// Turns long-line wrapping on or off.
+    pub(super) fn set_diff_wrap(&mut self, on: bool) {
+        self.diff_wrap = on;
+        self.settings.set_string("diff.wrap", if on { "true" } else { "false" });
+        self.damage.full = true;
+    }
+
     /// Shows or hides whitespace characters, or sets the tab width.
     pub(super) fn set_diff_view(&mut self, show_ws: Option<bool>, tab: Option<u8>) {
         if let Some(on) = show_ws {
@@ -484,8 +573,10 @@ impl Ui {
     pub(super) fn diff_view_menu(&self) -> Vec<MenuItem> {
         let mark = |on: bool, t: &str| if on { format!("✓ {t}") } else { t.to_string() };
         let item = |label: String, act: MenuAct| MenuItem { label, act: Some(act), danger: false };
-        let mut v =
-            vec![item(mark(self.diff_show_ws, "Show whitespace characters"), MenuAct::DiffShowWs(!self.diff_show_ws))];
+        let mut v = vec![
+            item(mark(self.diff_wrap, "Wrap long lines"), MenuAct::DiffWrap(!self.diff_wrap)),
+            item(mark(self.diff_show_ws, "Show whitespace characters"), MenuAct::DiffShowWs(!self.diff_show_ws)),
+        ];
         v.push(MenuItem { label: String::new(), act: None, danger: false });
         for t in TAB_WIDTHS {
             v.push(item(mark(self.diff_tab == t as usize, &format!("Tab width {t}")), MenuAct::DiffTab(t)));

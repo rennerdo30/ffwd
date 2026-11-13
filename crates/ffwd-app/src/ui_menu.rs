@@ -29,6 +29,8 @@ pub enum MenuAct {
     /// Diff view (FF-41): whitespace characters on or off, tab width.
     DiffShowWs(bool),
     DiffTab(u8),
+    /// Wrap long diff lines (FF-41).
+    DiffWrap(bool),
     /// Code text size in points.
     CodeSize(u8),
     /// A tab's colour (FF-44).
@@ -547,6 +549,7 @@ impl Ui {
             Some(MenuAct::OpenUrl(u)) => crate::platform::open_url(u),
             Some(MenuAct::DiffShowWs(on)) => self.set_diff_view(Some(on), None),
             Some(MenuAct::DiffTab(t)) => self.set_diff_view(None, Some(t)),
+            Some(MenuAct::DiffWrap(on)) => self.set_diff_wrap(on),
             Some(MenuAct::CodeSize(s)) => self.set_code_size(s),
             Some(MenuAct::TabColor(i, c)) => self.set_tab_color(i, c),
             Some(MenuAct::BranchOrder(recent)) => {
@@ -1313,10 +1316,11 @@ impl Ui {
         if !r.contains(x, y) || y < body_y || self.diff_strip.contains(x, y) {
             return None;
         }
-        let row = self.r.diff_top + ((y - body_y) / self.code_lh().max(1)) as usize;
         if !self.diff_split {
-            return (row < d.lines.len()).then_some(row);
+            let body = Rect::new(r.x + 1, body_y, r.w - 1, r.bottom() - body_y);
+            return self.diff_line_at_y(&d, self.r.diff_top, body, y);
         }
+        let row = self.r.diff_top + ((y - body_y) / self.code_lh().max(1)) as usize;
         let (p, _) = self.diff_meta(&d);
         let (l, rr) = *diff_view::split_rows_of(&d, &p).get(row)?;
         if x < r.x + r.w / 2 { l.or(rr) } else { rr.or(l) }

@@ -560,7 +560,7 @@ impl Ui {
 
     /// The line of the Local Changes diff under (x, y), if that pane
     /// shows a diff there (not the AI pane or the conflict resolver).
-    pub(super) fn changes_diff_line_at(&self, x: i32, y: i32) -> Option<usize> {
+    pub(super) fn changes_diff_line_at(&mut self, x: i32, y: i32) -> Option<usize> {
         if !self.r.changes_view || self.r.changes.ai.is_some() || self.selected_entry().is_some_and(|e| e.conflicted) {
             return None;
         }
@@ -569,8 +569,9 @@ impl Ui {
         if !r.contains(x, y) || y < body_y {
             return None;
         }
-        let i = self.r.changes.diff_top + ((y - body_y) / self.code_lh().max(1)) as usize;
-        (i < self.r.changes.diff.as_ref()?.lines.len()).then_some(i)
+        let d = self.r.changes.diff.clone()?;
+        let body = Rect::new(r.x, body_y, r.w, r.bottom() - body_y);
+        self.diff_line_at_y(&d, self.r.changes.diff_top, body, y)
     }
 
     fn toggle_pick(&mut self, i: usize) {
@@ -883,9 +884,7 @@ impl Ui {
             Some(CHit::Conflict(h)) => self.conflict_click(h),
             None if l.diff.contains(x, y) => {
                 self.r.changes.focus = CFocus::Diff;
-                let body_y = l.diff.y + self.px(32.0);
-                if y >= body_y {
-                    let i = self.r.changes.diff_top + ((y - body_y) / self.code_lh().max(1)) as usize;
+                if let Some(i) = self.changes_diff_line_at(x, y) {
                     self.r.changes.line = i;
                     self.toggle_pick(i);
                 }
@@ -1339,15 +1338,9 @@ impl Ui {
         let focus = self.r.changes.focus == CFocus::Diff;
         let picked: Vec<usize> = self.r.changes.picked.iter().copied().collect();
         for i in picked.iter().copied().chain(focus.then_some(self.r.changes.line)) {
-            if i < top {
-                continue;
-            }
-            let y = body.y + (i - top) as i32 * lh;
-            if y >= body.bottom() {
-                continue;
-            }
+            let Some((y, h)) = self.diff_line_y(&diff, top, body, i) else { continue };
             let c = if picked.contains(&i) { ACCENT } else { BORDER_HOVER };
-            cv.fill(Rect::new(body.x, y, self.px(3.0), lh), c);
+            cv.fill(Rect::new(body.x, y, self.px(3.0), h), c);
             if picked.contains(&i) {
                 cv.fill_circle(body.x as f32 + self.pf(12.0), y as f32 + lh as f32 / 2.0, self.pf(3.0), ACCENT);
             }

@@ -590,6 +590,8 @@ pub struct Ui {
     pub diff_find: Option<diff_find::DiffFind>,
     /// Whitespace characters shown in diffs, and the tab width (FF-41).
     pub diff_show_ws: bool,
+    /// Long diff lines wrap (FF-41; unified view).
+    pub diff_wrap: bool,
     pub diff_tab: usize,
     /// Code text size in points (diffs, file viewer; FF-41).
     pub code_pt: u8,
@@ -741,6 +743,7 @@ impl Ui {
             diff_split: diff_view::opts_from(&settings).0,
             diff_find: None,
             diff_show_ws: diff_view::view_from(&settings).0,
+            diff_wrap: diff_view::wrap_from(&settings),
             diff_tab: diff_view::view_from(&settings).1 as usize,
             code_pt: diff_view::code_size_from(&settings),
             diff_opts: diff_view::opts_from(&settings).1,
@@ -3928,12 +3931,21 @@ impl Ui {
         cv.fill(gut, BG_SIDEBAR);
         let fs = self.code_fs();
         let old_clip = cv.clip();
-        let rows = (body.h / lh + 1) as usize;
         let (pairs, blocks) = self.diff_meta(diff);
         let lang = crate::highlight::lang_for(&diff.path);
-        for (k, line) in diff.lines.iter().enumerate().skip(top).take(rows).map(|(i, l)| (i - top, l)) {
-            let y = body.y + k as i32 * lh;
-            let row = Rect::new(body.x, y, body.w, lh);
+        let (code_x, code_w) = self.code_column(body);
+        // Lines from `top` until the body is full; a wrapped line takes
+        // several rows (FF-41).
+        let mut next_y = body.y;
+        for (k, line) in diff.lines.iter().enumerate().skip(top).map(|(i, l)| (i - top, l)) {
+            if next_y >= body.bottom() {
+                break;
+            }
+            let y = next_y;
+            let nrows = self.diff_rows(diff, top + k, body);
+            let h = lh * nrows as i32;
+            next_y += h;
+            let row = Rect::new(body.x, y, body.w, h);
             if old_clip.intersect(row).is_empty() {
                 continue;
             }
@@ -3946,13 +3958,13 @@ impl Ui {
                 LineKind::Context => (BG, TEXT_2, ""),
             };
             if bgc != BG {
-                cv.fill(Rect::new(gut.right(), y, body.w - gut.w, lh), bgc);
+                cv.fill(Rect::new(gut.right(), y, body.w - gut.w, h), bgc);
                 let gbg = match line.kind {
                     LineKind::Add => DIFF_ADD_LINE,
                     LineKind::Del => DIFF_DEL_LINE,
                     _ => BG_SIDEBAR,
                 };
-                cv.fill(Rect::new(gut.x, y, gut.w, lh), gbg);
+                cv.fill(Rect::new(gut.x, y, gut.w, h), gbg);
             }
             if line.kind == LineKind::Hunk {
                 hunk += 1;
@@ -4016,9 +4028,40 @@ impl Ui {
             }
             let st = blocks.get(i).copied().unwrap_or(false);
             let maxw = (body.right() as f32) - tx - self.pf(24.0);
-            self.draw_code(cv, tx + self.pf(14.0), lb, row, &text, fg, maxw, lang, st, &marks);
-            if self.diff_show_ws {
-                self.draw_whitespace(cv, tx + self.pf(14.0), lb, &line.text, maxw);
+            if nrows == 1 {
+                let r1 = Rect::new(body.x, y, body.w, lh);
+                self.draw_code(cv, tx + self.pf(14.0), lb, r1, &text, fg, maxw, lang, st, &marks);
+                if self.diff_show_ws {
+                    self.draw_whitespace(cv, tx + self.pf(14.0), lb, &line.text, maxw);
+                }
+            } else {
+                // Each row shows the next `code_w` of the line: the whole
+                // line drawn shifted left and clipped to the code column,
+                // so colours and highlights stay as one line's.
+                // Rows split by characters; each shift is the measured width
+                // of the text before the row, so rows meet between glyphs.
+                let per = self.wrap_chars(body);
+                let starts: Vec<usize> = text.char_indices().map(|(b, _)| b).chain([text.len()]).collect();
+                let fs = self.code_fs();
+                for r in 0..nrows {
+                    let ry = y + r as i32 * lh;
+                    let (a, b) =
+                        (starts[(r * per).min(starts.len() - 1)], starts[((r + 1) * per).min(starts.len() - 1)]);
+                    let shift = self.te.measure(mono, fs, &text[..a]);
+                    let rw = self.te.measure(mono, fs, &text[a..b]);
+                    let band = Rect::new(code_x as i32, ry, rw.ceil() as i32 + 1, lh);
+                    let prev = cv.set_clip(old_clip.intersect(band));
+                    let rb = lb + (r as i32 * lh) as f32;
+                    let rr = Rect::new(body.x, ry, body.w, lh);
+                    // The clip cuts the row; a generous width keeps the
+                    // text engine from ending it in an ellipsis.
+                    let wide = shift + code_w * 2.0;
+                    self.draw_code(cv, code_x - shift, rb, rr, &text, fg, wide, lang, st, &marks);
+                    if self.diff_show_ws {
+                        self.draw_whitespace(cv, code_x - shift, rb, &line.text, wide);
+                    }
+                    cv.set_clip(prev);
+                }
             }
         }
         let _ = (ui, semi);
@@ -7160,6 +7203,91 @@ mod tests {
         ui.key(Key::Up);
         pump(&mut ui, "the long commit again", &shown("Long"));
         assert_partial_paint_is_full(&mut ui, &mut screen, "long commit");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Word wrap in the diff (FF-41): with "Wrap long lines" a long line
+    /// takes several rows, the line menu and clicks find the right line
+    /// below it, and repaints match full paints (history and Local Changes).
+    #[test]
+    fn diff_wraps_long_lines() {
+        use std::sync::mpsc;
+        let mut te = TextEngine::new();
+        let Some(f) = load_fonts(&mut te) else { return };
+        let dir = std::env::temp_dir().join(format!("ffwd-ui-wrap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = Git { root: dir.clone() };
+        for a in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.name", "ffwd test"],
+            &["config", "user.email", "test@example.invalid"],
+            &["config", "commit.gpgsign", "false"],
+            &["config", "core.autocrlf", "false"],
+        ] {
+            g.output(a).unwrap();
+        }
+        let long = "word ".repeat(120);
+        std::fs::write(dir.join("a.txt"), format!("short\n{long}\nafter\n")).unwrap();
+        g.output(&["add", "."]).unwrap();
+        g.output(&["commit", "-q", "-m", "long line"]).unwrap();
+        std::fs::write(dir.join("a.txt"), format!("short\n{long}\nafter\nlocal\n")).unwrap();
+        let (tx, rx) = mpsc::channel::<(u64, Msg)>();
+        let tx = Arc::new(std::sync::Mutex::new(tx));
+        let sinks: SinkFactory = Arc::new(move |id| {
+            let tx = tx.clone();
+            Arc::new(move |m| {
+                if let Ok(t) = tx.lock() {
+                    let _ = t.send((id, m));
+                }
+            })
+        });
+        crate::work::start(dir.clone(), &sinks(1));
+        let empty = crate::settings::Settings::parse("");
+        let mut ui = Ui::new(te, f, empty.clone(), empty, Some((1, dir.clone())), sinks, 1280, 800, 1.0);
+        let pump = |ui: &mut Ui, what: &str, done: &dyn Fn(&Ui) -> bool| {
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while !done(ui) {
+                let left = until.saturating_duration_since(std::time::Instant::now());
+                assert!(!left.is_zero(), "timed out waiting for {what}");
+                if let Ok((id, m)) = rx.recv_timeout(left) {
+                    ui.on_tab_msg(id, m);
+                }
+            }
+        };
+        pump(&mut ui, "the diff", &|u| u.r.diff.is_some() && u.r.git.is_some());
+        let mut screen = vec![0u32; 1280 * 800];
+        ui.paint(&mut Canvas::new(&mut screen, 1280, 800), true);
+        let items = ui.diff_view_menu();
+        let k = items.iter().position(|i| i.label == "Wrap long lines").unwrap();
+        ui.open_menu(900, 60, items);
+        ui.menu_activate(k);
+        assert!(ui.diff_wrap);
+        assert_eq!(ui.settings.get("diff.wrap"), Some("true"));
+        assert_partial_paint_is_full(&mut ui, &mut screen, "wrapped");
+        let d = ui.r.diff.clone().unwrap();
+        let li = d.lines.iter().position(|l| l.text.starts_with("word")).unwrap();
+        let r = ui.diff_rect();
+        let body = Rect::new(r.x + 1, r.y + ui.px(32.0), r.w - 1, r.h - ui.px(32.0));
+        let rows = ui.diff_rows(&d, li, body);
+        assert!(rows >= 2, "the long line wraps: {rows}");
+        assert_eq!(ui.diff_rows(&d, li + 1, body), 1, "short lines don't");
+        // The line menu finds "after", below the wrapped rows.
+        let (ay, ah) = ui.diff_line_y(&d, ui.r.diff_top, body, li + 1).unwrap();
+        let labels: Vec<String> =
+            ui.diff_line_menu(r.x + r.w / 3, ay + ah / 2).unwrap().into_iter().map(|m| m.label).collect();
+        assert_eq!(labels[0], "Open in editor at line 3");
+        // Local Changes: wrapped too, and a click picks the line under it.
+        ui.enter_changes();
+        pump(&mut ui, "the changes", &|u| u.r.changes.diff.is_some());
+        assert_partial_paint_is_full(&mut ui, &mut screen, "wrapped changes");
+        let cd = ui.r.changes.diff.clone().unwrap();
+        let ci = cd.lines.iter().position(|l| &*l.text == "local").unwrap();
+        let cr = ui.changes_layout().diff;
+        let cbody = Rect::new(cr.x, cr.y + ui.px(32.0), cr.w, cr.h - ui.px(32.0));
+        let (y, h) = ui.diff_line_y(&cd, 0, cbody, ci).unwrap();
+        ui.click(cr.x + cr.w / 2, y + h / 2);
+        assert!(ui.r.changes.picked.contains(&ci), "the click picks the line below the wrapped one");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
