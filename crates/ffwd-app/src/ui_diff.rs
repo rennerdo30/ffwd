@@ -20,6 +20,8 @@ pub enum DiffBar {
     Prev,
     Next,
     Find,
+    /// The large view on or off (Space).
+    Max,
 }
 
 /// The tab widths the view menu offers.
@@ -344,6 +346,30 @@ impl Ui {
         };
         seg(self, cv, &mut x, "…", false, DiffBar::More, &mut hits);
         x -= self.px(4.0);
+        // Icon buttons first (the click twins of p, n and Ctrl+F; FF-57): on a
+        // narrow pane the wider text options drop off before them.
+        let max = if self.diff_max { super::Glyph::Collapse } else { super::Glyph::Expand };
+        for (g, hit) in [
+            (max, DiffBar::Max),
+            (super::Glyph::Search, DiffBar::Find),
+            (super::Glyph::Down, DiffBar::Next),
+            (super::Glyph::Up, DiffBar::Prev),
+        ] {
+            let r = Rect::new(x - h, y, h, h);
+            let on = hit == DiffBar::Find && self.diff_find.is_some();
+            if on {
+                cv.fill_round(r, self.pf(5.0), BG_CHOSEN);
+            } else if self.is_hot(Hot::DiffBar(hits.len())) {
+                cv.fill_round(r, self.pf(5.0), CONTROL_HOVER);
+            }
+            let c = if on { TEXT } else { TEXT_2 };
+            self.glyph(cv, g, r.x as f32 + r.w as f32 / 2.0, r.y as f32 + r.h as f32 / 2.0, self.pf(6.5), c);
+            hits.push((r, hit));
+            x = r.x - self.px(2.0);
+        }
+        x -= self.px(5.0);
+        cv.fill(Rect::new(x, y + self.px(4.0), 1, h - self.px(8.0)), BORDER);
+        x -= self.px(5.0);
         let ws = self.diff_opts.ignore_whitespace;
         seg(
             self,
@@ -367,28 +393,10 @@ impl Ui {
         let split = self.diff_split;
         seg(self, cv, &mut x, "Side by side", split, DiffBar::Split, &mut hits);
         seg(self, cv, &mut x, "Unified", !split, DiffBar::Unified, &mut hits);
-        // Icon buttons, the click twins of p, n and Ctrl+F (FF-57).
-        x -= self.px(5.0);
-        cv.fill(Rect::new(x, y + self.px(4.0), 1, h - self.px(8.0)), BORDER);
-        x -= self.px(5.0);
-        for (g, hit) in [
-            (super::Glyph::Search, DiffBar::Find),
-            (super::Glyph::Down, DiffBar::Next),
-            (super::Glyph::Up, DiffBar::Prev),
-        ] {
-            let r = Rect::new(x - h, y, h, h);
-            let on = hit == DiffBar::Find && self.diff_find.is_some();
-            if on {
-                cv.fill_round(r, self.pf(5.0), BG_CHOSEN);
-            } else if self.is_hot(Hot::DiffBar(hits.len())) {
-                cv.fill_round(r, self.pf(5.0), CONTROL_HOVER);
-            }
-            let c = if on { TEXT } else { TEXT_2 };
-            self.glyph(cv, g, r.x as f32 + r.w as f32 / 2.0, r.y as f32 + r.h as f32 / 2.0, self.pf(6.5), c);
-            hits.push((r, hit));
-            x = r.x - self.px(2.0);
-        }
         let _ = ui;
+        // Controls pushed past the pane's left edge are clipped away; they
+        // must not take clicks there either.
+        hits.retain(|(r, _)| r.x >= bar.x);
         self.diff_bar_hits = hits;
         x as f32
     }
@@ -576,10 +584,27 @@ impl Ui {
     pub(super) fn diff_view_menu(&self) -> Vec<MenuItem> {
         let mark = |on: bool, t: &str| if on { format!("✓ {t}") } else { t.to_string() };
         let item = |label: String, act: MenuAct| MenuItem { label, act: Some(act), danger: false };
-        let mut v = vec![
+        // The bar's layout, context and whitespace choices too: they are the
+        // first to drop off a narrow bar.
+        let mut v = vec![item(
+            mark(self.diff_split, "Side by side"),
+            MenuAct::DiffBar(if self.diff_split { DiffBar::Unified } else { DiffBar::Split }),
+        )];
+        for &(n, label) in CONTEXTS.iter() {
+            v.push(item(
+                mark(self.diff_opts.context == n, &format!("Context: {label}")),
+                MenuAct::DiffBar(DiffBar::Context(n)),
+            ));
+        }
+        v.push(item(
+            mark(self.diff_opts.ignore_whitespace, "Ignore whitespace"),
+            MenuAct::DiffBar(DiffBar::Whitespace),
+        ));
+        v.push(MenuItem { label: String::new(), act: None, danger: false });
+        v.extend([
             item(mark(self.diff_wrap, "Wrap long lines"), MenuAct::DiffWrap(!self.diff_wrap)),
             item(mark(self.diff_show_ws, "Show whitespace characters"), MenuAct::DiffShowWs(!self.diff_show_ws)),
-        ];
+        ]);
         v.push(MenuItem { label: String::new(), act: None, danger: false });
         for t in TAB_WIDTHS {
             v.push(item(mark(self.diff_tab == t as usize, &format!("Tab width {t}")), MenuAct::DiffTab(t)));
@@ -601,6 +626,7 @@ impl Ui {
     pub(super) fn apply_diff_bar(&mut self, h: DiffBar) {
         match h {
             DiffBar::More => {}
+            DiffBar::Max => self.toggle_diff_max(),
             DiffBar::Prev => self.jump_change(false),
             DiffBar::Next => self.jump_change(true),
             DiffBar::Find => {

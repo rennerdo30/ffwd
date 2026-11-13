@@ -35,6 +35,8 @@ pub enum MenuAct {
     ShowIgnored(bool),
     /// Wrap long diff lines (FF-41).
     DiffWrap(bool),
+    /// A diff bar choice from the view menu.
+    DiffBar(super::diff_view::DiffBar),
     /// Code text size in points.
     CodeSize(u8),
     /// A tab's colour (FF-44).
@@ -621,6 +623,7 @@ impl Ui {
             Some(MenuAct::HideUntracked(h)) => self.set_hide_untracked(h),
             Some(MenuAct::ShowIgnored(s)) => self.set_show_ignored(s),
             Some(MenuAct::DiffWrap(on)) => self.set_diff_wrap(on),
+            Some(MenuAct::DiffBar(h)) => self.apply_diff_bar(h),
             Some(MenuAct::CodeSize(s)) => self.set_code_size(s),
             Some(MenuAct::TabColor(i, c)) => self.set_tab_color(i, c),
             Some(MenuAct::BranchOrder(recent)) => {

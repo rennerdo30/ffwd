@@ -597,6 +597,9 @@ pub struct Ui {
     pub diff_wrap: bool,
     /// How far code is scrolled sideways in the diff (pixels; FF-41).
     pub code_left: f32,
+    /// The commit's details and diff fill the main area, the history list
+    /// hidden (Space or the diff bar's expand button; FF-33).
+    pub diff_max: bool,
     pub diff_tab: usize,
     /// Code text size in points (diffs, file viewer; FF-41).
     pub code_pt: u8,
@@ -752,6 +755,7 @@ impl Ui {
             diff_show_ws: diff_view::view_from(&settings).0,
             diff_wrap: diff_view::wrap_from(&settings),
             code_left: 0.0,
+            diff_max: false,
             diff_tab: diff_view::view_from(&settings).1 as usize,
             code_pt: diff_view::code_size_from(&settings),
             diff_opts: diff_view::opts_from(&settings).1,
@@ -1235,6 +1239,11 @@ impl Ui {
         let mid_h = (hi - top_h - status_h).max(0);
         let list_x = side_w;
         let (list_w, list_h, details) = match self.layout {
+            // The large view: no history list, the details take it all.
+            _ if self.diff_max => {
+                let list_w = (wi - side_w).max(0);
+                (list_w, 0, Rect::new(list_x, top_h, list_w, mid_h))
+            }
             DetailsLayout::Beside => {
                 let det_w = ((wi as f32 * 0.40) as i32).clamp(self.px(420.0), self.px(780.0)).min(wi / 2);
                 let list_w = (wi - side_w - det_w).max(0);
@@ -1263,9 +1272,10 @@ impl Ui {
             status: Rect::new(0, hi - status_h, wi, status_h),
             side: Rect::new(0, top_h, side_w, mid_h),
             list,
-            list_head: Rect::new(list_x, top_h, list_w, head_h),
-            list_body: Rect::new(list_x, top_h + head_h, list_w - sb_w, list_h - head_h),
-            scrollbar: Rect::new(list_x + list_w - sb_w, top_h + head_h, sb_w, list_h - head_h),
+            // No list in the large view: no header either.
+            list_head: Rect::new(list_x, top_h, list_w, if self.diff_max { 0 } else { head_h }),
+            list_body: Rect::new(list_x, top_h + head_h, list_w - sb_w, (list_h - head_h).max(0)),
+            scrollbar: Rect::new(list_x + list_w - sb_w, top_h + head_h, sb_w, (list_h - head_h).max(0)),
             details,
             info,
             row_h,
@@ -1380,9 +1390,9 @@ impl Ui {
                     self.r.diff_top = 0;
                     self.show_first_file();
                     self.request_diff();
-                    // A comparison replaces the whole details view (title,
-                    // buttons, file list, diff): one full repaint.
-                    self.damage.full = true;
+                    // The diff pane now clips its own drawing (FF-58), so the
+                    // details damage is enough.
+                    self.damage.rects.extend([self.lay.details, self.lay.status]);
                 }
                 Err(e) if seq == self.r.seq => {
                     self.r.compare = None;
@@ -1883,6 +1893,9 @@ impl Ui {
             (Focus::List, Key::Home) => self.select(0),
             (Focus::List, Key::End) => self.select(usize::MAX),
             (Focus::List, Key::Enter) => self.cycle_focus(1),
+            // Space: the large view of the selected commit, and back.
+            (Focus::List | Focus::Files | Focus::Diff, Key::Char(' ')) => self.toggle_diff_max(),
+            (_, Key::Esc) if self.diff_max => self.toggle_diff_max(),
             (Focus::Files, Key::Up) | (Focus::Files, Key::Char('k')) => {
                 self.select_file(self.r.sel_file.saturating_sub(1))
             }
@@ -1935,6 +1948,20 @@ impl Ui {
             self.r.diff_top = top;
             self.damage.rects.push(self.diff_rect());
         }
+    }
+
+    /// The large view of the selected commit (details and diff fill the
+    /// main area) on or off.
+    pub(super) fn toggle_diff_max(&mut self) {
+        self.diff_max = !self.diff_max;
+        if self.diff_max {
+            // The hidden header's controls must not catch clicks.
+            self.scope_rect = Rect::default();
+            self.head_find_rect = Rect::default();
+        } else {
+            self.focus = Focus::List;
+        }
+        self.resize(self.w, self.h, self.s);
     }
 
     /// Scrolls code sideways by `px` over a diff (no wrap), up to the
@@ -3879,7 +3906,17 @@ impl Ui {
         self.paint_diff(cv);
     }
 
+    /// The diff pane, clipped to it: its bar's controls can be wider than
+    /// the pane (wide fonts, narrow windows) and must not draw into the
+    /// info pane, which a damage of the diff pane wouldn't repaint (FF-58).
     fn paint_diff(&mut self, cv: &mut Canvas) {
+        let r = self.diff_rect();
+        let old = cv.set_clip(cv.clip().intersect(r));
+        self.paint_diff_clipped(cv);
+        cv.set_clip(old);
+    }
+
+    fn paint_diff_clipped(&mut self, cv: &mut Canvas) {
         let r = self.diff_rect();
         if cv.clip().intersect(r).is_empty() || r.h <= 0 {
             return;
@@ -8022,6 +8059,71 @@ mod tests {
         pick(&mut ui, "Show ignored files");
         pump(&mut ui, "ignored hidden again", &|u| unstaged(u) == 1);
         assert_partial_paint_is_full(&mut ui, &mut screen2, "ignored hidden");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The large view (FF-33): Space gives the selected commit's details
+    /// and diff the whole main area, the diff bar's button and Esc bring
+    /// the history back; repaints match full paints.
+    #[test]
+    fn space_opens_the_large_view() {
+        use std::sync::mpsc;
+        let mut te = TextEngine::new();
+        let Some(f) = load_fonts(&mut te) else { return };
+        let dir = std::env::temp_dir().join(format!("ffwd-ui-max-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = Git { root: dir.clone() };
+        for a in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.name", "ffwd test"],
+            &["config", "user.email", "test@example.invalid"],
+            &["config", "commit.gpgsign", "false"],
+        ] {
+            g.output(a).unwrap();
+        }
+        std::fs::write(dir.join("a.txt"), "a\n").unwrap();
+        g.output(&["add", "."]).unwrap();
+        g.output(&["commit", "-q", "-m", "first"]).unwrap();
+        let (tx, rx) = mpsc::channel::<(u64, Msg)>();
+        let tx = Arc::new(std::sync::Mutex::new(tx));
+        let sinks: SinkFactory = Arc::new(move |id| {
+            let tx = tx.clone();
+            Arc::new(move |m| {
+                if let Ok(t) = tx.lock() {
+                    let _ = t.send((id, m));
+                }
+            })
+        });
+        crate::work::start(dir.clone(), &sinks(1));
+        let empty = crate::settings::Settings::parse("");
+        let mut ui = Ui::new(te, f, empty.clone(), empty, Some((1, dir.clone())), sinks, 1280, 800, 1.0);
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while ui.r.diff.is_none() {
+            let left = until.saturating_duration_since(std::time::Instant::now());
+            assert!(!left.is_zero(), "timed out waiting for the diff");
+            if let Ok((id, m)) = rx.recv_timeout(left) {
+                ui.on_tab_msg(id, m);
+            }
+        }
+        let mut screen = vec![0u32; 1280 * 800];
+        ui.paint(&mut Canvas::new(&mut screen, 1280, 800), true);
+        let normal = ui.lay.details;
+        ui.key(Key::Char(' '));
+        assert!(ui.diff_max);
+        assert_eq!(ui.lay.list_body.h, 0, "no history list");
+        assert!(ui.lay.details.h > normal.h || ui.lay.details.w > normal.w, "the details take the room");
+        assert_partial_paint_is_full(&mut ui, &mut screen, "large view");
+        // The diff bar's button brings the history back.
+        let (b, _) = *ui.diff_bar_hits.iter().find(|h| h.1 == diff_view::DiffBar::Max).unwrap();
+        ui.click(b.x + b.w / 2, b.y + b.h / 2);
+        assert!(!ui.diff_max);
+        assert_eq!(ui.lay.details, normal);
+        assert_partial_paint_is_full(&mut ui, &mut screen, "back");
+        // And Esc.
+        ui.key(Key::Char(' '));
+        ui.key(Key::Esc);
+        assert!(!ui.diff_max);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

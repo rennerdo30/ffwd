@@ -345,6 +345,7 @@ Every shortcut has a clickable twin (owner, 2026-11-14):
 | `Space` / `Enter` (Local Changes) | Stage or unstage the selected file |
 | `Ctrl+Enter` | Commit (Local Changes) |
 | `Ctrl+.` / right click | Actions for the selected commit or ref |
+| `Space` (history) | The large view: the selected commit's details and diff fill the main area (also the diff bar's expand button; `Esc` returns) |
 | `Ctrl+F` | Find bar: search commits; with the diff focused, find in the diff |
 | `Ctrl+B` / `Ctrl+Shift+G` | Create a branch / tag at the selected commit |
 | `Ctrl+A` `Ctrl+C` `Ctrl+V` `Ctrl+X` `Ctrl+Backspace` `← →` `Home End` | Text editing in the palette and settings fields |

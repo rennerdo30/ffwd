@@ -47,6 +47,9 @@ pub enum Glyph {
     Submodule,
     Close,
     Check,
+    /// The large view: corners pointing out (in, when `Collapse`).
+    Expand,
+    Collapse,
     Text,
     /// A filled colour dot (tab colours).
     Swatch(u32),
@@ -232,6 +235,18 @@ impl Ui {
                 line(cv, &[(-0.6, 0.6), (0.6, -0.6)]);
             }
             Glyph::Check => line(cv, &[(-0.75, 0.05), (-0.25, 0.55), (0.75, -0.55)]),
+            Glyph::Expand => {
+                line(cv, &[(-0.9, -0.35), (-0.9, -0.9), (-0.35, -0.9)]);
+                line(cv, &[(0.35, -0.9), (0.9, -0.9), (0.9, -0.35)]);
+                line(cv, &[(-0.9, 0.35), (-0.9, 0.9), (-0.35, 0.9)]);
+                line(cv, &[(0.35, 0.9), (0.9, 0.9), (0.9, 0.35)]);
+            }
+            Glyph::Collapse => {
+                line(cv, &[(-0.9, -0.35), (-0.35, -0.35), (-0.35, -0.9)]);
+                line(cv, &[(0.35, -0.9), (0.35, -0.35), (0.9, -0.35)]);
+                line(cv, &[(-0.9, 0.35), (-0.35, 0.35), (-0.35, 0.9)]);
+                line(cv, &[(0.35, 0.9), (0.35, 0.35), (0.9, 0.35)]);
+            }
             Glyph::Gear => {
                 let (ro, ri) = (0.95 * s, 0.6 * s);
                 for k in 0..8 {

@@ -28,7 +28,7 @@
 | Simplified graph tooltip on merge nodes; highlight the node under the mouse | M2 | |
 | Commit-link hover shows commit details | M2 | |
 | Double-click a label to check it out | **Built** | Row or sidebar |
-| Space: commit details popup or large side-by-side view | M1 | |
+| Space: commit details popup or large side-by-side view | **Built** | Space (or the diff bar's expand button) gives the selected commit's details and diff the whole main area; Space, Esc or the button brings the history back |
 | Collapsible details (`Ctrl+Shift+D`), vertical layout, one-line list layout | Partial | Below/beside layout is built |
 | Compare two selected commits (swap order); compare a commit with local changes | Partial | Commit menu: *Mark for comparison*, then *Compare with …* on another commit; the details list the files between them with their diffs, **Swap** and **Close** in the header. A commit against local changes comes later |
 | Open a commit for review in its own window | M2 | |
