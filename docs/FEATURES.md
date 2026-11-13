@@ -45,7 +45,7 @@
 | Search the current branch or the whole repository | **Built** | The search covers what the history shows; switching the scope keeps the search and runs it again |
 | Recent search queries | **Built** | The last 10 queries (session state); `↑`/`↓` in the empty find field walk them |
 | Remove matches with Delete (a to-do list) | M2 | |
-| Inline search in the diff (`Ctrl+F`), kept when switching files | M1 | |
+| Inline search in the diff (`Ctrl+F`), kept when switching files | **Built** | `Ctrl+F` with the diff focused; matches tinted, the current one stronger; the query stays for the next file or commit |
 | Filter fields for the sidebar and file lists | Partial | The sidebar filter is built |
 
 ## 3. Local changes and committing (FF-35)

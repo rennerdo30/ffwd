@@ -257,6 +257,12 @@ The capture above is the real PoC UI. `ffwd --snapshot` rendered it offscreen fr
 - **Keys:** `Enter`/`↓` go to the next match, `↑` to the previous; `Esc` closes the bar. Clicking the list gives it the keyboard back; `Ctrl+F` returns to the bar.
 - **Recent queries:** Enter and Esc remember the query (the last 10, kept in the session). In the empty field `↑` walks back through them and `↓` forward; past the newest the field is empty again.
 
+**Find in the diff:** `Ctrl+F` with the diff focused puts a find field in the diff's bar, in place of the file name.
+- Literal text, case-insensitive, searched as you type. Every match is tinted amber, the current one stronger, and the bar counts "n of m".
+- `Enter`/`↓` go to the next match and `↑` to the previous one, scrolling the diff to it (wrapping at the ends); `Esc` closes the field.
+- The query stays when another file or commit is shown, and the new diff is searched at once from the top of the view.
+- The diff is in memory and capped (20,000 lines), so the search runs on the UI thread and only when the query or the diff changes.
+
 ## Branches, tags and history operations (FF-36, FF-37)
 
 - **Commit menu:** right-click a commit, or press `Ctrl+.`, for:
@@ -326,7 +332,7 @@ Like other clients: one tab per repository under the top bar.
 | `Space` / `Enter` (Local Changes) | Stage or unstage the selected file |
 | `Ctrl+Enter` | Commit (Local Changes) |
 | `Ctrl+.` / right click | Actions for the selected commit or ref |
-| `Ctrl+F` | Find bar: search commits |
+| `Ctrl+F` | Find bar: search commits; with the diff focused, find in the diff |
 | `Ctrl+B` / `Ctrl+Shift+G` | Create a branch / tag at the selected commit |
 | `Ctrl+A` `Ctrl+C` `Ctrl+V` `Ctrl+X` `Ctrl+Backspace` `← →` `Home End` | Text editing in the palette and settings fields |
 | `Ctrl+W` / `Ctrl+Shift+T` | Close the tab / reopen the last closed one |

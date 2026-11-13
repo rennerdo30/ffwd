@@ -187,7 +187,14 @@ pub fn run(args: &Args, t0: Instant) -> i32 {
             }
         }
     }
-    if let Some(q) = &args.find {
+    if let Some(q) = args.find.as_ref().and_then(|q| q.strip_prefix("diff:")) {
+        // Find in the shown diff (FF-34).
+        ui.focus = crate::ui::Focus::Diff;
+        ui.key(Key::Ctrl('f'));
+        for c in q.chars() {
+            ui.key(Key::Char(c));
+        }
+    } else if let Some(q) = &args.find {
         // `content:` and `path:` pick that field (the chips after Message,
         // Author and SHA) and start with Enter.
         let (tabs, q) = match (q.strip_prefix("content:"), q.strip_prefix("path:")) {

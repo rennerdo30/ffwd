@@ -25,6 +25,8 @@ mod agents_view;
 mod changes_view;
 #[path = "ui_conflict.rs"]
 mod conflict_view;
+#[path = "ui_difffind.rs"]
+mod diff_find;
 #[path = "ui_diff.rs"]
 mod diff_view;
 pub use activity_view::Entry as ActivityEntry;
@@ -559,6 +561,8 @@ pub struct Ui {
     /// Diff options (FF-41): side by side, context, whitespace.
     pub diff_split: bool,
     pub diff_opts: ffwd_core::diff::DiffOpts,
+    /// Find in the diff (FF-34); kept across files and commits.
+    pub diff_find: Option<diff_find::DiffFind>,
     diff_bar_hits: Vec<(Rect, diff_view::DiffBar)>,
     /// Line pairing and block-comment states of the shown diff.
     #[allow(clippy::type_complexity)]
@@ -696,6 +700,7 @@ impl Ui {
             dialog: None,
             search_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             diff_split: diff_view::opts_from(&settings).0,
+            diff_find: None,
             diff_opts: diff_view::opts_from(&settings).1,
             diff_bar_hits: Vec::new(),
             pairs_cache: None,
@@ -1332,6 +1337,8 @@ impl Ui {
                             if image {
                                 self.load_diff_images(seq);
                             }
+                            // The find query stays: search the new diff.
+                            self.diff_find_on_new_diff();
                         }
                         Err(e) => self.set_notice(format!("Could not load diff: {e}")),
                     }
@@ -1631,6 +1638,15 @@ impl Ui {
             return self.open_menu_for_selection();
         }
         if self.settings_view.is_none() && self.agent_view.is_none() && self.palette.is_none() {
+            let history = !self.r.changes_view && !self.r.files_view && !self.r.activity_view;
+            if history && self.focus == Focus::Diff {
+                if matches!(k, Key::Ctrl('f')) {
+                    return self.open_diff_find();
+                }
+                if self.diff_find.as_ref().is_some_and(|f| f.typing) && self.diff_find_key(k) {
+                    return;
+                }
+            }
             if matches!(k, Key::Ctrl('f')) && !self.r.changes_view && !self.r.files_view && !self.r.activity_view {
                 return self.open_search();
             }
@@ -1906,6 +1922,9 @@ impl Ui {
             return self.toggle_scope();
         }
         if !self.r.changes_view && self.r.search.is_some() && self.search_click(x, y) {
+            return;
+        }
+        if !self.r.changes_view && self.diff_find_click(x, y) {
             return;
         }
         if !self.r.changes_view && self.diff_bar_click(x, y) {
@@ -3595,17 +3614,21 @@ impl Ui {
             return;
         };
         let focus = self.focus == Focus::Diff;
-        self.te.draw(
-            cv,
-            semi,
-            self.pf(12.5),
-            r.x as f32 + pad,
-            base,
-            &diff.path,
-            if focus { ACCENT } else { TEXT },
-            r.w as f32 - self.pf(160.0),
-        );
         let left = self.paint_diff_bar_controls(cv, bar);
+        if self.diff_find.is_some() {
+            self.paint_diff_find(cv, bar, left);
+        } else {
+            self.te.draw(
+                cv,
+                semi,
+                self.pf(12.5),
+                r.x as f32 + pad,
+                base,
+                &diff.path,
+                if focus { ACCENT } else { TEXT },
+                r.w as f32 - self.pf(160.0),
+            );
+        }
         if diff.truncated {
             let hint = "first 20,000 lines";
             let hw = self.te.measure(ui, self.pf(11.0), hint);
@@ -3800,14 +3823,19 @@ impl Ui {
             if !mark.is_empty() {
                 self.te.draw(cv, mono, fs, tx, lb, mark, if line.kind == LineKind::Add { ADD } else { DEL }, 20.0);
             }
-            let text = line.text.replace('\t', "    ");
+            let text = diff_find::shown_text(&line.text).into_owned();
             let i = top + k;
             // Word ranges are byte offsets of the raw text: skip them on
             // lines whose tabs were widened.
-            let word = Self::word_range(diff, &pairs, i).filter(|_| !line.text.contains('\t'));
+            let mut marks: Vec<_> =
+                Self::word_range(diff, &pairs, i).filter(|_| !line.text.contains('\t')).into_iter().collect();
+            if hunk_label.is_none() {
+                // The history's diff: find matches (the Local Changes diff has none).
+                marks.extend(self.diff_find_marks(i, &text));
+            }
             let st = blocks.get(i).copied().unwrap_or(false);
             let maxw = (body.right() as f32) - tx - self.pf(24.0);
-            self.draw_code(cv, tx + self.pf(14.0), lb, row, &text, fg, maxw, lang, st, word);
+            self.draw_code(cv, tx + self.pf(14.0), lb, row, &text, fg, maxw, lang, st, &marks);
         }
         let _ = (ui, semi);
         buttons
@@ -6328,6 +6356,98 @@ mod tests {
         ui.key(Key::Esc);
         assert_eq!(ui.match_files(id), None);
         assert_partial_paint_is_full(&mut ui, &mut screen, "search closed");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Find in the diff (FF-34): `Ctrl+F` with the diff focused searches
+    /// the shown diff (case-insensitive), Enter steps through the matches
+    /// and scrolls to them, the query stays for the next file, and Esc
+    /// closes it; with the list focused `Ctrl+F` still searches commits.
+    #[test]
+    fn find_in_the_diff() {
+        use std::sync::mpsc;
+        let mut te = TextEngine::new();
+        let Some(f) = load_fonts(&mut te) else { return };
+        let dir = std::env::temp_dir().join(format!("ffwd-ui-difffind-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = Git { root: dir.clone() };
+        for a in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.name", "ffwd test"],
+            &["config", "user.email", "test@example.invalid"],
+            &["config", "commit.gpgsign", "false"],
+            &["config", "core.autocrlf", "false"],
+        ] {
+            g.output(a).unwrap();
+        }
+        // a.txt: two needles near the top, one far below; b.txt: one.
+        let mut lines: Vec<String> = (1..=200).map(|i| format!("line {i}")).collect();
+        lines[2] = "a Needle here".into();
+        lines[3] = "needle and NEEDLE".into();
+        lines[180] = "the last needle".into();
+        std::fs::write(dir.join("a.txt"), lines.join("\n") + "\n").unwrap();
+        std::fs::write(dir.join("b.txt"), "one needle\n").unwrap();
+        g.output(&["add", "."]).unwrap();
+        g.output(&["commit", "-q", "-m", "Needles"]).unwrap();
+        let (tx, rx) = mpsc::channel::<(u64, Msg)>();
+        let tx = Arc::new(std::sync::Mutex::new(tx));
+        let sinks: SinkFactory = Arc::new(move |id| {
+            let tx = tx.clone();
+            Arc::new(move |m| {
+                if let Ok(t) = tx.lock() {
+                    let _ = t.send((id, m));
+                }
+            })
+        });
+        crate::work::start(dir.clone(), &sinks(1));
+        let empty = crate::settings::Settings::parse("");
+        let mut ui = Ui::new(te, f, empty.clone(), empty, Some((1, dir.clone())), sinks, 1280, 800, 1.0);
+        let pump = |ui: &mut Ui, what: &str, done: &dyn Fn(&Ui) -> bool| {
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while !done(ui) {
+                let left = until.saturating_duration_since(std::time::Instant::now());
+                assert!(!left.is_zero(), "timed out waiting for {what}");
+                if let Ok((id, m)) = rx.recv_timeout(left) {
+                    ui.on_tab_msg(id, m);
+                }
+            }
+        };
+        let on = |p: &'static str| move |u: &Ui| u.r.diff.as_ref().is_some_and(|d| &*d.path == p);
+        pump(&mut ui, "a.txt's diff", &on("a.txt"));
+        let mut screen = vec![0u32; 1280 * 800];
+        ui.paint(&mut Canvas::new(&mut screen, 1280, 800), true);
+        // With the list focused, Ctrl+F searches commits.
+        ui.key(Key::Ctrl('f'));
+        assert!(ui.r.search.is_some() && ui.diff_find.is_none());
+        ui.key(Key::Esc);
+        ui.focus = Focus::Diff;
+        ui.key(Key::Ctrl('f'));
+        assert!(ui.r.search.is_none() && ui.diff_find.is_some(), "the diff's own find");
+        for c in "NEEDLE".chars() {
+            ui.key(Key::Char(c));
+        }
+        let hits = |u: &Ui| u.diff_find.as_ref().map(|f| (f.hits.len(), f.cur));
+        assert_eq!(hits(&ui), Some((4, 0)), "case-insensitive, every occurrence");
+        assert_partial_paint_is_full(&mut ui, &mut screen, "diff find");
+        // Enter steps on; the last match (line 181) scrolls into view.
+        for _ in 0..3 {
+            ui.key(Key::Enter);
+        }
+        assert_eq!(hits(&ui), Some((4, 3)));
+        assert!(ui.r.diff_top > 100, "scrolled to the last match: {}", ui.r.diff_top);
+        assert_partial_paint_is_full(&mut ui, &mut screen, "jump to a match");
+        ui.key(Key::Enter);
+        assert_eq!(hits(&ui), Some((4, 0)), "wraps around");
+        // The next file: the query stays and that diff is searched.
+        ui.select_file(1);
+        pump(&mut ui, "b.txt's diff", &on("b.txt"));
+        assert_eq!(ui.diff_find.as_ref().map(|f| f.input.text()), Some("NEEDLE"));
+        assert_eq!(hits(&ui), Some((1, 0)));
+        assert_partial_paint_is_full(&mut ui, &mut screen, "next file");
+        ui.key(Key::Esc);
+        assert!(ui.diff_find.is_none());
+        assert_partial_paint_is_full(&mut ui, &mut screen, "find closed");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

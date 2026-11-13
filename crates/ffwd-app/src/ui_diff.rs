@@ -58,8 +58,9 @@ impl Ui {
         (pairs, blocks)
     }
 
-    /// Draws one line of code: the changed part's background (`word`,
-    /// a byte range and its colour), then the text in syntax colours.
+    /// Draws one line of code: backgrounds under parts of it (`marks`:
+    /// byte ranges and colours, such as the changed words and find
+    /// matches), then the text in syntax colours.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn draw_code(
         &mut self,
@@ -72,16 +73,19 @@ impl Ui {
         maxw: f32,
         lang: Option<&Lang>,
         in_block: bool,
-        word: Option<(usize, usize, u32)>,
+        marks: &[(usize, usize, u32)],
     ) {
         let mono = self.f.mono;
         let fs = self.pf(12.0);
-        if let Some((a, b, c)) = word
-            && b > a
-            && b <= text.len()
-        {
+        for &(a, b, c) in marks {
+            if b <= a || b > text.len() || !text.is_char_boundary(a) || !text.is_char_boundary(b) {
+                continue;
+            }
             let x0 = x + self.te.measure(mono, fs, &text[..a]);
-            let x1 = x + self.te.measure(mono, fs, &text[..b]);
+            if x0 >= x + maxw {
+                continue;
+            }
+            let x1 = (x + self.te.measure(mono, fs, &text[..b])).min(x + maxw);
             let r = Rect::new(x0 as i32, row.y + self.px(2.0), (x1 - x0).ceil().max(2.0) as i32, row.h - self.px(4.0));
             cv.fill_round(r, self.pf(3.0), c);
         }
@@ -195,12 +199,25 @@ impl Ui {
                     };
                     self.te.draw(cv, mono, self.pf(11.0), x0 as f32 + num_w - w - self.pf(6.0), lb, &s, nc, num_w);
                 }
-                let text = line.text.replace('\t', "    ");
-                let word = Self::word_range(diff, &pairs, i).filter(|_| !line.text.contains('\t'));
+                let text = super::diff_find::shown_text(&line.text).into_owned();
+                let mut marks: Vec<_> =
+                    Self::word_range(diff, &pairs, i).filter(|_| !line.text.contains('\t')).into_iter().collect();
+                marks.extend(self.diff_find_marks(i, &text));
                 let tx = x0 as f32 + num_w + self.pf(8.0);
                 let st = blocks.get(i).copied().unwrap_or(false);
                 let old = cv.set_clip(clip.intersect(cell));
-                self.draw_code(cv, tx, lb, cell, &text, fg, (cell.right() as f32) - tx - self.pf(8.0), lang, st, word);
+                self.draw_code(
+                    cv,
+                    tx,
+                    lb,
+                    cell,
+                    &text,
+                    fg,
+                    (cell.right() as f32) - tx - self.pf(8.0),
+                    lang,
+                    st,
+                    &marks,
+                );
                 cv.set_clip(old);
             }
         }

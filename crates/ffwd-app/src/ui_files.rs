@@ -887,7 +887,7 @@ impl Ui {
             let text = line.replace('\t', "    ");
             let st = loaded.blocks.get(k).copied().unwrap_or(false);
             let tx = r.x as f32 + blame_w + num_w + self.pf(10.0);
-            self.draw_code(cv, tx, lb, row, &text, TEXT_2, r.right() as f32 - tx - self.pf(12.0), lang, st, None);
+            self.draw_code(cv, tx, lb, row, &text, TEXT_2, r.right() as f32 - tx - self.pf(12.0), lang, st, &[]);
         }
         if blame && blame_data.is_none() {
             self.te.draw(
