@@ -26,6 +26,8 @@ pub enum CHit {
     Desc,
     Amend,
     SkipHooks,
+    /// The Unstaged list's options (`…`): show or hide untracked files.
+    ListOptions,
     /// Push after the commit (FF-35; remembered as `commit.push`).
     PushAfter,
     StageLines,
@@ -44,6 +46,8 @@ pub struct Changes {
     counts: [usize; 2],
     /// Conflicted files, counted once per status.
     pub conflicts: usize,
+    /// Untracked files left out of the list (`changes.hide_untracked`).
+    pub hidden_untracked: usize,
     pub side: Side,
     pub sel: usize,
     tops: [usize; 2],
@@ -85,6 +89,7 @@ impl Default for Changes {
             status: None,
             counts: [0, 0],
             conflicts: 0,
+            hidden_untracked: 0,
             side: Side::Unstaged,
             sel: 0,
             tops: [0, 0],
@@ -204,6 +209,17 @@ impl Ui {
         }
     }
 
+    /// Whether untracked files are left out of Local Changes.
+    pub(super) fn hide_untracked(&self) -> bool {
+        self.settings.get("changes.hide_untracked") == Some("true")
+    }
+
+    pub(super) fn set_hide_untracked(&mut self, hide: bool) {
+        self.settings.set_string("changes.hide_untracked", if hide { "true" } else { "false" });
+        self.reload_changes();
+        self.changes_dirty_all();
+    }
+
     pub(super) fn reload_changes(&mut self) {
         if let (Some(g), Some(s)) = (self.git_for_tab(), self.tab_sink()) {
             crate::work::changes_load(g, &s);
@@ -262,8 +278,14 @@ impl Ui {
     pub(super) fn on_changes(&mut self, r: Result<WorkStatus, String>) {
         let keep = self.selected_entry().map(|e| e.path);
         match r {
-            Ok(st) => {
+            Ok(mut st) => {
+                // Hidden untracked files (remembered; FF-35) never reach the list.
+                let before = st.entries.len();
+                if self.hide_untracked() {
+                    st.entries.retain(|e| !e.untracked());
+                }
                 let c = &mut self.r.changes;
+                c.hidden_untracked = before - st.entries.len();
                 c.counts = [Side::Unstaged, Side::Staged].map(|s| st.entries.iter().filter(|e| in_side(e, s)).count());
                 c.conflicts = st.entries.iter().filter(|e| e.conflicted).count();
                 c.status = Some(st);
@@ -891,6 +913,23 @@ impl Ui {
             Some(CHit::Subject) => self.r.changes.focus = CFocus::Subject,
             Some(CHit::Desc) => self.r.changes.focus = CFocus::Desc,
             Some(CHit::SkipHooks) => self.r.changes.skip_hooks = !self.r.changes.skip_hooks,
+            Some(CHit::ListOptions) => {
+                let hide = self.hide_untracked();
+                let (b, _) = *self
+                    .r
+                    .changes
+                    .hits
+                    .iter()
+                    .find(|h| h.1 == CHit::ListOptions)
+                    .unwrap_or(&(Rect::default(), CHit::ListOptions));
+                let item = super::menu::MenuItem {
+                    label: if hide { "Show untracked files".into() } else { "✓ Show untracked files".into() },
+                    act: Some(super::menu::MenuAct::HideUntracked(!hide)),
+                    danger: false,
+                };
+                self.open_menu(b.x, b.bottom(), vec![item]);
+                return true;
+            }
             Some(CHit::PushAfter) => {
                 let on = !self.push_after_commit();
                 self.settings.set_string("commit.push", if on { "true" } else { "false" });
@@ -959,6 +998,23 @@ impl Ui {
                 bw as i32,
                 head.h - self.px(8.0),
             );
+            if side == Side::Unstaged {
+                let ow = self.px(26.0);
+                let ob = Rect::new(b.x - self.px(6.0) - ow, b.y, ow, b.h);
+                let (bg, border) = self.control_colors(Hot::Change(hits.len()), BG_BAR, BORDER);
+                cv.round_border(ob, self.pf(6.0), border, bg);
+                let (cx, cy) = (ob.x as f32 + ob.w as f32 / 2.0, ob.y as f32 + ob.h as f32 / 2.0);
+                for k in [-1.0f32, 0.0, 1.0] {
+                    cv.fill_circle(cx + k * self.pf(4.5), cy, self.pf(1.4), TEXT_2);
+                }
+                hits.push((ob, CHit::ListOptions));
+                let hidden = self.r.changes.hidden_untracked;
+                if hidden > 0 {
+                    let t = format!("{hidden} untracked hidden");
+                    let tw = self.te.measure(ui, self.pf(11.0), &t);
+                    self.te.draw(cv, ui, self.pf(11.0), ob.x as f32 - tw - self.pf(10.0), base, &t, TEXT_4, tw + 2.0);
+                }
+            }
             if n_side > 0 {
                 let (bg, border) = self.control_colors(Hot::Change(hits.len()), BG_BAR, BORDER);
                 cv.round_border(b, self.pf(6.0), border, bg);

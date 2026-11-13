@@ -29,6 +29,8 @@ pub enum MenuAct {
     /// Diff view (FF-41): whitespace characters on or off, tab width.
     DiffShowWs(bool),
     DiffTab(u8),
+    /// Local Changes: hide (true) or show untracked files.
+    HideUntracked(bool),
     /// Wrap long diff lines (FF-41).
     DiffWrap(bool),
     /// Code text size in points.
@@ -589,6 +591,7 @@ impl Ui {
             Some(MenuAct::OpenUrl(u)) => crate::platform::open_url(u),
             Some(MenuAct::DiffShowWs(on)) => self.set_diff_view(Some(on), None),
             Some(MenuAct::DiffTab(t)) => self.set_diff_view(None, Some(t)),
+            Some(MenuAct::HideUntracked(h)) => self.set_hide_untracked(h),
             Some(MenuAct::DiffWrap(on)) => self.set_diff_wrap(on),
             Some(MenuAct::CodeSize(s)) => self.set_code_size(s),
             Some(MenuAct::TabColor(i, c)) => self.set_tab_color(i, c),

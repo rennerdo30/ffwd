@@ -7725,6 +7725,78 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Hide untracked files (FF-35): the Unstaged list's "…" toggles them,
+    /// the choice is remembered, and the header says how many are hidden.
+    #[test]
+    fn untracked_files_can_be_hidden() {
+        use std::sync::mpsc;
+        let mut te = TextEngine::new();
+        let Some(f) = load_fonts(&mut te) else { return };
+        let dir = std::env::temp_dir().join(format!("ffwd-ui-untracked-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = Git { root: dir.clone() };
+        for a in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.name", "ffwd test"],
+            &["config", "user.email", "test@example.invalid"],
+            &["config", "commit.gpgsign", "false"],
+            &["config", "core.autocrlf", "false"],
+        ] {
+            g.output(a).unwrap();
+        }
+        std::fs::write(dir.join("a.txt"), "a\n").unwrap();
+        g.output(&["add", "."]).unwrap();
+        g.output(&["commit", "-q", "-m", "first"]).unwrap();
+        std::fs::write(dir.join("a.txt"), "changed\n").unwrap();
+        std::fs::write(dir.join("new.txt"), "new\n").unwrap();
+        let (tx, rx) = mpsc::channel::<(u64, Msg)>();
+        let tx = Arc::new(std::sync::Mutex::new(tx));
+        let sinks: SinkFactory = Arc::new(move |id| {
+            let tx = tx.clone();
+            Arc::new(move |m| {
+                if let Ok(t) = tx.lock() {
+                    let _ = t.send((id, m));
+                }
+            })
+        });
+        crate::work::start(dir.clone(), &sinks(1));
+        let empty = crate::settings::Settings::parse("");
+        let mut ui = Ui::new(te, f, empty.clone(), empty, Some((1, dir.clone())), sinks, 1280, 800, 1.0);
+        let pump = |ui: &mut Ui, what: &str, done: &dyn Fn(&Ui) -> bool| {
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while !done(ui) {
+                let left = until.saturating_duration_since(std::time::Instant::now());
+                assert!(!left.is_zero(), "timed out waiting for {what}");
+                if let Ok((id, m)) = rx.recv_timeout(left) {
+                    ui.on_tab_msg(id, m);
+                }
+            }
+        };
+        pump(&mut ui, "the repository", &|u| u.r.git.is_some());
+        ui.enter_changes();
+        let unstaged = |u: &Ui| u.side_len(changes_view_side(true));
+        pump(&mut ui, "both files", &|u| unstaged(u) == 2);
+        let mut screen = vec![0u32; 1280 * 800];
+        ui.paint(&mut Canvas::new(&mut screen, 1280, 800), true);
+        let toggle = |ui: &mut Ui| {
+            let (b, _) = *ui.r.changes.hits.iter().find(|h| h.1 == changes_view::CHit::ListOptions).unwrap();
+            ui.click(b.x + 4, b.y + b.h / 2);
+            assert!(ui.menu.as_ref().is_some_and(|m| m.items[0].label.ends_with("Show untracked files")));
+            ui.menu_activate(0);
+        };
+        toggle(&mut ui);
+        assert_eq!(ui.settings.get("changes.hide_untracked"), Some("true"), "remembered");
+        pump(&mut ui, "untracked hidden", &|u| unstaged(u) == 1 && u.r.changes.hidden_untracked == 1);
+        assert_partial_paint_is_full(&mut ui, &mut screen, "hidden");
+        let mut screen2 = vec![0u32; 1280 * 800];
+        ui.paint(&mut Canvas::new(&mut screen2, 1280, 800), true);
+        toggle(&mut ui);
+        pump(&mut ui, "untracked shown", &|u| unstaged(u) == 2 && u.r.changes.hidden_untracked == 0);
+        assert_partial_paint_is_full(&mut ui, &mut screen2, "shown");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Find in the diff (FF-34): `Ctrl+F` with the diff focused searches
     /// the shown diff (case-insensitive), Enter steps through the matches
     /// and scrolls to them, the query stays for the next file, and Esc
