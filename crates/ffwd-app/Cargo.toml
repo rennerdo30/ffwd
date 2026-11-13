@@ -13,6 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 ffwd-core = { path = "../ffwd-core" }
+ffwd-agent = { path = "../ffwd-agent" }
 ffwd-render = { path = "../ffwd-render" }
 winit = "0.30.13"
 softbuffer = "0.4.8"

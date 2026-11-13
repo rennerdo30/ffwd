@@ -455,6 +455,7 @@ dependencies = [
 name = "ffwd"
 version = "0.1.0-poc"
 dependencies = [
+ "ffwd-agent",
  "ffwd-core",
  "ffwd-render",
  "ffwd-update",
@@ -463,6 +464,13 @@ dependencies = [
  "softbuffer",
  "windows-sys 0.61.2",
  "winit",
+]
+
+[[package]]
+name = "ffwd-agent"
+version = "0.1.0-poc"
+dependencies = [
+ "ffwd-core",
 ]
 
 [[package]]

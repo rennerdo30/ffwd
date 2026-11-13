@@ -17,8 +17,11 @@ use std::collections::HashSet;
 #[path = "ui_sidebar.rs"]
 mod sidebar;
 use sidebar::SideItem;
+#[path = "ui_agents.rs"]
+mod agents_view;
 #[path = "ui_settings.rs"]
 mod settings_view;
+use agents_view::{AgentRun, AgentView};
 use ffwd_core::{Commit, Git, Graph, Oid};
 use ffwd_render::{Canvas, FontId, Rect, TextEngine};
 use settings_view::SettingsView;
@@ -240,11 +243,13 @@ const CMD_CLOSE: &str = "Close tab";
 const CMD_REOPEN: &str = "Reopen closed tab";
 const CMD_UPDATES: &str = "Check for updates";
 const CMD_SETTINGS: &str = "Settings…";
+const CMD_AGENTS: &str = "Agents (experimental)…";
 
 /// Commands that work today; the rest of COMMANDS are listed so the
 /// palette shows the plan, and say so when chosen.
 const WORKING: &[&str] = &[
     CMD_SETTINGS,
+    CMD_AGENTS,
     CMD_FETCH,
     CMD_PULL,
     CMD_PUSH,
@@ -265,6 +270,7 @@ const COMMANDS: &[(&str, &str)] = &[
     (CMD_REOPEN, "Ctrl Shift T"),
     (CMD_UPDATES, ""),
     (CMD_SETTINGS, "Ctrl ,"),
+    (CMD_AGENTS, "Ctrl Shift A"),
     ("Commit staged changes", "Ctrl Enter"),
     ("Create branch here", "Ctrl B"),
     ("Create tag here", "Ctrl Shift G"),
@@ -334,6 +340,9 @@ pub struct Tab {
     /// Messages that arrived while the tab was in the background.
     pending: Vec<Msg>,
     started: bool,
+    /// Changed in the background (an agent finished or merged): reload
+    /// when activated.
+    stale: bool,
 }
 
 /// Creates the message sink for a tab id (the window wraps messages into
@@ -377,6 +386,10 @@ pub struct Ui {
     pub focus: Focus,
     pub palette: Option<Palette>,
     settings_view: Option<SettingsView>,
+    /// Experimental agent runs of every tab, and the panel when open.
+    agents: Vec<AgentRun>,
+    agent_view: Option<AgentView>,
+    agents_loaded: HashSet<String>,
     pub notice: Option<String>,
     update_available: bool,
     update_requested: bool,
@@ -452,6 +465,9 @@ impl Ui {
             focus: Focus::List,
             palette: None,
             settings_view: None,
+            agents: Vec::new(),
+            agent_view: None,
+            agents_loaded: HashSet::new(),
             update_available: false,
             update_requested: false,
             update_check_requested: false,
@@ -490,6 +506,7 @@ impl Ui {
                 state: Some(RepoState::default()),
                 pending: Vec::new(),
                 started: false,
+                stale: false,
             });
         }
         let mut active = saved_active.and_then(|a| ui.tabs.iter().position(|t| same_path(&t.path, &a))).unwrap_or(0);
@@ -508,6 +525,7 @@ impl Ui {
                         state: Some(RepoState::default()),
                         pending: Vec::new(),
                         started: true,
+                        stale: false,
                     });
                     active = ui.tabs.len() - 1;
                 }
@@ -561,6 +579,7 @@ impl Ui {
         for m in pending {
             self.on_msg(m);
         }
+        self.load_agent_runs();
         self.palette = None;
         self.title_dirty = true;
         self.damage.full = true;
@@ -571,6 +590,8 @@ impl Ui {
         if i >= self.tabs.len() || i == self.cur_tab {
             return;
         }
+        // The agents panel shows one repository's runs.
+        self.agent_view = None;
         let old = std::mem::take(&mut self.r);
         if let Some(t) = self.tabs.get_mut(self.cur_tab) {
             t.state = Some(old);
@@ -578,6 +599,9 @@ impl Ui {
         self.cur_tab = i;
         self.r = self.tabs[i].state.take().unwrap_or_default();
         self.activate_current();
+        if std::mem::take(&mut self.tabs[i].stale) {
+            self.reload_current();
+        }
     }
 
     /// Opens `path` in a new tab, or switches to it when it is already open.
@@ -595,6 +619,7 @@ impl Ui {
             state: Some(RepoState::default()),
             pending: Vec::new(),
             started: false,
+            stale: false,
         });
         self.remember_recent(&path);
         let i = self.tabs.len() - 1;
@@ -614,6 +639,9 @@ impl Ui {
         }
         let tab = self.tabs.remove(i);
         self.closed_tabs.push(tab.path);
+        if i == self.cur_tab {
+            self.agent_view = None;
+        }
         if self.tabs.is_empty() {
             self.r = RepoState { repo_name: "ffwd".into(), ..Default::default() };
             self.r.error = Some("No repository open. Press Ctrl+O to open one.".into());
@@ -665,6 +693,9 @@ impl Ui {
     /// Routes a loader message to its tab: applied now for the active tab,
     /// kept for later otherwise, dropped for closed or reloaded tabs.
     pub fn on_tab_msg(&mut self, id: u64, m: Msg) {
+        if let Msg::Agent(e) = m {
+            return self.on_agent_event(e);
+        }
         if let Msg::Repos(list) = m {
             for p in list {
                 if !self.known_repos.iter().any(|k| same_path(k, &p)) {
@@ -979,6 +1010,7 @@ impl Ui {
             }
             // Handled in on_tab_msg; repeated here so a stray one is harmless.
             Msg::Repos(_) => {}
+            Msg::Agent(e) => self.on_agent_event(e),
         }
     }
 
@@ -1153,6 +1185,12 @@ impl Ui {
         if self.settings_view.is_some() {
             return self.settings_key(k);
         }
+        if matches!(k, Key::CtrlShift('a')) && self.agent_view.is_none() {
+            return self.open_agents();
+        }
+        if self.agent_view.is_some() {
+            return self.agents_key(k);
+        }
         // Text editing keys belong to the palette while it is open.
         if self.palette.is_some()
             && matches!(
@@ -1252,7 +1290,11 @@ impl Ui {
         if n == 0 {
             return;
         }
-        if self.lay.side.contains(x, y) {
+        if self.settings_view.is_some() {
+            self.settings_wheel(n);
+        } else if self.agent_view.is_some() {
+            self.agents_wheel(n);
+        } else if self.lay.side.contains(x, y) {
             self.side_wheel(n);
         } else if self.lay.list.contains(x, y) {
             self.set_top((self.r.top as i64 + n).max(0) as usize);
@@ -1264,6 +1306,9 @@ impl Ui {
     pub fn click(&mut self, x: i32, y: i32) {
         if self.settings_view.is_some() {
             return self.settings_click(x, y);
+        }
+        if self.agent_view.is_some() {
+            return self.agents_click(x, y);
         }
         if let Some(b) = self.caption_button_at(x, y) {
             if b != 1 {
@@ -1460,6 +1505,7 @@ impl Ui {
             CMD_REOPEN => self.reopen_closed_tab(),
             CMD_UPDATES => self.request_update_check(),
             CMD_SETTINGS => self.open_settings(),
+            CMD_AGENTS => self.open_agents(),
             LAYOUT_BELOW => self.set_layout(DetailsLayout::Below),
             LAYOUT_BESIDE => self.set_layout(DetailsLayout::Beside),
             c if c.starts_with("AI:") || c.starts_with("Settings: AI") => self.set_notice(
@@ -1635,6 +1681,9 @@ impl Ui {
         if self.palette.is_some() && !clip.intersect(self.palette_rect(10)).is_empty() {
             self.paint_palette(cv);
         }
+        if self.agent_view.is_some() && !clip.intersect(self.agents_rect()).is_empty() {
+            self.paint_agents(cv);
+        }
         if self.settings_view.is_some() && !clip.intersect(self.settings_rect()).is_empty() {
             self.paint_settings(cv);
         }
@@ -1806,7 +1855,11 @@ impl Ui {
             let tw = self.te.measure(font, self.pf(12.5), &name).min(max);
             // Centred.
             let tx = t.x as f32 + ((t.w as f32 - close_w - tw) / 2.0).max(self.pf(14.0));
-            self.te.draw(cv, font, self.pf(12.5), tx, base, &name, if active { TEXT } else { TEXT_3 }, max);
+            let end = self.te.draw(cv, font, self.pf(12.5), tx, base, &name, if active { TEXT } else { TEXT_3 }, max);
+            // An agent runs (accent) or finished unseen (green, red).
+            if let Some(c) = self.agent_badge(&self.tabs[i].path.clone()) {
+                cv.fill_circle(end + self.pf(7.0), base - self.pf(4.0), self.pf(3.0), c);
+            }
             if active || hover {
                 let c = self.tab_close_rect(*t);
                 let (cx, cy, s) = (c.x as f32 + c.w as f32 / 2.0, c.y as f32 + c.h as f32 / 2.0, self.pf(3.5));

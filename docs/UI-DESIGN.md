@@ -55,6 +55,20 @@ The capture above is the real PoC UI. `ffwd --snapshot` rendered it offscreen fr
 
 The gear in the top bar (or `Ctrl+,`) opens Settings: details layout, automatic updates and channel, repository folders, AI endpoint and model, **Open settings.toml**, **Check for updates now**. Changes save at once; the file keeps your comments.
 
+## Agents panel (experimental)
+
+`Ctrl+Shift+A` (or *Agents (experimental)…* in `Ctrl+K`) opens the agents panel of the current repository. It is off by default and labelled EXPERIMENTAL in the panel and on its settings page. All settings are listed in [AGENTS-EXPERIMENTAL.md](AGENTS-EXPERIMENTAL.md).
+
+- **Top:** one line names what the agent can reach (the sandbox, network, Git access and time limit). It turns amber when ffwd would refuse to start and red when the agent is not sandboxed.
+- **Prompt field:** `Enter` starts a run on a new branch, in its own worktree.
+- **Left:** the runs of this repository, newest first, each with a status dot.
+- **Right:** the selected run's branch, status, worktree, buttons (Show branch, Merge…, Discard…, Cancel run, Open folder, Open log) and its live log.
+- **Confirmation:** Merge and discard ask in place and name exactly what happens. `Enter` confirms; `Esc` keeps the run.
+- **Keys:** `↑ ↓`, `Enter` shows the branch, `m` merges, `d` discards, `c` cancels, `o` opens the folder, `l` opens the log, `PageUp`/`PageDown` scroll the log, and typing starts a new task.
+- **Tab badge:** a dot after the tab's name. Accent while an agent runs; green or red when a run ended and you have not opened the panel since.
+
+Settings has two pages, **General** and **Agents** (`Ctrl+Tab` switches between them). From the agents panel, `Ctrl+,` opens the Agents page.
+
 ## Repository tabs
 
 Like other clients: one tab per repository under the top bar.
@@ -81,6 +95,7 @@ Like other clients: one tab per repository under the top bar.
 | `Ctrl+K` / `Ctrl+P` / `/` | Palette: jump to a branch, tag or SHA, or run a command |
 | `Ctrl+O` / `Ctrl+T` | Open a repository in a tab |
 | `Ctrl+,` | Settings |
+| `Ctrl+Shift+A` | Agents panel (experimental) |
 | `Ctrl+A` `Ctrl+C` `Ctrl+V` `Ctrl+X` `Ctrl+Backspace` `← →` `Home End` | Text editing in the palette and settings fields |
 | `Ctrl+W` / `Ctrl+Shift+T` | Close the tab / reopen the last closed one |
 | `Ctrl+Tab` / `Ctrl+Shift+Tab` / `Ctrl+1…9` | Next, previous, n-th tab (9 = last) |

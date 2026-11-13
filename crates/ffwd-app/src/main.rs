@@ -44,6 +44,10 @@ pub struct Args {
     pub settings: bool,
     /// Snapshot: click this sidebar ref (`main`, `t3/x`) first.
     pub side: Option<String>,
+    /// Snapshot with the settings view on this page (0 general, 1 agents).
+    pub settings_page: Option<usize>,
+    /// Snapshot with the agents panel open, showing example runs.
+    pub agents_demo: bool,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -61,6 +65,8 @@ fn parse_args() -> Result<Args, String> {
         picker: None,
         settings: false,
         side: None,
+        settings_page: None,
+        agents_demo: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -91,6 +97,8 @@ fn parse_args() -> Result<Args, String> {
             "--palette" => a.palette = Some(val("--palette")?),
             "--layout" => a.layout = Some(val("--layout")?),
             "--settings" => a.settings = true,
+            "--settings-page" => a.settings_page = Some(val("--settings-page")?.parse().map_err(|_| "bad page")?),
+            "--agents-demo" => a.agents_demo = true,
             "--side" => a.side = Some(val("--side")?),
             "--picker" => a.picker = Some(val("--picker")?),
             "--tab" => a.tabs.push(PathBuf::from(val("--tab")?)),
@@ -140,6 +148,8 @@ fn main() {
         }
     };
     let code = if args.snapshot.is_some() { snapshot::run(&args, t0) } else { window::run(&args, t0) };
+    // Agents ffwd started end with it (only the PIDs it recorded).
+    ffwd_agent::proc::kill_all();
     flush_trace();
     std::process::exit(code);
 }

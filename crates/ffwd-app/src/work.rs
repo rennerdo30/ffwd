@@ -33,6 +33,8 @@ pub enum Msg {
     Repos(Vec<PathBuf>),
     OpProgress(String),
     OpDone(ffwd_core::ops::Outcome),
+    /// An agent run's progress (experimental agents).
+    Agent(ffwd_agent::Event),
 }
 
 /// Runs a fetch, pull or push on a worker, reporting progress and the outcome.

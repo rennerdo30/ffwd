@@ -1,6 +1,14 @@
 # 0002: Agent workspaces (proposed)
 
-**Status:** proposed on 2026-11-13. It grows out of feedback from a friend of the owner (Pair Desk FF-22) and needs the owner's direction before any of it is built.
+**Status:** proposed on 2026-11-13. It grows out of feedback from a friend of the owner (Pair Desk FF-22).
+
+**Update, 2026-11-13:** the owner asked for it to be built as a clearly marked experiment with many settings and scripts (FF-23). It is off by default. Crate `ffwd-agent`; the user guide and every setting are in [../AGENTS-EXPERIMENTAL.md](../AGENTS-EXPERIMENTAL.md). Differences from the proposal below:
+
+- Windows uses WSL + bubblewrap; a native Windows sandbox is open.
+- Network is on by default, because most agents call a hosted model. Turning it off is one setting.
+- By default the agent's Git access is read-only; ffwd commits its changes after it ends. Shared object stores make write access a real risk.
+- Scripts run at fixed points: setup, after, and on-done (for notifications).
+- The Git safety layer (FF-13) is still open. Merge uses plain `git merge --no-ff` behind a confirmation and reports conflicts; it does not resolve them.
 
 ## Idea
 

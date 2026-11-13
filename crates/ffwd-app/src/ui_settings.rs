@@ -14,9 +14,24 @@ enum Row {
     AiModel,
     OpenFile,
     CheckUpdates,
+    // Agents page (experimental).
+    AgentsOn,
+    AgentCommand,
+    Sandbox,
+    AllowUnsandboxed,
+    Network,
+    GitAccess,
+    HomeAccess,
+    ReadPaths,
+    WritePaths,
+    Setup,
+    After,
+    OnDone,
+    Timeout,
+    AgentsFile,
 }
 
-const ROWS: [Row; 8] = [
+const GENERAL: &[Row] = &[
     Row::Layout,
     Row::Updates,
     Row::Channel,
@@ -26,6 +41,26 @@ const ROWS: [Row; 8] = [
     Row::OpenFile,
     Row::CheckUpdates,
 ];
+
+const AGENT_ROWS: &[Row] = &[
+    Row::AgentsOn,
+    Row::AgentCommand,
+    Row::Sandbox,
+    Row::AllowUnsandboxed,
+    Row::Network,
+    Row::GitAccess,
+    Row::HomeAccess,
+    Row::ReadPaths,
+    Row::WritePaths,
+    Row::Setup,
+    Row::After,
+    Row::OnDone,
+    Row::Timeout,
+    Row::AgentsFile,
+];
+
+/// Settings pages: (title, rows).
+const PAGES: [(&str, &[Row]); 2] = [("General", GENERAL), ("Agents", AGENT_ROWS)];
 
 impl Row {
     fn label(self) -> &'static str {
@@ -38,6 +73,20 @@ impl Row {
             Row::AiModel => "AI model",
             Row::OpenFile => "Settings file",
             Row::CheckUpdates => "Updates",
+            Row::AgentsOn => "Agents",
+            Row::AgentCommand => "Agent command",
+            Row::Sandbox => "Sandbox",
+            Row::AllowUnsandboxed => "Allow no sandbox",
+            Row::Network => "Network",
+            Row::GitAccess => "Git access",
+            Row::HomeAccess => "Home folder",
+            Row::ReadPaths => "Extra folders, read-only",
+            Row::WritePaths => "Extra folders, writable",
+            Row::Setup => "Setup script",
+            Row::After => "After script",
+            Row::OnDone => "On-done script",
+            Row::Timeout => "Time limit (minutes)",
+            Row::AgentsFile => "All agent settings",
         }
     }
 
@@ -51,6 +100,20 @@ impl Row {
             Row::AiModel => "Model name the endpoint expects",
             Row::OpenFile => "Every setting, as text",
             Row::CheckUpdates => "",
+            Row::AgentsOn => "Coding agents in their own worktree and sandbox",
+            Row::AgentCommand => "{prompt} {prompt_file} {worktree} {branch}, one argument each",
+            Row::Sandbox => "Auto: bwrap (Linux), WSL (Windows), macOS sandbox",
+            Row::AllowUnsandboxed => "Sandbox None: the agent has all your permissions",
+            Row::Network => "Agents that call a hosted model need it",
+            Row::GitAccess => "Read-only: ffwd commits the agent's edits at the end",
+            Row::HomeAccess => "Private: an empty home; Read: for agent logins",
+            Row::ReadPaths => "Applies from the next run (; between folders)",
+            Row::WritePaths => "For example the agent's own config folder",
+            Row::Setup => "Runs in the worktree before the agent, e.g. npm ci",
+            Row::After => "Runs after the agent, before ffwd commits, e.g. tests",
+            Row::OnDone => "On your machine when a run ends, e.g. a notification",
+            Row::Timeout => "The agent is stopped after this (1 to 1440)",
+            Row::AgentsFile => "Env, folders, branch prefix, prompt template, shells",
         }
     }
 
@@ -59,6 +122,13 @@ impl Row {
             Row::Roots => Some("repos.roots"),
             Row::AiEndpoint => Some("ai.endpoint"),
             Row::AiModel => Some("ai.model"),
+            Row::AgentCommand => Some("agents.command"),
+            Row::ReadPaths => Some("agents.read_paths"),
+            Row::WritePaths => Some("agents.write_paths"),
+            Row::Setup => Some("agents.setup_script"),
+            Row::After => Some("agents.after_script"),
+            Row::OnDone => Some("agents.on_done_script"),
+            Row::Timeout => Some("agents.timeout_minutes"),
             _ => None,
         }
     }
@@ -68,6 +138,10 @@ impl Row {
             Row::Roots => "Folders next to the open repositories",
             Row::AiEndpoint => "Off · e.g. http://localhost:11434/v1",
             Row::AiModel => "e.g. qwen2.5-coder:14b",
+            Row::AgentCommand => "e.g. aider --yes-always --message-file {prompt_file}",
+            Row::ReadPaths | Row::WritePaths => "None",
+            Row::Setup | Row::After | Row::OnDone => "None",
+            Row::Timeout => "60",
             _ => "",
         }
     }
@@ -77,23 +151,50 @@ impl Row {
             Row::Layout => &["Below the history", "Beside the history"],
             Row::Updates => &["On", "Off"],
             Row::Channel => &["Automatic", "Stable", "Beta"],
+            Row::AgentsOn => &["Off", "On (experimental)"],
+            Row::Sandbox => &["Auto", "bwrap", "WSL", "macOS", "Custom", "None"],
+            Row::AllowUnsandboxed => &["No", "Yes"],
+            Row::Network => &["On", "Off"],
+            Row::GitAccess => &["Read-only", "Writable"],
+            Row::HomeAccess => &["Private", "Read", "Write"],
             _ => &[],
         }
     }
 }
 
 pub struct SettingsView {
+    page: usize,
+    /// First row shown (the page scrolls when it does not fit).
+    scroll: usize,
     sel: usize,
     /// The text row being edited and its field.
     edit: Option<(usize, TextField)>,
     /// Option hit areas from the last paint: (row, choice, rect).
     hits: Vec<(usize, usize, Rect)>,
+    /// Page tabs from the last paint.
+    page_hits: Vec<(usize, Rect)>,
 }
+
+const PAGE_AGENTS: usize = 1;
 
 impl Ui {
     pub fn open_settings(&mut self) {
+        // From the agents panel, Settings opens on the agents page.
+        let page = if self.agent_view.take().is_some() { PAGE_AGENTS } else { 0 };
+        self.open_settings_page(page);
+    }
+
+    pub fn open_settings_page(&mut self, page: usize) {
         self.palette = None;
-        self.settings_view = Some(SettingsView { sel: 0, edit: None, hits: Vec::new() });
+        self.damage.full = true;
+        self.settings_view = Some(SettingsView {
+            page: page.min(PAGES.len() - 1),
+            scroll: 0,
+            sel: 0,
+            edit: None,
+            hits: Vec::new(),
+            page_hits: Vec::new(),
+        });
         let r = self.settings_rect();
         self.damage.rects.push(r);
     }
@@ -105,10 +206,53 @@ impl Ui {
         }
     }
 
+    fn rows(&self) -> &'static [Row] {
+        PAGES[self.settings_view.as_ref().map_or(0, |v| v.page)].1
+    }
+
+    /// The tallest page sets the height, so switching pages keeps the box.
     pub(super) fn settings_rect(&self) -> Rect {
-        let w = self.px(760.0).min(self.w as i32 - self.px(60.0));
-        let h = (self.px(70.0) + ROWS.len() as i32 * self.px(54.0) + self.px(20.0)).min(self.h as i32 - self.px(60.0));
+        let w = self.px(800.0).min(self.w as i32 - self.px(60.0));
+        let most = PAGES.iter().map(|p| p.1.len()).max().unwrap_or(1) as i32;
+        let h = (self.px(108.0) + most * self.px(54.0) + self.px(16.0)).min(self.h as i32 - self.px(60.0));
         Rect::new((self.w as i32 - w) / 2, (self.h as i32 - h) / 2, w, h)
+    }
+
+    fn settings_rows_visible(&self) -> usize {
+        let r = self.settings_rect();
+        ((r.h - self.px(108.0) - self.px(10.0)) / self.px(54.0)).max(1) as usize
+    }
+
+    /// Keeps the selected row on screen.
+    fn settings_follow(&mut self) {
+        let fit = self.settings_rows_visible();
+        if let Some(v) = &mut self.settings_view {
+            if v.sel < v.scroll {
+                v.scroll = v.sel;
+            } else if v.sel >= v.scroll + fit {
+                v.scroll = v.sel + 1 - fit;
+            }
+        }
+    }
+
+    fn settings_page(&mut self, page: usize) {
+        self.commit_edit();
+        if let Some(v) = &mut self.settings_view {
+            v.page = page % PAGES.len();
+            v.sel = 0;
+            v.scroll = 0;
+            v.edit = None;
+        }
+        let r = self.settings_rect();
+        self.damage.rects.push(r);
+    }
+
+    fn flag_now(&self, key: &str, default: bool) -> bool {
+        match self.settings.get(key) {
+            Some("true" | "on" | "yes" | "1") => true,
+            Some("false" | "off" | "no" | "0") => false,
+            _ => default,
+        }
     }
 
     fn choice_now(&self, row: Row) -> usize {
@@ -120,6 +264,22 @@ impl Ui {
                 Some("beta") => 2,
                 _ => 0,
             },
+            Row::AgentsOn => self.flag_now("agents.enabled", false) as usize,
+            Row::Sandbox => {
+                let k = self.settings.get("agents.sandbox").and_then(ffwd_agent::SandboxKind::parse);
+                ["auto", "bwrap", "wsl", "macos", "custom", "none"]
+                    .iter()
+                    .position(|s| Some(*s) == k.map(|k| k.as_setting()))
+                    .unwrap_or(0)
+            }
+            Row::AllowUnsandboxed => self.flag_now("agents.allow_unsandboxed", false) as usize,
+            Row::Network => !self.flag_now("agents.network", true) as usize,
+            Row::GitAccess => (self.settings.get("agents.git_access") == Some("write")) as usize,
+            Row::HomeAccess => match self.settings.get("agents.home_access") {
+                Some("read") => 1,
+                Some("write") => 2,
+                _ => 0,
+            },
             _ => 0,
         }
     }
@@ -129,6 +289,23 @@ impl Ui {
             Row::Layout => self.set_layout(if i == 1 { DetailsLayout::Beside } else { DetailsLayout::Below }),
             Row::Updates => self.settings.set_string("update.check", if i == 1 { "false" } else { "true" }),
             Row::Channel => self.settings.set_string("update.channel", ["auto", "stable", "beta"][i.min(2)]),
+            Row::AgentsOn => {
+                self.settings.set_string("agents.enabled", if i == 1 { "true" } else { "false" });
+                if i == 1 {
+                    // Runs recorded earlier show up again.
+                    self.agents_loaded.clear();
+                    self.load_agent_runs();
+                }
+            }
+            Row::Sandbox => self
+                .settings
+                .set_string("agents.sandbox", ["auto", "bwrap", "wsl", "macos", "custom", "none"][i.min(5)]),
+            Row::AllowUnsandboxed => {
+                self.settings.set_string("agents.allow_unsandboxed", if i == 1 { "true" } else { "false" })
+            }
+            Row::Network => self.settings.set_string("agents.network", if i == 1 { "false" } else { "true" }),
+            Row::GitAccess => self.settings.set_string("agents.git_access", if i == 1 { "write" } else { "read" }),
+            Row::HomeAccess => self.settings.set_string("agents.home_access", ["private", "read", "write"][i.min(2)]),
             _ => {}
         }
         let r = self.settings_rect();
@@ -136,9 +313,9 @@ impl Ui {
     }
 
     fn settings_act(&mut self, i: usize) {
-        let row = ROWS[i];
+        let Some(&row) = self.rows().get(i) else { return };
         match row {
-            Row::OpenFile => open_settings_file(),
+            Row::OpenFile | Row::AgentsFile => open_settings_file(),
             Row::CheckUpdates => {
                 self.close_settings();
                 self.request_update_check();
@@ -160,9 +337,10 @@ impl Ui {
     }
 
     fn commit_edit(&mut self) {
+        let rows = self.rows();
         let Some(v) = &mut self.settings_view else { return };
         if let Some((i, f)) = v.edit.take()
-            && let Some(key) = ROWS[i].key()
+            && let Some(key) = rows.get(i).and_then(|r| r.key())
         {
             let text = f.text().trim().to_string();
             self.settings.set_string(key, &text);
@@ -174,6 +352,7 @@ impl Ui {
 
     /// All keys go to the settings view while it is open.
     pub(super) fn settings_key(&mut self, k: Key) {
+        let rows = self.rows();
         let Some(v) = &mut self.settings_view else { return };
         if let Some((_, f)) = &mut v.edit {
             match k {
@@ -200,19 +379,25 @@ impl Ui {
             self.damage.rects.push(r);
             return;
         }
-        let sel = v.sel;
+        let sel = v.sel.min(rows.len() - 1);
         match k {
             Key::Esc | Key::Ctrl(',') => self.close_settings(),
-            Key::Up | Key::BackTab => v.sel = sel.saturating_sub(1),
-            Key::Down | Key::Tab => v.sel = (sel + 1).min(ROWS.len() - 1),
-            Key::Enter | Key::Char(' ') => self.settings_act(sel),
-            Key::Left | Key::Right if !ROWS[sel].choices().is_empty() => {
-                let n = ROWS[sel].choices().len();
-                let cur = self.choice_now(ROWS[sel]);
-                let next = if matches!(k, Key::Left) { (cur + n - 1) % n } else { (cur + 1) % n };
-                self.set_choice(ROWS[sel], next);
+            Key::NextTab | Key::PrevTab => {
+                let p = v.page;
+                self.settings_page(p + 1);
             }
-            Key::Char(c) if ROWS[sel].key().is_some() => {
+            Key::Up | Key::BackTab => v.sel = sel.saturating_sub(1),
+            Key::Down | Key::Tab => v.sel = (sel + 1).min(rows.len() - 1),
+            Key::PageUp | Key::Home => v.sel = 0,
+            Key::PageDown | Key::End => v.sel = rows.len() - 1,
+            Key::Enter | Key::Char(' ') => self.settings_act(sel),
+            Key::Left | Key::Right if !rows[sel].choices().is_empty() => {
+                let n = rows[sel].choices().len();
+                let cur = self.choice_now(rows[sel]);
+                let next = if matches!(k, Key::Left) { (cur + n - 1) % n } else { (cur + 1) % n };
+                self.set_choice(rows[sel], next);
+            }
+            Key::Char(c) if rows[sel].key().is_some() => {
                 // Typing on a text row starts editing it.
                 self.settings_act(sel);
                 if let Some(SettingsView { edit: Some((_, f)), .. }) = &mut self.settings_view {
@@ -221,6 +406,18 @@ impl Ui {
                 }
             }
             _ => {}
+        }
+        self.settings_follow();
+        let r = self.settings_rect();
+        self.damage.rects.push(r);
+    }
+
+    pub(super) fn settings_wheel(&mut self, lines: i64) {
+        let n = self.rows().len();
+        let fit = self.settings_rows_visible();
+        if let Some(v) = &mut self.settings_view {
+            v.scroll = (v.scroll as i64 + lines).clamp(0, n.saturating_sub(fit) as i64) as usize;
+            v.sel = v.sel.clamp(v.scroll, (v.scroll + fit).min(n) - 1);
         }
         let r = self.settings_rect();
         self.damage.rects.push(r);
@@ -233,16 +430,22 @@ impl Ui {
             self.close_settings();
             return;
         }
+        let page =
+            self.settings_view.as_ref().and_then(|v| v.page_hits.iter().find(|h| h.1.contains(x, y)).map(|h| h.0));
+        if let Some(p) = page {
+            return self.settings_page(p);
+        }
+        let rows = self.rows();
         let hit = self.settings_view.as_ref().and_then(|v| v.hits.iter().find(|h| h.2.contains(x, y)).copied());
         if let Some((row, choice, _)) = hit {
             self.commit_edit();
             if let Some(v) = &mut self.settings_view {
                 v.sel = row;
             }
-            if ROWS[row].choices().is_empty() {
+            if rows[row].choices().is_empty() {
                 self.settings_act(row);
             } else {
-                self.set_choice(ROWS[row], choice);
+                self.set_choice(rows[row], choice);
             }
         }
         self.damage.rects.push(r);
@@ -263,13 +466,46 @@ impl Ui {
         let hint = "Esc closes · saved at once";
         let hw = self.te.measure(ui, self.pf(11.5), hint);
         self.te.draw(cv, ui, self.pf(11.5), r.right() as f32 - pad - hw, title_y, hint, TEXT_4, hw + 2.0);
+        // Page tabs.
+        let mut page_hits = Vec::new();
+        let tab_y = r.y + self.px(58.0);
+        let mut tx = x0;
+        for (p, (name, _)) in PAGES.iter().enumerate() {
+            let on = p == view.page;
+            let w = self.te.measure(semi, self.pf(13.0), name);
+            let extra = if p == PAGE_AGENTS { self.pf(98.0) } else { 0.0 };
+            let tr = Rect::new(tx as i32 - self.px(10.0), tab_y, (w + extra) as i32 + self.px(20.0), self.px(32.0));
+            if on {
+                cv.fill_round(tr, self.pf(7.0), 0x2a3346);
+            }
+            let base = (tab_y as f32 + self.pf(21.0)).round();
+            let e = self.te.draw(cv, semi, self.pf(13.0), tx, base, name, if on { TEXT } else { TEXT_3 }, w + 2.0);
+            if p == PAGE_AGENTS {
+                let size = self.pf(9.5);
+                let label = "EXPERIMENTAL";
+                let pw = self.te.measure(semi, size, label) + self.pf(12.0);
+                let pr = Rect::new((e + self.pf(8.0)) as i32, tab_y + self.px(8.0), pw as i32, self.px(16.0));
+                cv.fill_round(pr, self.pf(8.0), TAG_BG);
+                let pb = (pr.y as f32 + self.pf(11.5)).round();
+                self.te.draw(cv, semi, size, pr.x as f32 + self.pf(6.0), pb, label, TAG_FG, pw);
+            }
+            page_hits.push((p, tr));
+            tx = tr.right() as f32 + self.pf(14.0);
+        }
+        let hint2 = "Ctrl+Tab switches pages";
+        let hw2 = self.te.measure(ui, self.pf(11.0), hint2);
+        let hb = (tab_y as f32 + self.pf(21.0)).round();
+        self.te.draw(cv, ui, self.pf(11.0), r.right() as f32 - pad - hw2, hb, hint2, TEXT_4, hw2 + 2.0);
+        cv.fill(Rect::new(r.x + self.px(12.0), tab_y + self.px(40.0), r.w - self.px(24.0), 1), BORDER_SOFT);
+        let rows = PAGES[view.page].1;
+        let fit = self.settings_rows_visible();
         let mut hits = Vec::new();
         let rh = self.px(54.0);
-        let top = r.y + self.px(64.0);
+        let top = r.y + self.px(108.0);
         let ctrl_x = r.x + (r.w as f32 * 0.44) as i32;
         let ctrl_w = r.right() - self.px(24.0) - ctrl_x;
-        for (i, row) in ROWS.iter().enumerate() {
-            let y = top + i as i32 * rh;
+        for (i, row) in rows.iter().enumerate().skip(view.scroll).take(fit) {
+            let y = top + (i - view.scroll) as i32 * rh;
             let rr = Rect::new(r.x + self.px(12.0), y, r.w - self.px(24.0), rh - self.px(4.0));
             if i == view.sel {
                 cv.fill_round(rr, self.pf(8.0), BG_SELECT_DIM);
@@ -298,8 +534,8 @@ impl Ui {
             let ctrl = Rect::new(ctrl_x, (cy - self.pf(15.0)) as i32, ctrl_w, self.px(30.0));
             let base = (cy + self.pf(4.5)).round();
             match *row {
-                Row::OpenFile | Row::CheckUpdates => {
-                    let label = if *row == Row::OpenFile { "Open settings.toml" } else { "Check for updates now" };
+                Row::OpenFile | Row::CheckUpdates | Row::AgentsFile => {
+                    let label = if *row == Row::CheckUpdates { "Check for updates now" } else { "Open settings.toml" };
                     let w = self.te.measure(semi, self.pf(12.5), label) + self.pf(28.0);
                     let b = Rect::new(ctrl.x, ctrl.y, w as i32, ctrl.h);
                     cv.round_border(b, self.pf(8.0), BORDER, BG_BAR);
@@ -377,8 +613,15 @@ impl Ui {
                 }
             }
         }
+        if rows.len() > fit {
+            // A thin scroll indicator on the right edge.
+            let track = Rect::new(r.right() - self.px(8.0), top, self.px(3.0), fit as i32 * rh);
+            let th = (track.h as f32 * fit as f32 / rows.len() as f32) as i32;
+            let ty2 = track.y + (track.h - th) * view.scroll as i32 / (rows.len() - fit).max(1) as i32;
+            cv.fill_round(Rect::new(track.x, ty2, track.w, th), self.pf(1.5), TEXT_4);
+        }
         cv.set_clip(old);
-        self.settings_view = Some(SettingsView { hits, ..view });
+        self.settings_view = Some(SettingsView { hits, page_hits, ..view });
     }
 }
 
@@ -394,7 +637,7 @@ fn open_settings_file() {
             }
             let _ = std::fs::write(
                 &path,
-                "# ffwd settings. ffwd keeps your comments when it changes a value.\n\n[ui]\n# layout = \"below\"   # or \"beside\"\n\n[update]\n# check = true\n# channel = \"auto\"   # \"stable\" or \"beta\"\n\n[repos]\n# roots = \"E:\\\\Development;D:\\\\Work\"\n\n[ai]\n# endpoint = \"http://localhost:11434/v1\"\n# model = \"qwen2.5-coder:14b\"\n",
+                "# ffwd settings. ffwd keeps your comments when it changes a value.\n\n[ui]\n# layout = \"below\"   # or \"beside\"\n\n[update]\n# check = true\n# channel = \"auto\"   # \"stable\" or \"beta\"\n\n[repos]\n# roots = \"E:\\\\Development;D:\\\\Work\"\n\n[ai]\n# endpoint = \"http://localhost:11434/v1\"\n# model = \"qwen2.5-coder:14b\"\n\n[agents]\n# EXPERIMENTAL. Every key: docs/AGENTS-EXPERIMENTAL.md\n# enabled = false\n# command = \"aider --yes-always --message-file {prompt_file}\"\n# sandbox = \"auto\"   # bwrap, wsl, macos, custom, none\n",
             );
         }
         #[cfg(windows)]

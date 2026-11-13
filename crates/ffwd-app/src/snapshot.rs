@@ -87,6 +87,12 @@ pub fn run(args: &Args, t0: Instant) -> i32 {
     if args.settings {
         ui.open_settings();
     }
+    if let Some(p) = args.settings_page {
+        ui.open_settings_page(p);
+    }
+    if args.agents_demo {
+        ui.snapshot_agents_demo();
+    }
     if let Some(q) = &args.picker {
         // Let the repository scan arrive (bounded wait).
         let until = Instant::now() + Duration::from_secs(5);
