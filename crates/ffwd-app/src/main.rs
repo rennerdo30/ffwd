@@ -8,6 +8,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod fmt;
+#[cfg(windows)]
+mod frame;
+mod icon;
 mod platform;
 mod snapshot;
 mod theme;
@@ -45,6 +48,14 @@ fn parse_args() -> Result<Args, String> {
         let mut val = |name: &str| it.next().ok_or_else(|| format!("{name} needs a value"));
         match arg.as_str() {
             "--snapshot" => a.snapshot = Some(PathBuf::from(val("--snapshot")?)),
+            // Writes the app icon as a PNG (for packaging), then exits.
+            "--icon-png" => {
+                let path = PathBuf::from(val("--icon-png")?);
+                let n: usize = it.next().and_then(|s| s.parse().ok()).unwrap_or(256);
+                let rgba = icon::mark_rgba(n);
+                snapshot::write_rgba_png(&path, &rgba, n, n)?;
+                std::process::exit(0);
+            }
             "--smoke" => a.smoke = true,
             "--size" => {
                 let v = val("--size")?;

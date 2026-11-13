@@ -3,7 +3,7 @@
 //! the UI recorded damage.
 
 use crate::platform;
-use crate::ui::{Key, Ui, load_fonts};
+use crate::ui::{Chrome, Key, Ui, WinAction, load_fonts};
 use crate::work::{self, Msg, Sink};
 use crate::{Args, trace};
 use ffwd_render::{Canvas, TextEngine};
@@ -15,13 +15,15 @@ use std::time::{Duration, Instant};
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::keyboard::{Key as WKey, ModifiersState, NamedKey};
 use winit::window::{Window, WindowId};
 
 pub enum UserEvent {
     Msg(Msg),
     SmokeTimeout,
+    /// The Windows frame changed the maximise button or window state.
+    Frame,
 }
 
 struct Gfx {
@@ -45,6 +47,8 @@ struct App {
     cursor: (i32, i32),
     exit_code: i32,
     smoke_reported: bool,
+    proxy: EventLoopProxy<UserEvent>,
+    title_sent: Option<crate::ui::TitleGeometry>,
 }
 
 pub fn run(args: &Args, t0: Instant) -> i32 {
@@ -96,6 +100,8 @@ pub fn run(args: &Args, t0: Instant) -> i32 {
         cursor: (0, 0),
         exit_code: 0,
         smoke_reported: false,
+        proxy: event_loop.create_proxy(),
+        title_sent: None,
     };
     if let Err(e) = event_loop.run_app(&mut app) {
         eprintln!("ffwd: event loop failed: {e}");
@@ -123,6 +129,18 @@ impl App {
         let force = buf.age() == 0;
         let mut cv = Canvas::new(&mut buf[..], w, h);
         let mut painted = ui.paint(&mut cv, force);
+        // The frame's hit-test follows the painted title row.
+        let geo = ui.title_geometry();
+        if self.title_sent.as_ref() != Some(&geo) {
+            #[cfg(windows)]
+            crate::frame::set_caption(crate::frame::Caption {
+                height: geo.height,
+                controls: geo.controls.clone(),
+                buttons_left: geo.buttons_left,
+                max_button: geo.max_button,
+            });
+            self.title_sent = Some(geo);
+        }
         if let Some((area, dy)) = painted.copy
             && !platform::screen_copy(gfx.hwnd, area, dy)
         {
@@ -243,6 +261,13 @@ impl ApplicationHandler<UserEvent> for App {
                 attrs = attrs.with_skip_taskbar(true).with_active(false);
             }
         }
+        #[cfg(target_os = "macos")]
+        {
+            // The top bar runs under the traffic lights (Chrome::MacInset).
+            use winit::platform::macos::WindowAttributesExtMacOS;
+            attrs = attrs.with_titlebar_transparent(true).with_fullsize_content_view(true).with_title_hidden(true);
+        }
+        attrs = attrs.with_window_icon(crate::icon::window_icon());
         let window = match el.create_window(attrs) {
             Ok(w) => Rc::new(w),
             Err(e) => {
@@ -269,6 +294,18 @@ impl ApplicationHandler<UserEvent> for App {
         };
         trace(self.t0, "surface created");
         platform::dark_title_bar(hwnd);
+        // Before reading the size: removing the caption grows the client area.
+        #[cfg(windows)]
+        let framed = {
+            let p = Mutex::new(self.proxy.clone());
+            crate::frame::install(hwnd, move || {
+                if let Ok(p) = p.lock() {
+                    let _ = p.send_event(UserEvent::Frame);
+                }
+            })
+        };
+        #[cfg(not(windows))]
+        let framed = false;
         trace(self.t0, "title bar themed");
         let Some((te, fonts)) = self.font_thread.take().and_then(|t| t.join().ok()).flatten() else {
             eprintln!("ffwd: no usable UI font found");
@@ -282,6 +319,11 @@ impl ApplicationHandler<UserEvent> for App {
         let mut ui =
             Ui::new(te, fonts, &self.repo, self.sink.clone(), self.size.0, self.size.1, window.scale_factor() as f32);
         ui.remote = platform::is_remote_session();
+        if ui.chrome == Chrome::Windows11 && !framed {
+            // Without the frame hook the system caption stays; no second set of buttons.
+            ui.chrome = Chrome::Native;
+            ui.resize(self.size.0, self.size.1, window.scale_factor() as f32);
+        }
         for m in self.pending.drain(..) {
             ui.on_msg(m);
         }
@@ -319,6 +361,15 @@ impl ApplicationHandler<UserEvent> for App {
                 }
                 None => self.pending.push(m),
             },
+            UserEvent::Frame => {
+                if let (Some(ui), Some(g)) = (&mut self.ui, &self.gfx) {
+                    #[cfg(windows)]
+                    let state = crate::frame::max_button_state();
+                    #[cfg(not(windows))]
+                    let state = (false, false);
+                    ui.set_frame_state(state, g.window.is_maximized());
+                }
+            }
             UserEvent::SmokeTimeout => {
                 eprintln!("ffwd: smoke timed out after 30 s");
                 self.exit_code = 3;
@@ -346,6 +397,8 @@ impl ApplicationHandler<UserEvent> for App {
                 if let (Some(ui), Some(g)) = (&mut self.ui, &self.gfx) {
                     ui.resize(new.0, new.1, g.window.scale_factor() as f32);
                     ui.set_remote(platform::is_remote_session());
+                    let max_state = ui.max_state;
+                    ui.set_frame_state(max_state, g.window.is_maximized());
                 }
             }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
@@ -360,14 +413,39 @@ impl ApplicationHandler<UserEvent> for App {
             }
             // RDP connects and disconnects resize and refocus the window, so the
             // session type is re-read on those events (no timer, no polling).
-            WindowEvent::Focused(true) => {
+            WindowEvent::Focused(focused) => {
                 if let Some(ui) = &mut self.ui {
-                    ui.set_remote(platform::is_remote_session());
+                    ui.set_active(focused);
+                    if focused {
+                        ui.set_remote(platform::is_remote_session());
+                    }
                 }
             }
             WindowEvent::ModifiersChanged(m) => self.mods = m.state(),
             WindowEvent::KeyboardInput { event, .. } => self.key(&event),
-            WindowEvent::CursorMoved { position, .. } => self.cursor = (position.x as i32, position.y as i32),
+            WindowEvent::CursorMoved { position, .. } => {
+                self.cursor = (position.x as i32, position.y as i32);
+                if let Some(ui) = &mut self.ui {
+                    ui.pointer(self.cursor.0, self.cursor.1);
+                }
+            }
+            WindowEvent::CursorLeft { .. } => {
+                if let Some(ui) = &mut self.ui {
+                    ui.pointer_left();
+                }
+            }
+            WindowEvent::MouseInput { state: ElementState::Released, button: MouseButton::Left, .. } => {
+                let (x, y) = self.cursor;
+                let action = self.ui.as_mut().and_then(|ui| {
+                    ui.release(x, y);
+                    ui.win_action.take()
+                });
+                match (action, &self.gfx) {
+                    (Some(WinAction::Minimize), Some(g)) => g.window.set_minimized(true),
+                    (Some(WinAction::Close), _) => el.exit(),
+                    _ => {}
+                }
+            }
             WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
                 let (x, y) = self.cursor;
                 if let Some(ui) = &mut self.ui {

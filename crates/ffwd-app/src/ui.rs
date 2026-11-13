@@ -88,6 +88,34 @@ pub struct Layout {
     pub scrollbar: Rect,
     pub details: Rect,
     pub row_h: i32,
+    /// Minimise, maximise and close, drawn by ffwd (Windows 11 frame).
+    pub caption: Rect,
+}
+
+/// How the window's title row is made.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Chrome {
+    /// The system draws the title bar (Linux: server-side decorations).
+    Native,
+    /// ffwd's top bar is the title row; ffwd draws the caption buttons.
+    Windows11,
+    /// The top bar runs under macOS's traffic lights, which keep their place.
+    MacInset,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum WinAction {
+    Minimize,
+    Close,
+}
+
+/// Title-row geometry for the platform frame, in physical pixels.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TitleGeometry {
+    pub height: i32,
+    pub controls: Vec<(i32, i32)>,
+    pub buttons_left: i32,
+    pub max_button: (i32, i32),
 }
 
 #[derive(Default)]
@@ -219,6 +247,16 @@ pub struct Ui {
     pub notice: Option<String>,
     pub stats: Stats,
     pub remote: bool,
+    pub chrome: Chrome,
+    cap_hover: Option<u8>,
+    cap_pressed: Option<u8>,
+    /// Hover and press of the maximise button, reported by the frame.
+    pub max_state: (bool, bool),
+    pub maximized: bool,
+    pub active: bool,
+    title_controls: Vec<(i32, i32)>,
+    search_rect: Rect,
+    pub win_action: Option<WinAction>,
     pub damage: Damage,
 }
 
@@ -269,6 +307,21 @@ impl Ui {
             notice: None,
             stats: Stats::default(),
             remote: false,
+            chrome: if cfg!(windows) {
+                Chrome::Windows11
+            } else if cfg!(target_os = "macos") {
+                Chrome::MacInset
+            } else {
+                Chrome::Native
+            },
+            cap_hover: None,
+            cap_pressed: None,
+            max_state: (false, false),
+            maximized: false,
+            active: true,
+            title_controls: Vec::new(),
+            search_rect: Rect::default(),
+            win_action: None,
             damage: Damage { full: true, ..Default::default() },
         };
         ui.rebuild_side();
@@ -309,6 +362,12 @@ impl Ui {
             scrollbar: Rect::new(list_x + list_w - sb_w, top_h + head_h, sb_w, mid_h - head_h),
             details: Rect::new(list_x + list_w, top_h, det_w, mid_h),
             row_h,
+            caption: if self.chrome == Chrome::Windows11 {
+                let cw = self.px(46.0) * 3;
+                Rect::new(wi - cw, 0, cw, top_h)
+            } else {
+                Rect::default()
+            },
         };
         self.top = self.top.min(self.max_top());
         self.damage.full = true;
@@ -679,6 +738,13 @@ impl Ui {
     }
 
     pub fn click(&mut self, x: i32, y: i32) {
+        if let Some(b) = self.caption_button_at(x, y) {
+            if b != 1 {
+                self.cap_pressed = Some(b);
+                self.damage.rects.push(self.lay.caption);
+            }
+            return;
+        }
         if self.palette.is_some() {
             self.close_palette();
             return;
@@ -719,7 +785,7 @@ impl Ui {
                 yy += h;
             }
         }
-        if self.lay.top.contains(x, y) {
+        if self.search_rect.contains(x, y) {
             self.open_palette();
         }
     }
@@ -940,7 +1006,10 @@ impl Ui {
         cv.fill(Rect::new(r.x, r.bottom() - 1, r.w, 1), BORDER);
         let cy = r.y as f32 + r.h as f32 / 2.0;
         // App mark: the logo's fast-forward chevrons, solid.
-        let mark = Rect::new(self.px(14.0), (cy - self.pf(13.0)) as i32, self.px(26.0), self.px(26.0));
+        // macOS keeps its traffic lights at the left of the bar.
+        let left = if self.chrome == Chrome::MacInset { self.pf(80.0) } else { self.pf(14.0) };
+        let mut controls = Vec::new();
+        let mark = Rect::new(left as i32, (cy - self.pf(13.0)) as i32, self.px(26.0), self.px(26.0));
         cv.fill_round(mark, self.pf(7.0), ACCENT);
         self.chevrons(cv, mark.x as f32 + self.pf(6.5), cy, self.pf(10.0), ACCENT_TEXT);
         let (ui, semi, mono) = (self.f.ui, self.f.semi, self.f.mono);
@@ -954,12 +1023,15 @@ impl Ui {
         let bw = self.te.measure(semi, self.pf(12.5), &branch) + self.pf(36.0);
         let pill = Rect::new(x as i32, (cy - self.pf(13.0)) as i32, bw as i32, self.px(26.0));
         cv.round_border(pill, self.pf(13.0), BORDER, BG_INPUT);
+        controls.push((pill.x, pill.right()));
         self.branch_icon(cv, pill.x as f32 + self.pf(14.0), cy, TEXT_2);
         self.te.draw(cv, semi, self.pf(12.5), pill.x as f32 + self.pf(25.0), base - self.pf(0.5), &branch, TEXT, bw);
         // Search / command field.
         let sw = self.px(460.0).min(r.w - self.px(760.0)).max(self.px(200.0));
         let search = Rect::new((r.w - sw) / 2, (cy - self.pf(15.0)) as i32, sw, self.px(30.0));
         cv.round_border(search, self.pf(8.0), BORDER, BG_INPUT);
+        controls.push((search.x, search.right()));
+        self.search_rect = search;
         let sx = search.x as f32 + self.pf(14.0);
         cv.ring(sx + self.pf(4.5), cy - self.pf(1.0), self.pf(5.0), self.pf(1.6), TEXT_3);
         cv.stroke(
@@ -981,15 +1053,130 @@ impl Ui {
         // Actions with ahead/behind from the current branch.
         let head = self.refs.refs.iter().find(|r| r.is_head);
         let (ahead, behind) = head.map_or((0, 0), |h| (h.ahead, h.behind));
-        let mut bx = r.right() as f32 - self.pf(14.0);
+        let right = if self.lay.caption.is_empty() { r.right() } else { self.lay.caption.x };
+        let mut bx = right as f32 - self.pf(12.0);
         let ai = self.button(cv, bx, cy, "AI", None, true);
         bx = ai - self.pf(8.0);
         let push = self.button(cv, bx, cy, "Push", (ahead > 0).then(|| format!("↑{ahead}")), false);
         bx = push - self.pf(8.0);
         let pull = self.button(cv, bx, cy, "Pull", (behind > 0).then(|| format!("↓{behind}")), false);
         bx = pull - self.pf(8.0);
-        let _ = self.button(cv, bx, cy, "Fetch", None, false);
+        let fetch = self.button(cv, bx, cy, "Fetch", None, false);
+        controls.push((fetch as i32, (right as f32 - self.pf(12.0)) as i32));
+        self.title_controls = controls;
         let _ = mono;
+        self.paint_caption(cv);
+    }
+
+    /// Minimise, maximise/restore and close, with Windows 11 metrics and
+    /// colours. Crisp 1 px glyphs drawn as pixel-aligned fills.
+    fn paint_caption(&mut self, cv: &mut Canvas) {
+        let r = self.lay.caption;
+        if r.is_empty() || cv.clip().intersect(r).is_empty() {
+            return;
+        }
+        let bw = r.w / 3;
+        let line = self.px(1.0).max(1);
+        let s = self.px(5.0);
+        for i in 0..3u8 {
+            let x = r.x + i as i32 * bw;
+            let b = Rect::new(x, r.y, if i == 2 { r.right() - x } else { bw }, r.h - 1);
+            let (hover, pressed) = if i == 1 {
+                self.max_state
+            } else {
+                (self.cap_hover == Some(i), self.cap_pressed == Some(i) && self.cap_hover == Some(i))
+            };
+            let idle = if self.active { TEXT } else { TEXT_3 };
+            let (fill, glyph) = match (i, hover, pressed) {
+                (2, true, true) => (0x9e2a1f, 0xffffff),
+                (2, true, false) => (0xc42b1c, 0xffffff),
+                (_, true, true) => (0x262a31, TEXT),
+                (_, true, false) => (0x1f232a, TEXT),
+                _ => (BG_BAR, idle),
+            };
+            cv.fill(b, fill);
+            let (cx, cy) = (b.x + b.w / 2, b.y + b.h / 2);
+            match i {
+                0 => cv.fill(Rect::new(cx - s, cy, 2 * s, line), glyph),
+                1 if self.maximized => {
+                    let k = self.px(2.0);
+                    // Back window: only its top and right edges show.
+                    cv.fill(Rect::new(cx - s + k, cy - s, 2 * s - k, line), glyph);
+                    cv.fill(Rect::new(cx + s - line, cy - s, line, 2 * s - k), glyph);
+                    let front = Rect::new(cx - s, cy - s + k, 2 * s - k, 2 * s - k);
+                    cv.fill(front, fill);
+                    cv.stroke_rect(front, glyph);
+                }
+                1 => cv.stroke_rect(Rect::new(cx - s, cy - s, 2 * s, 2 * s), glyph),
+                _ => {
+                    let (fx, fy, fs) = (cx as f32, cy as f32, s as f32);
+                    let w = self.pf(1.0).max(1.0);
+                    cv.stroke(&[(fx - fs, fy - fs), (fx + fs, fy + fs)], w, glyph);
+                    cv.stroke(&[(fx - fs, fy + fs), (fx + fs, fy - fs)], w, glyph);
+                }
+            }
+        }
+    }
+
+    fn caption_button_at(&self, x: i32, y: i32) -> Option<u8> {
+        let r = self.lay.caption;
+        if r.is_empty() || !r.contains(x, y) {
+            return None;
+        }
+        Some((((x - r.x) / (r.w / 3).max(1)) as u8).min(2))
+    }
+
+    /// Pointer moved in the client area (hover for minimise and close).
+    pub fn pointer(&mut self, x: i32, y: i32) {
+        let h = self.caption_button_at(x, y).filter(|&b| b != 1);
+        if h != self.cap_hover {
+            self.cap_hover = h;
+            self.damage.rects.push(self.lay.caption);
+        }
+    }
+
+    pub fn pointer_left(&mut self) {
+        if self.cap_hover.take().is_some() {
+            self.damage.rects.push(self.lay.caption);
+        }
+    }
+
+    /// Mouse button released: a caption button acts only if the press
+    /// started on it and the pointer is still over it (as on Windows).
+    pub fn release(&mut self, x: i32, y: i32) {
+        if let Some(b) = self.cap_pressed.take() {
+            if self.caption_button_at(x, y) == Some(b) {
+                self.win_action = Some(if b == 0 { WinAction::Minimize } else { WinAction::Close });
+            }
+            self.damage.rects.push(self.lay.caption);
+        }
+    }
+
+    /// The frame reported a change of the maximise button or window state.
+    pub fn set_frame_state(&mut self, max_state: (bool, bool), maximized: bool) {
+        if max_state != self.max_state || maximized != self.maximized {
+            self.max_state = max_state;
+            self.maximized = maximized;
+            self.damage.rects.push(self.lay.caption);
+        }
+    }
+
+    pub fn set_active(&mut self, active: bool) {
+        if active != self.active {
+            self.active = active;
+            self.damage.rects.push(self.lay.caption);
+        }
+    }
+
+    pub fn title_geometry(&self) -> TitleGeometry {
+        let c = self.lay.caption;
+        let bw = c.w / 3;
+        TitleGeometry {
+            height: self.lay.top.h,
+            controls: self.title_controls.clone(),
+            buttons_left: if c.is_empty() { i32::MAX } else { c.x },
+            max_button: (c.x + bw, c.x + 2 * bw),
+        }
     }
 
     /// Right-aligned button ending at `right`; returns its left edge.
@@ -1372,7 +1559,7 @@ impl Ui {
     }
 
     fn header_h(&self) -> i32 {
-        self.px(170.0)
+        self.px(190.0)
     }
 
     fn file_rows_visible(&self) -> usize {
@@ -1428,19 +1615,19 @@ impl Ui {
             }
             None => Vec::new(),
         };
-        let mut lines_left = 3;
-        for para in &body {
-            for line in wrap(&mut self.te, ui, s13, para, maxw) {
-                if lines_left == 0 {
-                    break;
-                }
-                self.te.draw(cv, ui, self.pf(13.0), x0, y + self.pf(2.0), &line, TEXT_2, maxw);
-                y += self.pf(19.0);
-                lines_left -= 1;
-            }
+        // The body gets the lines that fit above the author row; the last
+        // visible line ends in an ellipsis when more text follows.
+        let meta_y = d.y as f32 + self.pf(140.0);
+        let lh = self.pf(19.0);
+        let fit = ((meta_y - self.pf(30.0) - y) / lh).floor().max(0.0) as usize;
+        let lines: Vec<String> = body.iter().flat_map(|p| wrap(&mut self.te, ui, s13, p, maxw)).collect();
+        for (k, line) in lines.iter().take(fit).enumerate() {
+            let more = k + 1 == fit && lines.len() > fit;
+            let text = if more { format!("{line} …") } else { line.clone() };
+            self.te.draw(cv, ui, s13, x0, y + self.pf(2.0), &text, TEXT_2, maxw);
+            y += lh;
         }
         // Meta block.
-        let meta_y = d.y as f32 + self.pf(120.0);
         let av = self.pf(15.0);
         cv.fill_circle(x0 + av, meta_y, av, avatar(&c.email));
         let ini = fmt::initials(&c.author);

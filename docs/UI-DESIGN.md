@@ -36,6 +36,13 @@ The capture above is the real PoC UI. `ffwd --snapshot` rendered it offscreen fr
 - **The details pane has three layers that arrive at different times.** The header (subject, author, date, SHA, parents) paints in the same frame as the selection, from the history row. The body, the files and the diff fill in behind it. Placeholders are solid, still bars, never spinners.
 - **The status bar tells the truth:** what is loading, real measured timings, the session type (local or remote) and the renderer.
 
+## Window frame
+
+- **Windows 11:** the top bar is the title row, the way Explorer, Settings and Terminal look. ffwd draws minimise, maximise/restore and close with Windows 11 metrics (46 px wide, red close hover). The maximise button reports itself as `HTMAXBUTTON`, so hovering it opens Snap Layouts. The empty parts of the bar drag the window and double-click maximises; side, bottom and top resize edges stay native (`crates/ffwd-app/src/frame.rs`, the same approach as Ferrow).
+- **macOS:** a transparent, full-size title bar; the native traffic lights sit over the left of the bar, which leaves room for them.
+- **Linux:** server-side decorations from the desktop.
+- **Icon:** the window icon is drawn from the logo's geometry at startup; `ffwd --icon-png out.png 256` writes it as a PNG for packaging.
+
 ## Interaction (keyboard first)
 
 | Key | Action |

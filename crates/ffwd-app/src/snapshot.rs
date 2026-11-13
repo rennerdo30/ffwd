@@ -108,3 +108,12 @@ fn write_png(path: &std::path::Path, px: &[u32], w: usize, h: usize) -> Result<(
     }
     wr.write_image_data(&rgb).map_err(|e| e.to_string())
 }
+
+pub fn write_rgba_png(path: &std::path::Path, rgba: &[u8], w: usize, h: usize) -> Result<(), String> {
+    let file = std::fs::File::create(path).map_err(|e| e.to_string())?;
+    let mut enc = png::Encoder::new(std::io::BufWriter::new(file), w as u32, h as u32);
+    enc.set_color(png::ColorType::Rgba);
+    enc.set_depth(png::BitDepth::Eight);
+    let mut wr = enc.write_header().map_err(|e| e.to_string())?;
+    wr.write_image_data(rgba).map_err(|e| e.to_string())
+}

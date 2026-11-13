@@ -240,6 +240,41 @@ impl<'a> Canvas<'a> {
         }
     }
 
+    /// Anti-aliased filled triangle (any winding).
+    pub fn fill_triangle(&mut self, a: (f32, f32), b: (f32, f32), c: (f32, f32), color: u32) {
+        let area = (b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0);
+        if area.abs() < f32::EPSILON {
+            return;
+        }
+        let s = area.signum();
+        let edges = [(a, b), (b, c), (c, a)];
+        let bb = Rect::new(
+            a.0.min(b.0).min(c.0).floor() as i32 - 1,
+            a.1.min(b.1).min(c.1).floor() as i32 - 1,
+            (a.0.max(b.0).max(c.0) - a.0.min(b.0).min(c.0)).ceil() as i32 + 3,
+            (a.1.max(b.1).max(c.1) - a.1.min(b.1).min(c.1)).ceil() as i32 + 3,
+        )
+        .intersect(self.clip);
+        for y in bb.y..bb.bottom() {
+            let py = y as f32 + 0.5;
+            for x in bb.x..bb.right() {
+                let px = x as f32 + 0.5;
+                // Signed distance to the nearest edge, positive inside.
+                let d = edges
+                    .iter()
+                    .map(|&(p, q)| {
+                        let (ex, ey) = (q.0 - p.0, q.1 - p.1);
+                        s * (ex * (py - p.1) - ey * (px - p.0)) / (ex * ex + ey * ey).sqrt()
+                    })
+                    .fold(f32::MAX, f32::min);
+                let cov = (d + 0.5).clamp(0.0, 1.0);
+                if cov > 0.0 {
+                    self.put(x, y, color, (cov * 255.0) as u32);
+                }
+            }
+        }
+    }
+
     /// Cubic Bézier stroke, flattened to a short polyline.
     pub fn bezier(&mut self, p0: (f32, f32), p1: (f32, f32), p2: (f32, f32), p3: (f32, f32), width: f32, color: u32) {
         const N: usize = 12;
