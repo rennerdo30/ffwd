@@ -108,6 +108,20 @@ pub fn run(args: &Args, t0: Instant) -> i32 {
     if args.prompt {
         ui.snapshot_prompt();
     }
+    if args.diff_split {
+        ui.diff_split = true;
+    }
+    if let Some(n) = args.file {
+        ui.snapshot_file(n);
+        let until = Instant::now() + Duration::from_secs(10);
+        while let Ok((id, m)) = rx.recv_timeout(until.saturating_duration_since(Instant::now())) {
+            let diff = matches!(m, Msg::Diff { .. });
+            ui.on_tab_msg(id, m);
+            if diff && ui.r.diff.is_some() {
+                break;
+            }
+        }
+    }
     if let Some(q) = &args.find {
         ui.key(Key::Ctrl('f'));
         for c in q.chars() {

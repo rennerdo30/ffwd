@@ -25,6 +25,8 @@ pub enum Hot {
     Change(usize),
     /// An element of the find bar.
     Find(usize),
+    /// A control in the diff bar.
+    DiffBar(usize),
     /// A context menu item.
     Menu(usize),
     /// A dialog element.
@@ -95,6 +97,11 @@ impl Ui {
         if !self.r.changes_view && self.r.search.is_some() && self.lay.list_head.contains(x, y) {
             return self.search_hit_at(x, y).map(Hot::Find);
         }
+        if !self.r.changes_view
+            && let Some(i) = self.diff_bar_hit_at(x, y)
+        {
+            return Some(Hot::DiffBar(i));
+        }
         let b = self.lay.list_body;
         if b.contains(x, y) {
             let row = self.r.top + ((y - b.y) / self.lay.row_h.max(1)) as usize;
@@ -123,6 +130,7 @@ impl Ui {
             Hot::Agent(_) => self.agents_rect(),
             Hot::Menu(_) => self.menu_rect(),
             Hot::Find(_) => self.lay.list_head,
+            Hot::DiffBar(i) => self.diff_bar_hits.get(i).map_or(self.lay.details, |h| h.0.inset(-2, -2)),
             Hot::Dialog(_) => self.dialog_rect(),
             Hot::Change(i) => self.r.changes.hits.get(i).map_or(self.lay.list, |h| h.0.inset(-2, -2)),
         }

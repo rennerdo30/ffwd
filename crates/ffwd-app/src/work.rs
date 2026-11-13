@@ -342,6 +342,7 @@ enum Req {
         parents: Vec<Oid>,
         file: usize,
         change: Box<diff::FileChange>,
+        opts: diff::DiffOpts,
     },
     /// A changed file of the working tree or the index.
     ChangeDiff {
@@ -385,9 +386,10 @@ impl DetailWorker {
                         let result = diff::details(&git, id).map(Box::new).map_err(|e| e.to_string());
                         sink(Msg::Details { seq, result });
                     }
-                    Req::Diff { seq, id, parents, file, change } => {
-                        let result =
-                            diff::file_diff(&git, id, &parents, &change).map(Box::new).map_err(|e| e.to_string());
+                    Req::Diff { seq, id, parents, file, change, opts } => {
+                        let result = diff::file_diff_with(&git, id, &parents, &change, opts)
+                            .map(Box::new)
+                            .map_err(|e| e.to_string());
                         sink(Msg::Diff { seq, file, result });
                     }
                     Req::ChangeDiff { seq, entry, side } => {
@@ -410,10 +412,18 @@ impl DetailWorker {
         }
     }
 
-    pub fn diff(&self, seq: u64, id: Oid, parents: Vec<Oid>, file: usize, change: diff::FileChange) {
+    pub fn diff(
+        &self,
+        seq: u64,
+        id: Oid,
+        parents: Vec<Oid>,
+        file: usize,
+        change: diff::FileChange,
+        opts: diff::DiffOpts,
+    ) {
         let (m, cv) = &*self.slot;
         if let Ok(mut g) = m.lock() {
-            g.1 = Some(Req::Diff { seq, id, parents, file, change: Box::new(change) });
+            g.1 = Some(Req::Diff { seq, id, parents, file, change: Box::new(change), opts });
             cv.notify_one();
         }
     }

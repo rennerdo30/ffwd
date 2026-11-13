@@ -21,6 +21,8 @@ use sidebar::SideItem;
 mod agents_view;
 #[path = "ui_changes.rs"]
 mod changes_view;
+#[path = "ui_diff.rs"]
+mod diff_view;
 #[path = "ui_menu.rs"]
 mod menu;
 #[path = "ui_search.rs"]
@@ -436,6 +438,13 @@ pub struct Ui {
     /// A context menu and a dialog (ui_menu.rs).
     menu: Option<Menu>,
     dialog: Option<Dialog>,
+    /// Diff options (FF-41): side by side, context, whitespace.
+    pub diff_split: bool,
+    pub diff_opts: ffwd_core::diff::DiffOpts,
+    diff_bar_hits: Vec<(Rect, diff_view::DiffBar)>,
+    /// Line pairing and block-comment states of the shown diff.
+    #[allow(clippy::type_complexity)]
+    pairs_cache: Option<((usize, usize), std::rc::Rc<Vec<u32>>, std::rc::Rc<Vec<bool>>)>,
     /// The newest search; older search workers stop when it moves on.
     search_seq: Arc<std::sync::atomic::AtomicU64>,
     pub notice: Option<String>,
@@ -536,6 +545,10 @@ impl Ui {
             menu: None,
             dialog: None,
             search_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            diff_split: diff_view::opts_from(&settings).0,
+            diff_opts: diff_view::opts_from(&settings).1,
+            diff_bar_hits: Vec::new(),
+            pairs_cache: None,
             update_available: false,
             update_requested: false,
             update_check_requested: false,
@@ -1224,7 +1237,7 @@ impl Ui {
         if let (Some(w), Some(d)) = (&self.r.worker, &self.r.details)
             && let Some(f) = d.files.get(self.r.sel_file)
         {
-            w.diff(self.r.seq, d.id, d.parents.clone(), self.r.sel_file, f.clone());
+            w.diff(self.r.seq, d.id, d.parents.clone(), self.r.sel_file, f.clone(), self.diff_opts);
         }
     }
 
@@ -1242,6 +1255,11 @@ impl Ui {
             self.damage.scroll += d;
         }
         self.damage.rects.extend([self.lay.scrollbar, self.lay.status]);
+    }
+
+    /// Snapshot only: show file `i` of the selected commit.
+    pub fn snapshot_file(&mut self, i: usize) {
+        self.select_file(i);
     }
 
     fn select_file(&mut self, i: usize) {
@@ -1382,6 +1400,19 @@ impl Ui {
             (Focus::Diff, Key::Down) | (Focus::Diff, Key::Char('j')) => self.scroll_diff(1),
             (Focus::Diff, Key::PageUp) => self.scroll_diff(-20),
             (Focus::Diff, Key::PageDown) => self.scroll_diff(20),
+            (Focus::Diff, Key::Char('s')) => {
+                let h = if self.diff_split { diff_view::DiffBar::Unified } else { diff_view::DiffBar::Split };
+                self.apply_diff_bar(h);
+            }
+            (Focus::Diff, Key::Char('w')) => self.apply_diff_bar(diff_view::DiffBar::Whitespace),
+            (Focus::Diff, Key::Char('c')) => {
+                let next = match self.diff_opts.context {
+                    3 => 10,
+                    10 => u32::MAX,
+                    _ => 3,
+                };
+                self.apply_diff_bar(diff_view::DiffBar::Context(next));
+            }
             (_, Key::Esc) => {
                 if self.focus != Focus::List {
                     self.focus = Focus::List;
@@ -1404,7 +1435,7 @@ impl Ui {
     }
 
     fn scroll_diff(&mut self, d: i64) {
-        let n = self.r.diff.as_ref().map_or(0, |d| d.lines.len());
+        let n = self.diff_row_count();
         let top = (self.r.diff_top as i64 + d).clamp(0, n.saturating_sub(1) as i64) as usize;
         if top != self.r.diff_top {
             self.r.diff_top = top;
@@ -1492,6 +1523,9 @@ impl Ui {
             return;
         }
         if !self.r.changes_view && self.r.search.is_some() && self.search_click(x, y) {
+            return;
+        }
+        if !self.r.changes_view && self.diff_bar_click(x, y) {
             return;
         }
         if self.r.changes_view && self.changes_click(x, y) {
@@ -2831,12 +2865,19 @@ impl Ui {
             if focus { ACCENT } else { TEXT },
             r.w as f32 - self.pf(160.0),
         );
-        let hint = if diff.truncated { "first 20,000 lines" } else { "unified · first parent" };
-        let hw = self.te.measure(ui, self.pf(11.0), hint);
-        self.te.draw(cv, ui, self.pf(11.0), r.right() as f32 - hw - pad, base, hint, TEXT_4, hw + 2.0);
+        let left = self.paint_diff_bar_controls(cv, bar);
+        if diff.truncated {
+            let hint = "first 20,000 lines";
+            let hw = self.te.measure(ui, self.pf(11.0), hint);
+            self.te.draw(cv, ui, self.pf(11.0), left - hw - pad, base, hint, MOD, hw + 2.0);
+        }
         let body = Rect::new(r.x + 1, bar.bottom(), r.w - 1, r.bottom() - bar.bottom());
         let top = self.r.diff_top;
-        self.paint_diff_body(cv, body, &diff, top, None, 0);
+        if self.diff_split && !diff.binary {
+            self.paint_diff_split(cv, body, &diff, top);
+        } else {
+            self.paint_diff_body(cv, body, &diff, top, None, 0);
+        }
         let _ = ui;
     }
 
@@ -2876,6 +2917,8 @@ impl Ui {
         let fs = self.pf(12.0);
         let old_clip = cv.clip();
         let rows = (body.h / lh + 1) as usize;
+        let (pairs, blocks) = self.diff_meta(diff);
+        let lang = crate::highlight::lang_for(&diff.path);
         for (k, line) in diff.lines.iter().enumerate().skip(top).take(rows).map(|(i, l)| (i - top, l)) {
             let y = body.y + k as i32 * lh;
             let row = Rect::new(body.x, y, body.w, lh);
@@ -2941,7 +2984,13 @@ impl Ui {
                 self.te.draw(cv, mono, fs, tx, lb, mark, if line.kind == LineKind::Add { ADD } else { DEL }, 20.0);
             }
             let text = line.text.replace('\t', "    ");
-            self.te.draw(cv, mono, fs, tx + self.pf(14.0), lb, &text, fg, (body.right() as f32) - tx - self.pf(24.0));
+            let i = top + k;
+            // Word ranges are byte offsets of the raw text: skip them on
+            // lines whose tabs were widened.
+            let word = Self::word_range(diff, &pairs, i).filter(|_| !line.text.contains('\t'));
+            let st = blocks.get(i).copied().unwrap_or(false);
+            let maxw = (body.right() as f32) - tx - self.pf(24.0);
+            self.draw_code(cv, tx + self.pf(14.0), lb, row, &text, fg, maxw, lang, st, word);
         }
         let _ = (ui, semi);
         buttons

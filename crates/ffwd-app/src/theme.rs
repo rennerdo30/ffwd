@@ -62,6 +62,16 @@ pub const HUNK_BG: u32 = 0x24272e;
 pub const HUNK_TEXT: u32 = 0x98aacb;
 pub const HUNK_BORDER: u32 = 0x34405a;
 pub const MOD: u32 = 0xd9b25a;
+/// The changed words inside a changed line (word highlights).
+pub const ADD_WORD: u32 = 0x305038;
+pub const DEL_WORD: u32 = 0x5a323a;
+/// Syntax colours: muted, readable on the plain, added and deleted
+/// backgrounds alike.
+pub const SYN_KEYWORD: u32 = 0xd2a0dc;
+pub const SYN_TYPE: u32 = 0x8cbde6;
+pub const SYN_STRING: u32 = 0xa8d49a;
+pub const SYN_NUMBER: u32 = 0xe9b870;
+pub const SYN_COMMENT: u32 = 0x86837c;
 pub const REN: u32 = 0x92b2e2;
 
 pub const LOCAL_BG: u32 = 0x243127;

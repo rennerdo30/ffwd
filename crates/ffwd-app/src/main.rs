@@ -10,6 +10,7 @@
 mod fmt;
 #[cfg(windows)]
 mod frame;
+mod highlight;
 mod icon;
 mod platform;
 mod settings;
@@ -61,6 +62,10 @@ pub struct Args {
     pub prompt: bool,
     /// Snapshot with the find bar searching messages for this text.
     pub find: Option<String>,
+    /// Snapshot with the diff side by side.
+    pub diff_split: bool,
+    /// Snapshot with this file of the selected commit shown.
+    pub file: Option<usize>,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -86,6 +91,8 @@ fn parse_args() -> Result<Args, String> {
         menu: false,
         prompt: false,
         find: None,
+        diff_split: false,
+        file: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -123,6 +130,8 @@ fn parse_args() -> Result<Args, String> {
             "--menu" => a.menu = true,
             "--prompt" => a.prompt = true,
             "--find" => a.find = Some(val("--find")?),
+            "--diff-split" => a.diff_split = true,
+            "--file" => a.file = Some(val("--file")?.parse().map_err(|_| "bad file index")?),
             "--hover" => {
                 let v = val("--hover")?;
                 let (x, y) = v.split_once(',').ok_or("--hover is X,Y")?;

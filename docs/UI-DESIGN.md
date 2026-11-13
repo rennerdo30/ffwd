@@ -78,6 +78,16 @@ The capture above is the real PoC UI. `ffwd --snapshot` rendered it offscreen fr
   - a tab shows an amber ring while its repository has uncommitted changes;
   - every Git call runs on a worker.
 
+## Diff viewer (FF-41)
+
+- **Diff bar** of a commit's file: **Unified** or **Side by side**, the context (**3 lines**, **10 lines**, **Whole file**) and **Whitespace shown** or **ignored**. The choices are remembered (`[diff]` in settings.toml).
+  - In the diff, `s` switches the layout, `c` cycles the context and `w` toggles whitespace.
+  - Local Changes keeps Git's own patch (3 lines, whitespace shown), so that hunk and line staging always apply exactly.
+- **Syntax colours:** about 25 language families by file extension: keywords, type names, strings, numbers and comments, including block comments across lines. The colours are muted and stay readable on the added and deleted backgrounds.
+- **Word highlights:** in a changed line paired with the line it replaces, the changed part gets a stronger background. A line that changed for the most part gets none.
+- **Side by side:** each deletion sits next to the addition that replaces it. Lines with no partner leave the other side empty.
+- **Speed:** only visible lines are tokenized; the pairing and comment state are computed once per diff.
+
 ## Find bar (FF-34)
 
 `Ctrl+F` (or *Search commits…* in `Ctrl+K`) turns the list header into a find bar.

@@ -148,10 +148,10 @@
 | Feature | ffwd | Notes |
 |---|---|---|
 | Unified diff | **Built** | |
-| Side-by-side diff | M1 | |
-| Syntax highlighting | M1 | |
-| Token and inline highlights | M1 | |
-| Ignore whitespace, show the entire file, context size dropdown | M1 | |
+| Side-by-side diff | **Built** | |
+| Syntax highlighting | **Built** | Built-in tokenizer, about 25 language families |
+| Token and inline highlights | **Built** | Word highlights within paired lines |
+| Ignore whitespace, show the entire file, context size dropdown | **Built** | 3, 10 or the whole file |
 | Show whitespace characters, `-`/`+` marks for colour blindness, word wrap, tab width, font size | M1 | |
 | Minimap or change marks on the scrollbar; next and previous change (`Ctrl+Up/Down`) | M1 | The selection mark is built |
 | Reveal the line in an editor | M1 | |

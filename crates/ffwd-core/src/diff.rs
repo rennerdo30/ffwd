@@ -135,10 +135,40 @@ pub fn parse_raw_numstat(b: &[u8]) -> (Vec<FileChange>, bool) {
     (files, truncated)
 }
 
+/// How a commit's diff is made (the diff bar's options).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DiffOpts {
+    /// Lines of context around each change; `u32::MAX` is the whole file.
+    pub context: u32,
+    /// `-w`: changes in whitespace only are not shown.
+    pub ignore_whitespace: bool,
+}
+
+impl Default for DiffOpts {
+    fn default() -> Self {
+        DiffOpts { context: 3, ignore_whitespace: false }
+    }
+}
+
 pub fn file_diff(git: &Git, id: Oid, parents: &[Oid], file: &FileChange) -> Result<FileDiff, GitError> {
+    file_diff_with(git, id, parents, file, DiffOpts::default())
+}
+
+pub fn file_diff_with(
+    git: &Git,
+    id: Oid,
+    parents: &[Oid],
+    file: &FileChange,
+    opts: DiffOpts,
+) -> Result<FileDiff, GitError> {
     let ids = id.to_string();
     let base = base_args(parents);
-    let mut args: Vec<&str> = vec!["diff-tree", "-p", "-M", "--no-color", "--no-ext-diff", "--no-commit-id", "-U3"];
+    // The whole file: more context than any file has lines.
+    let ctx = format!("-U{}", opts.context.min(1_000_000));
+    let mut args: Vec<&str> = vec!["diff-tree", "-p", "-M", "--no-color", "--no-ext-diff", "--no-commit-id", &ctx];
+    if opts.ignore_whitespace {
+        args.push("-w");
+    }
     args.extend(base.iter().map(|s| s.as_str()));
     args.push(&ids);
     args.push("--");
@@ -205,6 +235,44 @@ pub fn parse_patch(path: &str, b: &[u8]) -> FileDiff {
     d
 }
 
+/// For each line, the line it replaces or is replaced by: within a run of
+/// deleted lines followed by added lines, the k-th deletion pairs with the
+/// k-th addition. `u32::MAX` means no partner. Used for word highlights
+/// and for the side-by-side rows.
+pub fn pair_lines(d: &FileDiff) -> Vec<u32> {
+    let mut out = vec![u32::MAX; d.lines.len()];
+    let mut i = 0;
+    while i < d.lines.len() {
+        if d.lines[i].kind != LineKind::Del {
+            i += 1;
+            continue;
+        }
+        let del0 = i;
+        while i < d.lines.len() && d.lines[i].kind == LineKind::Del {
+            i += 1;
+        }
+        let add0 = i;
+        while i < d.lines.len() && d.lines[i].kind == LineKind::Add {
+            i += 1;
+        }
+        for k in 0..(add0 - del0).min(i - add0) {
+            out[del0 + k] = (add0 + k) as u32;
+            out[add0 + k] = (del0 + k) as u32;
+        }
+    }
+    out
+}
+
+/// The changed part of `a` against `b`, as a byte range of `a`: what is
+/// left after the common prefix and suffix (on character boundaries).
+pub fn changed_range(a: &str, b: &str) -> (usize, usize) {
+    let pre = a.chars().zip(b.chars()).take_while(|(x, y)| x == y).map(|(x, _)| x.len_utf8()).sum::<usize>();
+    let (ra, rb) = (&a[pre..], &b[pre.min(b.len())..]);
+    let suf =
+        ra.chars().rev().zip(rb.chars().rev()).take_while(|(x, y)| x == y).map(|(x, _)| x.len_utf8()).sum::<usize>();
+    (pre, a.len() - suf.min(ra.len()))
+}
+
 fn clip(b: &[u8]) -> Box<str> {
     let s = String::from_utf8_lossy(b);
     if s.chars().count() > MAX_LINE_CHARS { s.chars().take(MAX_LINE_CHARS).collect() } else { s.into() }
@@ -242,6 +310,90 @@ mod tests {
         assert_eq!(f[1].old_path.as_deref(), Some("old.rs"));
         assert_eq!(&*f[1].path, "new.rs");
         assert_eq!(f[1].added, None);
+    }
+
+    /// The diff bar's options reach git: whitespace-only changes vanish
+    /// with `ignore_whitespace`, and "whole file" is one hunk.
+    #[test]
+    fn diff_options() {
+        let dir = std::env::temp_dir().join(format!("ffwd-diffopts-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = Git { root: dir.clone() };
+        for a in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.name", "t"],
+            &["config", "user.email", "t@example.invalid"],
+            &["config", "core.autocrlf", "false"],
+        ] {
+            g.output(a).unwrap();
+        }
+        let base: Vec<String> = (0..40).map(|i| format!("line {i}")).collect();
+        std::fs::write(
+            dir.join("f.txt"),
+            base.join(
+                "
+",
+            ) + "
+",
+        )
+        .unwrap();
+        g.output(&["add", "."]).unwrap();
+        g.output(&["commit", "-q", "-m", "a"]).unwrap();
+        let mut next = base.clone();
+        next[2] = "line  2".into(); // whitespace only
+        next[30] = "line thirty".into();
+        std::fs::write(
+            dir.join("f.txt"),
+            next.join(
+                "
+",
+            ) + "
+",
+        )
+        .unwrap();
+        g.output(&["commit", "-qam", "b"]).unwrap();
+        let id = Oid::from_hex(g.output(&["rev-parse", "HEAD"]).unwrap().trim_ascii()).unwrap();
+        let parent = Oid::from_hex(g.output(&["rev-parse", "HEAD~1"]).unwrap().trim_ascii()).unwrap();
+        let file = FileChange { status: b'M', path: "f.txt".into(), old_path: None, added: None, removed: None };
+        let hunks = |o: DiffOpts| {
+            file_diff_with(&g, id, &[parent], &file, o)
+                .unwrap()
+                .lines
+                .iter()
+                .filter(|l| l.kind == LineKind::Hunk)
+                .count()
+        };
+        assert_eq!(hunks(DiffOpts::default()), 2);
+        assert_eq!(hunks(DiffOpts { ignore_whitespace: true, ..Default::default() }), 1);
+        let whole =
+            file_diff_with(&g, id, &[parent], &file, DiffOpts { context: u32::MAX, ignore_whitespace: false }).unwrap();
+        assert_eq!(whole.lines.iter().filter(|l| l.kind == LineKind::Hunk).count(), 1);
+        assert_eq!(whole.lines.iter().filter(|l| l.kind == LineKind::Context).count(), 38);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pairs_and_changed_ranges() {
+        let p = b"@@ -1,4 +1,4 @@
+ ctx
+-let a = 1;
+-let b = 2;
++let a = 10;
+ ctx
++new
+";
+        let d = parse_patch("x", p);
+        // Lines: hunk, ctx, del, del, add, ctx, add.
+        let pairs = pair_lines(&d);
+        assert_eq!(pairs[2], 4);
+        assert_eq!(pairs[4], 2);
+        assert_eq!(pairs[3], u32::MAX, "a deletion with no addition left");
+        assert_eq!(pairs[6], u32::MAX, "an addition after context pairs with nothing");
+        assert_eq!(changed_range("let a = 1;", "let a = 10;"), (9, 9), "pure insertion: an empty range");
+        assert_eq!(changed_range("let a = 10;", "let a = 1;"), (9, 10));
+        assert_eq!(changed_range("äbc", "äxc"), ("ä".len(), "äb".len()));
+        assert_eq!(changed_range("same", "same"), (4, 4));
     }
 
     #[test]
