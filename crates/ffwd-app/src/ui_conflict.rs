@@ -531,7 +531,7 @@ impl Ui {
                 }
                 Row::Gap(n) => {
                     cv.fill(rr, BG_SIDEBAR);
-                    let t = format!("⋯ {n} unchanged lines");
+                    let t = format!("… {n} unchanged lines");
                     self.te.draw(cv, ui, self.pf(11.5), tx, lb, &t, TEXT_4, body.w as f32);
                 }
                 Row::Head(k) => {

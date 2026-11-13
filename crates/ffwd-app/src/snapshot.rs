@@ -173,6 +173,9 @@ pub fn run(args: &Args, t0: Instant) -> i32 {
         }
         ui.snapshot_rebase_demo();
     }
+    if args.diff_ws {
+        ui.diff_show_ws = true;
+    }
     if args.diff_split {
         ui.diff_split = true;
     }

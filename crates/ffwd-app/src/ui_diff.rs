@@ -3,6 +3,7 @@
 //! Only the lines on screen are tokenized; the line pairing is computed
 //! once per diff and cached.
 
+use super::menu::{MenuAct, MenuItem};
 use super::*;
 use crate::highlight::{self, Kind, Lang};
 use ffwd_core::diff::DiffOpts;
@@ -13,6 +14,18 @@ pub enum DiffBar {
     Split,
     Context(u32),
     Whitespace,
+    /// The view menu (`…`): whitespace characters, tab width.
+    More,
+}
+
+/// The tab widths the view menu offers.
+pub const TAB_WIDTHS: [u8; 3] = [2, 4, 8];
+
+/// Whether whitespace characters are shown, and the tab width.
+pub fn view_from(settings: &crate::settings::Settings) -> (bool, u8) {
+    let ws = settings.get("diff.show_whitespace") == Some("true");
+    let tab = settings.get("diff.tab_width").and_then(|t| t.parse::<u8>().ok()).filter(|t| (1..=16).contains(t));
+    (ws, tab.unwrap_or(4))
 }
 
 /// The context sizes the bar offers; `u32::MAX` is the whole file.
@@ -199,25 +212,19 @@ impl Ui {
                     };
                     self.te.draw(cv, mono, self.pf(11.0), x0 as f32 + num_w - w - self.pf(6.0), lb, &s, nc, num_w);
                 }
-                let text = super::diff_find::shown_text(&line.text).into_owned();
+                let text = super::diff_find::shown_text(&line.text, self.diff_tab).into_owned();
                 let mut marks: Vec<_> =
                     Self::word_range(diff, &pairs, i).filter(|_| !line.text.contains('\t')).into_iter().collect();
                 marks.extend(self.diff_find_marks(i, &text));
                 let tx = x0 as f32 + num_w + self.pf(8.0);
                 let st = blocks.get(i).copied().unwrap_or(false);
                 let old = cv.set_clip(clip.intersect(cell));
-                self.draw_code(
-                    cv,
-                    tx,
-                    lb,
-                    cell,
-                    &text,
-                    fg,
-                    (cell.right() as f32) - tx - self.pf(8.0),
-                    lang,
-                    st,
-                    &marks,
-                );
+                let maxw = (cell.right() as f32) - tx - self.pf(8.0);
+                self.draw_code(cv, tx, lb, cell, &text, fg, maxw, lang, st, &marks);
+                if self.diff_show_ws {
+                    let raw = line.text.clone();
+                    self.draw_whitespace(cv, tx, lb, &raw, maxw);
+                }
                 cv.set_clip(old);
             }
         }
@@ -306,6 +313,8 @@ impl Ui {
             hits.push((r, hit));
             *x = r.x - ui_.px(2.0);
         };
+        seg(self, cv, &mut x, "…", false, DiffBar::More, &mut hits);
+        x -= self.px(4.0);
         let ws = self.diff_opts.ignore_whitespace;
         seg(
             self,
@@ -336,13 +345,84 @@ impl Ui {
 
     pub(super) fn diff_bar_click(&mut self, x: i32, y: i32) -> bool {
         let Some(i) = self.diff_bar_hit_at(x, y) else { return false };
-        let h = self.diff_bar_hits[i].1;
+        let (r, h) = self.diff_bar_hits[i];
+        if h == DiffBar::More {
+            let items = self.diff_view_menu();
+            self.open_menu(r.x, r.bottom(), items);
+            return true;
+        }
         self.apply_diff_bar(h);
         true
     }
 
+    /// Shows or hides whitespace characters, or sets the tab width.
+    pub(super) fn set_diff_view(&mut self, show_ws: Option<bool>, tab: Option<u8>) {
+        if let Some(on) = show_ws {
+            self.diff_show_ws = on;
+            self.settings.set_string("diff.show_whitespace", if on { "true" } else { "false" });
+        }
+        if let Some(t) = tab {
+            self.diff_tab = t as usize;
+            self.settings.set_string("diff.tab_width", &t.to_string());
+            // Match positions move with the tab stops.
+            self.diff_find_on_new_diff();
+        }
+        self.damage.rects.push(self.diff_rect());
+    }
+
+    /// Draws `·` for spaces and `→` for tabs over a line painted from `x`
+    /// (its raw text, tabs at stops of `diff_tab`), dimmed.
+    pub(super) fn draw_whitespace(&mut self, cv: &mut Canvas, x: f32, base: f32, raw: &str, maxw: f32) {
+        if !raw.contains([' ', '\t']) {
+            return;
+        }
+        let mono = self.f.mono;
+        let fs = self.pf(12.0);
+        let sp = self.te.measure(mono, fs, " ");
+        let tab = self.diff_tab.max(1);
+        let end = x + maxw;
+        let (mut pen, mut col, mut run) = (x, 0usize, 0usize);
+        let mut iter = raw.char_indices().peekable();
+        while let Some((i, c)) = iter.next() {
+            if c != ' ' && c != '\t' {
+                col += 1;
+                // A run of other characters is measured at its end.
+                if iter.peek().is_none_or(|&(_, n)| n == ' ' || n == '\t') {
+                    let stop = iter.peek().map_or(raw.len(), |&(j, _)| j);
+                    pen += self.te.measure(mono, fs, &raw[run..stop]);
+                }
+                continue;
+            }
+            if pen >= end {
+                break;
+            }
+            let n = if c == '\t' { tab - col % tab } else { 1 };
+            let mark = if c == '\t' { "→" } else { "·" };
+            let w = self.te.measure(mono, fs, mark);
+            let at = if c == '\t' { pen + self.pf(1.0) } else { pen + (sp - w) / 2.0 };
+            self.te.draw(cv, mono, fs, at, base, mark, TEXT_4, end - at);
+            pen += sp * n as f32;
+            col += n;
+            run = i + c.len_utf8();
+        }
+    }
+
+    /// The diff's view menu (the bar's `…`).
+    pub(super) fn diff_view_menu(&self) -> Vec<MenuItem> {
+        let mark = |on: bool, t: &str| if on { format!("✓ {t}") } else { t.to_string() };
+        let item = |label: String, act: MenuAct| MenuItem { label, act: Some(act), danger: false };
+        let mut v =
+            vec![item(mark(self.diff_show_ws, "Show whitespace characters"), MenuAct::DiffShowWs(!self.diff_show_ws))];
+        v.push(MenuItem { label: String::new(), act: None, danger: false });
+        for t in TAB_WIDTHS {
+            v.push(item(mark(self.diff_tab == t as usize, &format!("Tab width {t}")), MenuAct::DiffTab(t)));
+        }
+        v
+    }
+
     pub(super) fn apply_diff_bar(&mut self, h: DiffBar) {
         match h {
+            DiffBar::More => {}
             DiffBar::Unified | DiffBar::Split => {
                 self.diff_split = h == DiffBar::Split;
                 self.r.diff_top = 0;

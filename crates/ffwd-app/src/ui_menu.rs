@@ -26,6 +26,9 @@ pub enum MenuAct {
     OpenTerminal(PathBuf),
     /// Open a web page (the hosting site's page of a commit).
     OpenUrl(String),
+    /// Diff view (FF-41): whitespace characters on or off, tab width.
+    DiffShowWs(bool),
+    DiffTab(u8),
     /// A tab's colour (FF-44).
     TabColor(usize, Option<u8>),
     /// Sort the sidebar's branches by most recent commit (else by name).
@@ -524,6 +527,8 @@ impl Ui {
             Some(MenuAct::OpenFolder(p)) => crate::platform::open_folder(p),
             Some(MenuAct::OpenTerminal(p)) => crate::platform::open_terminal(p),
             Some(MenuAct::OpenUrl(u)) => crate::platform::open_url(u),
+            Some(MenuAct::DiffShowWs(on)) => self.set_diff_view(Some(on), None),
+            Some(MenuAct::DiffTab(t)) => self.set_diff_view(None, Some(t)),
             Some(MenuAct::TabColor(i, c)) => self.set_tab_color(i, c),
             Some(MenuAct::BranchOrder(recent)) => {
                 self.settings.set_string("sidebar.branch_order", if recent { "recent" } else { "name" });

@@ -230,7 +230,7 @@ The capture above is the real PoC UI. `ffwd --snapshot` rendered it offscreen fr
 
 ## Diff viewer (FF-41)
 
-- **Diff bar** of a commit's file: **Unified** or **Side by side**, the context (**3 lines**, **10 lines**, **Whole file**) and **Whitespace shown** or **ignored**. The choices are remembered (`[diff]` in settings.toml).
+- **Diff bar** of a commit's file: **Unified** or **Side by side**, the context (**3 lines**, **10 lines**, **Whole file**) and **Whitespace shown** or **ignored**. Its **…** menu shows whitespace characters (`·` for a space, `→` for a tab, dimmed) and sets the tab width (2, 4 or 8; tabs go to the next stop). The choices are remembered (`[diff]` in settings.toml).
   - In the diff, `s` switches the layout, `c` cycles the context and `w` toggles whitespace.
   - Local Changes keeps Git's own patch (3 lines, whitespace shown), so that hunk and line staging always apply exactly.
 - **Syntax colours:** about 25 language families by file extension: keywords, type names, strings, numbers and comments, including block comments across lines. The colours are muted and stay readable on the added and deleted backgrounds.

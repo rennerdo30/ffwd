@@ -33,9 +33,25 @@ pub(super) fn occurrences(hay: &str, needle: &str) -> Vec<usize> {
     hay.to_ascii_lowercase().match_indices(needle).map(|(i, _)| i).collect()
 }
 
-/// A diff line as painted: tabs widened to four spaces.
-pub(super) fn shown_text(t: &str) -> std::borrow::Cow<'_, str> {
-    if t.contains('\t') { t.replace('\t', "    ").into() } else { t.into() }
+/// A diff line as painted: tabs widened to the next stop of `tab` columns.
+pub(super) fn shown_text(t: &str, tab: usize) -> std::borrow::Cow<'_, str> {
+    if !t.contains('\t') {
+        return t.into();
+    }
+    let tab = tab.max(1);
+    let mut out = String::with_capacity(t.len() + 8);
+    let mut col = 0usize;
+    for c in t.chars() {
+        if c == '\t' {
+            let n = tab - col % tab;
+            out.extend(std::iter::repeat_n(' ', n));
+            col += n;
+        } else {
+            out.push(c);
+            col += 1;
+        }
+    }
+    out.into()
 }
 
 fn searchable(k: LineKind) -> bool {
@@ -43,8 +59,17 @@ fn searchable(k: LineKind) -> bool {
 }
 
 impl Ui {
+    /// Gives the diff the keyboard; the old focus's colours repaint.
+    fn focus_diff(&mut self) {
+        if self.focus != Focus::Diff {
+            self.focus = Focus::Diff;
+            self.damage.rects.extend([self.lay.details, self.lay.side]);
+            self.damage.rows.push(self.r.sel);
+        }
+    }
+
     pub(super) fn open_diff_find(&mut self) {
-        self.focus = Focus::Diff;
+        self.focus_diff();
         match &mut self.diff_find {
             Some(f) => {
                 f.typing = true;
@@ -83,9 +108,10 @@ impl Ui {
         f.key = key;
         f.hits.clear();
         f.cur = 0;
+        let tab = self.diff_tab;
         if let Some(d) = diff {
             for (i, l) in d.lines.iter().enumerate().filter(|(_, l)| searchable(l.kind)) {
-                let n = occurrences(&shown_text(&l.text), &q).len();
+                let n = occurrences(&shown_text(&l.text, tab), &q).len();
                 f.hits.extend((0..n as u32).map(|k| (i as u32, k)));
             }
         }
@@ -263,7 +289,7 @@ impl Ui {
             return false;
         }
         f.typing = true;
-        self.focus = Focus::Diff;
+        self.focus_diff();
         self.damage.rects.push(self.diff_rect());
         true
     }
@@ -279,5 +305,9 @@ mod tests {
         assert_eq!(occurrences("ä foo", "foo"), vec![3], "byte offsets past multi-byte text");
         assert_eq!(occurrences("aaaa", "aa"), vec![0, 2], "not overlapping");
         assert!(occurrences("abc", "").is_empty());
+        assert_eq!(shown_text("a\tb", 4), "a   b", "to the next stop");
+        assert_eq!(shown_text("\tx", 2), "  x");
+        assert_eq!(shown_text("abcd\t", 4), "abcd    ");
+        assert_eq!(shown_text("no tabs", 8), "no tabs");
     }
 }

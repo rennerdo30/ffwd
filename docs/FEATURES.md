@@ -152,7 +152,7 @@
 | Syntax highlighting | **Built** | Built-in tokenizer, about 25 language families |
 | Token and inline highlights | **Built** | Word highlights within paired lines |
 | Ignore whitespace, show the entire file, context size dropdown | **Built** | 3, 10 or the whole file |
-| Show whitespace characters, `-`/`+` marks for colour blindness, word wrap, tab width, font size | M1 | |
+| Show whitespace characters, `-`/`+` marks for colour blindness, word wrap, tab width, font size | Partial | Whitespace characters and tab width (the diff bar's **…** menu); `+`/`−` marks are always drawn; word wrap and font size come later |
 | Minimap or change marks on the scrollbar; next and previous change (`Ctrl+Up/Down`) | **Built** | An overview strip with change marks and the visible part (a click jumps there), and `n`/`p` |
 | Reveal the line in an editor | M1 | |
 | Copy as patch | **Built** | A commit, a stash, the working changes, or one file of a commit (its file menu); also *Save as patch…* |

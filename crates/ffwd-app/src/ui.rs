@@ -565,6 +565,9 @@ pub struct Ui {
     pub diff_opts: ffwd_core::diff::DiffOpts,
     /// Find in the diff (FF-34); kept across files and commits.
     pub diff_find: Option<diff_find::DiffFind>,
+    /// Whitespace characters shown in diffs, and the tab width (FF-41).
+    pub diff_show_ws: bool,
+    pub diff_tab: usize,
     diff_bar_hits: Vec<(Rect, diff_view::DiffBar)>,
     /// Line pairing and block-comment states of the shown diff.
     #[allow(clippy::type_complexity)]
@@ -703,6 +706,8 @@ impl Ui {
             search_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             diff_split: diff_view::opts_from(&settings).0,
             diff_find: None,
+            diff_show_ws: diff_view::view_from(&settings).0,
+            diff_tab: diff_view::view_from(&settings).1 as usize,
             diff_opts: diff_view::opts_from(&settings).1,
             diff_bar_hits: Vec::new(),
             pairs_cache: None,
@@ -3857,7 +3862,7 @@ impl Ui {
             if !mark.is_empty() {
                 self.te.draw(cv, mono, fs, tx, lb, mark, if line.kind == LineKind::Add { ADD } else { DEL }, 20.0);
             }
-            let text = diff_find::shown_text(&line.text).into_owned();
+            let text = diff_find::shown_text(&line.text, self.diff_tab).into_owned();
             let i = top + k;
             // Word ranges are byte offsets of the raw text: skip them on
             // lines whose tabs were widened.
@@ -3870,6 +3875,9 @@ impl Ui {
             let st = blocks.get(i).copied().unwrap_or(false);
             let maxw = (body.right() as f32) - tx - self.pf(24.0);
             self.draw_code(cv, tx + self.pf(14.0), lb, row, &text, fg, maxw, lang, st, &marks);
+            if self.diff_show_ws {
+                self.draw_whitespace(cv, tx + self.pf(14.0), lb, &line.text, maxw);
+            }
         }
         let _ = (ui, semi);
         buttons
@@ -6473,6 +6481,86 @@ mod tests {
         ui.select(1);
         pump(&mut ui, "the older a.txt", &on("a.txt"));
         assert_eq!(ui.r.diff_top, 100);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The diff's view menu (FF-41): whitespace characters and the tab
+    /// width, chosen from `…`, saved, and painted (unified and side by
+    /// side) with partial repaints equal to full ones; find matches follow
+    /// the tab stops.
+    #[test]
+    fn diff_whitespace_and_tab_width() {
+        use std::sync::mpsc;
+        let mut te = TextEngine::new();
+        let Some(f) = load_fonts(&mut te) else { return };
+        let dir = std::env::temp_dir().join(format!("ffwd-ui-diffws-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = Git { root: dir.clone() };
+        for a in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.name", "ffwd test"],
+            &["config", "user.email", "test@example.invalid"],
+            &["config", "commit.gpgsign", "false"],
+            &["config", "core.autocrlf", "false"],
+        ] {
+            g.output(a).unwrap();
+        }
+        std::fs::write(dir.join("a.txt"), "\tindented x\nab\tx  two spaces\n").unwrap();
+        g.output(&["add", "."]).unwrap();
+        g.output(&["commit", "-q", "-m", "tabs"]).unwrap();
+        let (tx, rx) = mpsc::channel::<(u64, Msg)>();
+        let tx = Arc::new(std::sync::Mutex::new(tx));
+        let sinks: SinkFactory = Arc::new(move |id| {
+            let tx = tx.clone();
+            Arc::new(move |m| {
+                if let Ok(t) = tx.lock() {
+                    let _ = t.send((id, m));
+                }
+            })
+        });
+        crate::work::start(dir.clone(), &sinks(1));
+        let empty = crate::settings::Settings::parse("");
+        let mut ui = Ui::new(te, f, empty.clone(), empty, Some((1, dir.clone())), sinks, 1280, 800, 1.0);
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while ui.r.diff.is_none() {
+            let left = until.saturating_duration_since(std::time::Instant::now());
+            assert!(!left.is_zero(), "timed out waiting for the diff");
+            if let Ok((id, m)) = rx.recv_timeout(left) {
+                ui.on_tab_msg(id, m);
+            }
+        }
+        let mut screen = vec![0u32; 1280 * 800];
+        ui.paint(&mut Canvas::new(&mut screen, 1280, 800), true);
+        assert!(!ui.diff_show_ws && ui.diff_tab == 4, "defaults");
+        let pick = |ui: &mut Ui, label: &str| {
+            let items = ui.diff_view_menu();
+            let k = items.iter().position(|i| i.label.ends_with(label)).unwrap();
+            ui.open_menu(900, 60, items);
+            ui.menu_activate(k);
+        };
+        // Find "x": with tabs of 4 the second line's x is at byte 4.
+        ui.key(Key::Tab);
+        ui.key(Key::Tab);
+        assert_eq!(ui.focus, Focus::Diff);
+        ui.key(Key::Ctrl('f'));
+        ui.key(Key::Char('x'));
+        let first_x = |ui: &Ui, line: &str| ui.diff_find_marks(0, line).first().map(|m| m.0);
+        assert_eq!(first_x(&ui, &diff_find::shown_text("ab\tx", ui.diff_tab)), Some(4));
+        pick(&mut ui, "Show whitespace characters");
+        assert!(ui.diff_show_ws);
+        assert_eq!(ui.settings.get("diff.show_whitespace"), Some("true"));
+        assert_partial_paint_is_full(&mut ui, &mut screen, "whitespace shown");
+        pick(&mut ui, "Tab width 8");
+        assert_eq!(ui.diff_tab, 8);
+        assert_eq!(ui.settings.get("diff.tab_width"), Some("8"));
+        assert_eq!(first_x(&ui, &diff_find::shown_text("ab\tx", ui.diff_tab)), Some(8));
+        assert_eq!(ui.diff_find.as_ref().map(|f| f.hits.len()), Some(2), "matches recounted");
+        assert_partial_paint_is_full(&mut ui, &mut screen, "tab width 8");
+        ui.apply_diff_bar(diff_view::DiffBar::Split);
+        assert_partial_paint_is_full(&mut ui, &mut screen, "side by side with whitespace");
+        pick(&mut ui, "Show whitespace characters");
+        assert!(!ui.diff_show_ws);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

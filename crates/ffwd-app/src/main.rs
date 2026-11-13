@@ -76,6 +76,8 @@ pub struct Args {
     pub find: Option<String>,
     /// Snapshot with the diff side by side.
     pub diff_split: bool,
+    /// Snapshot: whitespace characters shown in the diff.
+    pub diff_ws: bool,
     /// Snapshot with this file of the selected commit shown.
     pub file: Option<usize>,
 }
@@ -110,6 +112,7 @@ fn parse_args() -> Result<Args, String> {
         rebase_from: None,
         find: None,
         diff_split: false,
+        diff_ws: false,
         file: None,
     };
     let mut it = std::env::args().skip(1);
@@ -155,6 +158,7 @@ fn parse_args() -> Result<Args, String> {
             "--rebase-from" => a.rebase_from = Some(val("--rebase-from")?.parse().map_err(|_| "bad row")?),
             "--find" => a.find = Some(val("--find")?),
             "--diff-split" => a.diff_split = true,
+            "--diff-ws" => a.diff_ws = true,
             "--file" => a.file = Some(val("--file")?.parse().map_err(|_| "bad file index")?),
             "--hover" => {
                 let v = val("--hover")?;
