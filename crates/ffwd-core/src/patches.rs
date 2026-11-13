@@ -22,6 +22,15 @@ pub fn commit_patch(git: &Git, sha: &str) -> Result<String, String> {
     text(git, &["format-patch", "-1", "--stdout", "--binary", sha])
 }
 
+/// One file of a commit as a mail-style patch, with the commit's message.
+pub fn commit_file_patch(git: &Git, sha: &str, path: &str) -> Result<String, String> {
+    let p = text(git, &["format-patch", "-1", "--stdout", "--binary", sha, "--", path])?;
+    if !p.contains("diff --git") {
+        return Err(format!("The commit does not change {path}"));
+    }
+    Ok(p)
+}
+
 /// A stash's changes (`git stash show -p`).
 pub fn stash_patch(git: &Git, name: &str) -> Result<String, String> {
     text(git, &["stash", "show", "-p", "--binary", name])
@@ -128,6 +137,11 @@ mod tests {
         let p = commit_patch(&g, "HEAD").unwrap();
         assert!(p.contains("Subject: [PATCH] change two, add b"));
         assert_eq!(files(&p), ["a.txt", "b.txt"]);
+        // One file of it: the message and only that file.
+        let pb = commit_file_patch(&g, "HEAD", "b.txt").unwrap();
+        assert!(pb.contains("Subject: [PATCH] change two, add b"));
+        assert_eq!(files(&pb), ["b.txt"]);
+        assert!(commit_file_patch(&g, "HEAD", "nope.txt").is_err());
         g.output(&["reset", "-q", "--hard", "HEAD~1"]).unwrap();
         assert_eq!(check(&g, &p).unwrap(), ["a.txt", "b.txt"]);
         apply(&g, &p, false).unwrap();

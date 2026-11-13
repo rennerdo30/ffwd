@@ -405,6 +405,8 @@ const LAYOUT_BESIDE: &str = "Layout: details beside the history";
 /// lives in `Ui::r`; inactive tabs keep theirs in `Tab::state`.
 #[derive(Default)]
 pub struct RepoState {
+    /// Where each file's diff was scrolled to, by commit and path (FF-41).
+    pub diff_scroll: HashMap<(Oid, Box<str>), usize>,
     pub repo_name: String,
     pub git: Option<Git>,
     pub error: Option<String>,
@@ -1333,7 +1335,22 @@ impl Ui {
                     match result {
                         Ok(d) => {
                             let image = d.binary && crate::image::is_image(&d.path);
+                            // A newly shown file goes back where it was scrolled
+                            // to last time; an option change (the old diff still
+                            // shown) keeps the current scroll.
+                            let back = self
+                                .r
+                                .details
+                                .as_ref()
+                                .and_then(|det| self.r.diff_scroll.get(&(det.id, d.path.clone())));
+                            if self.r.diff.is_none() {
+                                self.r.diff_top = back.copied().unwrap_or(0);
+                            }
                             self.r.diff = Some(d);
+                            if self.r.diff_top > 0 {
+                                let n = self.diff_row_count();
+                                self.r.diff_top = self.r.diff_top.min(n.saturating_sub(1));
+                            }
                             if image {
                                 self.load_diff_images(seq);
                             }
@@ -1529,6 +1546,7 @@ impl Ui {
             self.set_top(row + 1 - vis);
         }
         self.r.seq += 1;
+        self.remember_diff_scroll();
         self.r.diff = None;
         self.r.diff_top = 0;
         self.r.sel_file = 0;
@@ -1552,6 +1570,21 @@ impl Ui {
         let i = self.first_file();
         self.r.sel_file = i;
         self.r.file_top = (i + 1).saturating_sub(self.file_rows_visible().max(1));
+    }
+
+    /// Keeps where the shown diff is scrolled to, for when its file is
+    /// shown again; a diff at the top is forgotten.
+    fn remember_diff_scroll(&mut self) {
+        let (Some(d), Some(det)) = (&self.r.diff, &self.r.details) else { return };
+        let key = (det.id, d.path.clone());
+        if self.r.diff_top == 0 {
+            self.r.diff_scroll.remove(&key);
+            return;
+        }
+        if self.r.diff_scroll.len() >= 1000 {
+            self.r.diff_scroll.clear();
+        }
+        self.r.diff_scroll.insert(key, self.r.diff_top);
     }
 
     fn request_details(&mut self) {
@@ -1605,6 +1638,7 @@ impl Ui {
         } else if i >= self.r.file_top + vis {
             self.r.file_top = i + 1 - vis;
         }
+        self.remember_diff_scroll();
         self.r.diff = None;
         self.r.diff_top = 0;
         self.r.seq += 1;
@@ -6356,6 +6390,89 @@ mod tests {
         ui.key(Key::Esc);
         assert_eq!(ui.match_files(id), None);
         assert_partial_paint_is_full(&mut ui, &mut screen, "search closed");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The diff's scroll per file (FF-41): a file shown again comes back
+    /// where it was; an option change keeps the scroll; another commit's
+    /// file starts at the top.
+    #[test]
+    fn diff_scroll_is_remembered_per_file() {
+        use std::sync::mpsc;
+        let mut te = TextEngine::new();
+        let Some(f) = load_fonts(&mut te) else { return };
+        let dir = std::env::temp_dir().join(format!("ffwd-ui-diffmem-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = Git { root: dir.clone() };
+        for a in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.name", "ffwd test"],
+            &["config", "user.email", "test@example.invalid"],
+            &["config", "commit.gpgsign", "false"],
+            &["config", "core.autocrlf", "false"],
+        ] {
+            g.output(a).unwrap();
+        }
+        let long: Vec<String> = (1..=300).map(|i| format!("line {i}")).collect();
+        std::fs::write(dir.join("a.txt"), long.join("\n") + "\n").unwrap();
+        std::fs::write(dir.join("b.txt"), "b\n").unwrap();
+        g.output(&["add", "."]).unwrap();
+        g.output(&["commit", "-q", "-m", "first"]).unwrap();
+        std::fs::write(dir.join("a.txt"), long[..100].join("\n") + "\n").unwrap();
+        g.output(&["commit", "-q", "-am", "shorter"]).unwrap();
+        let (tx, rx) = mpsc::channel::<(u64, Msg)>();
+        let tx = Arc::new(std::sync::Mutex::new(tx));
+        let sinks: SinkFactory = Arc::new(move |id| {
+            let tx = tx.clone();
+            Arc::new(move |m| {
+                if let Ok(t) = tx.lock() {
+                    let _ = t.send((id, m));
+                }
+            })
+        });
+        crate::work::start(dir.clone(), &sinks(1));
+        let empty = crate::settings::Settings::parse("");
+        let mut ui = Ui::new(te, f, empty.clone(), empty, Some((1, dir.clone())), sinks, 1280, 800, 1.0);
+        let pump = |ui: &mut Ui, what: &str, done: &dyn Fn(&Ui) -> bool| {
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while !done(ui) {
+                let left = until.saturating_duration_since(std::time::Instant::now());
+                assert!(!left.is_zero(), "timed out waiting for {what}");
+                if let Ok((id, m)) = rx.recv_timeout(left) {
+                    ui.on_tab_msg(id, m);
+                }
+            }
+        };
+        let on = |p: &'static str| move |u: &Ui| u.r.diff.as_ref().is_some_and(|d| &*d.path == p);
+        // The older commit: a.txt (300 new lines) and b.txt.
+        pump(&mut ui, "history", &|u| u.r.log_done && u.r.commits.len() == 2);
+        ui.select(1);
+        pump(&mut ui, "a.txt's diff", &on("a.txt"));
+        ui.focus = Focus::Diff;
+        ui.scroll_diff(150);
+        assert_eq!(ui.r.diff_top, 150);
+        ui.select_file(1);
+        pump(&mut ui, "b.txt's diff", &on("b.txt"));
+        assert_eq!(ui.r.diff_top, 0, "another file starts at the top");
+        ui.select_file(0);
+        pump(&mut ui, "a.txt again", &on("a.txt"));
+        assert_eq!(ui.r.diff_top, 150, "back where it was");
+        // An option change keeps the scroll it has now.
+        ui.scroll_diff(-50);
+        ui.apply_diff_bar(diff_view::DiffBar::Whitespace);
+        let before = ui.r.diff.as_ref().map(|d| d.lines.as_ptr() as usize);
+        pump(&mut ui, "the refetched diff", &|u| u.r.diff.as_ref().map(|d| d.lines.as_ptr() as usize) != before);
+        assert_eq!(ui.r.diff_top, 100);
+        ui.apply_diff_bar(diff_view::DiffBar::Whitespace);
+        // The newer commit's a.txt is another diff: it starts at the top,
+        // and the older one is still remembered.
+        ui.select(0);
+        pump(&mut ui, "the newer a.txt", &on("a.txt"));
+        assert_eq!(ui.r.diff_top, 0);
+        ui.select(1);
+        pump(&mut ui, "the older a.txt", &on("a.txt"));
+        assert_eq!(ui.r.diff_top, 100);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

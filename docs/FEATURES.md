@@ -155,8 +155,8 @@
 | Show whitespace characters, `-`/`+` marks for colour blindness, word wrap, tab width, font size | M1 | |
 | Minimap or change marks on the scrollbar; next and previous change (`Ctrl+Up/Down`) | **Built** | An overview strip with change marks and the visible part (a click jumps there), and `n`/`p` |
 | Reveal the line in an editor | M1 | |
-| Copy as patch | M1 | |
-| Remember the scroll position per file | M1 | |
+| Copy as patch | **Built** | A commit, a stash, the working changes, or one file of a commit (its file menu); also *Save as patch…* |
+| Remember the scroll position per file | **Built** | Per commit and file, for the session (up to 1,000 files); an option change keeps the current scroll |
 | Image diff: PNG, JPEG, WebP, TGA, SVG, HEIC; swipe and onion; exact pixel diff, 16-bit | Partial | PNG before and after, side by side, with size and bytes; other formats, swipe, onion and pixel diff come later |
 | Binary and LFS file views | M2 | |
 | Submodule diff that lists its commits | M2 | |

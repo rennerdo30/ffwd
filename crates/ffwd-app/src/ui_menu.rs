@@ -889,6 +889,7 @@ impl Ui {
             use ffwd_core::patches as p;
             let r = match &src {
                 PatchSrc::Commit(sha) => p::commit_patch(&g, sha),
+                PatchSrc::CommitFile(sha, path) => p::commit_file_patch(&g, sha, path),
                 PatchSrc::Stash(n) => p::stash_patch(&g, n),
                 PatchSrc::Working(staged) => p::working_patch(&g, *staged),
             };
@@ -939,6 +940,12 @@ impl Ui {
                     .collect::<Vec<_>>()
                     .join("-");
                 format!("{}-{slug}.patch", &sha[..sha.len().min(8)])
+            }
+            PatchSrc::CommitFile(sha, path) => {
+                let file = path.rsplit('/').next().unwrap_or(path);
+                let slug: String =
+                    file.chars().map(|c| if c.is_ascii_alphanumeric() || c == '.' { c } else { '-' }).collect();
+                format!("{}-{}.patch", &sha[..sha.len().min(8)], slug.trim_matches(['-', '.']))
             }
             PatchSrc::Stash(_) => "stash.patch".into(),
             PatchSrc::Working(true) => "staged.patch".into(),
@@ -1061,7 +1068,10 @@ impl Ui {
             let exists = root.join(&path).exists();
             let (mut v, _) = file_items(&path, exists);
             v.push(sep());
-            v.push(item("Open in the diff tool", MenuAct::DiffTool(path.clone(), DiffOf::Commit(sha))));
+            v.push(item("Open in the diff tool", MenuAct::DiffTool(path.clone(), DiffOf::Commit(sha.clone()))));
+            let src = PatchSrc::CommitFile(sha, path.clone());
+            v.push(item("Copy as patch", MenuAct::CopyPatch(src.clone())));
+            v.push(item("Save as patch…", MenuAct::Name(NameAct::SavePatch { src })));
             v.push(item("Copy path", MenuAct::Copy(path)));
             return Some(v);
         }
@@ -1608,6 +1618,8 @@ pub(super) fn reflog_items(ui: &Ui, sha: &str, in_history: bool) -> Vec<MenuItem
 #[derive(Clone, Debug)]
 pub enum PatchSrc {
     Commit(String),
+    /// One file of a commit: (sha, path).
+    CommitFile(String, String),
     Stash(String),
     /// The staged (true) or unstaged changes.
     Working(bool),
