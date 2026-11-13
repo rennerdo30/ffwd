@@ -25,6 +25,11 @@ pub struct Ctx<'a> {
     /// The home folder where the agent runs: the host's, or inside WSL the
     /// Linux one (found by the preflight check). `~/…` grants resolve here.
     pub home: Option<String>,
+    /// The agent's program where it runs (inside WSL: found through the
+    /// user's login shell): (its name in the command, its real path). The
+    /// sandbox starts the real path and mounts its folder read-only, so a
+    /// tool installed in the home folder runs with a private home too.
+    pub program: Option<(String, String)>,
 }
 
 /// `~/rest` (or `~` + backslash + `rest`) gives `rest`; `~` alone gives "".
@@ -173,6 +178,12 @@ fn bwrap_args(ctx: &Ctx, conv: &dyn Fn(&Path) -> Result<String, String>) -> Resu
             }
         }
     }
+    if let Some((_, real)) = &ctx.program
+        && let Some((dir, _)) = real.rsplit_once('/')
+        && !dir.is_empty()
+    {
+        a.extend(["--ro-bind-try".to_string(), dir.to_string(), dir.to_string()]);
+    }
     bind(&mut a, if cfg.git_access == GitAccess::Write { "--bind" } else { "--ro-bind" }, ctx.git_common)?;
     // The worktree's own Git folder (index, HEAD) stays writable so that
     // `git status` and `git diff` work for the agent.
@@ -274,7 +285,15 @@ pub fn wrap(inner: &[String], ctx: &Ctx, stdin: Option<Vec<u8>>) -> Result<Launc
             args.extend(["--cd".to_string(), conv(ctx.worktree)?, "-e".into(), cfg.bwrap_path.clone()]);
             args.extend(bw);
             args.push("--".into());
-            args.extend(inner.iter().cloned());
+            // WSL's plain PATH lacks the user's own folders (~/.local/bin):
+            // start the program found by the preflight check by its path.
+            let mut inner = inner.to_vec();
+            if let Some((name, real)) = &ctx.program
+                && inner[0] == *name
+            {
+                inner[0] = real.clone();
+            }
+            args.extend(inner);
             // Windows variables do not cross into WSL by themselves: only the
             // user's `env` and ffwd's own go through, named in WSLENV.
             let (_, env) = agent_env(ctx, EnvFrom::Named);
@@ -338,6 +357,7 @@ mod tests {
             run_dir: Path::new("/r/.ffwd-agents/r/.runs/fix"),
             vars: vec![("FFWD_AGENT_BRANCH".into(), "agent/fix".into())],
             home: Some("/home/me".into()),
+            program: None,
         }
     }
 
@@ -408,6 +428,30 @@ mod tests {
         let map = vec![("E:\\".to_string(), "/mnt/d".to_string())];
         assert_eq!(to_wsl(Path::new(r"e:\Development\ffwd"), &map).unwrap(), "/mnt/d/Development/ffwd");
         assert!(to_wsl(Path::new(r"\\server\share"), &[]).is_err());
+    }
+
+    /// A program found in the user's folders inside WSL (FF-23): started by
+    /// its real path, its folder mounted read-only, even with a private home.
+    #[test]
+    fn wsl_starts_the_found_program_by_path() {
+        let mut c = cfg(SandboxKind::Wsl);
+        c.home_access = HomeAccess::Private;
+        let mut x = ctx(&c);
+        x.worktree = Path::new(r"E:\a\wt");
+        x.git_common = Path::new(r"E:\a\r\.git");
+        x.git_dir = Path::new(r"E:\a\r\.git\worktrees\wt");
+        x.run_dir = Path::new(r"E:\a\run");
+        let real = "/home/me/.local/share/claude/versions/2.1";
+        x.program = Some(("claude".into(), real.into()));
+        let l = wrap(&["claude".into(), "-p".into(), "hi".into()], &x, None).unwrap();
+        let dir = "/home/me/.local/share/claude/versions";
+        assert!(pos(&l.args, &["--ro-bind-try", dir, dir]).is_some(), "the program's folder: {:?}", l.args);
+        let sep = l.args.iter().rposition(|a| a == "--").unwrap();
+        assert_eq!(&l.args[sep + 1..], [real, "-p", "hi"], "started by its real path");
+        // Another first word (a script's shell) is left alone.
+        let l = wrap(&["sh".into(), "-c".into(), "true".into()], &x, None).unwrap();
+        let sep = l.args.iter().rposition(|a| a == "--").unwrap();
+        assert_eq!(l.args[sep + 1], "sh");
     }
 
     #[test]
