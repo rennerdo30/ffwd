@@ -159,6 +159,7 @@ impl Ui {
         if !self.r.changes_view {
             self.r.changes_view = true;
             self.r.files_view = false;
+            self.r.activity_view = false;
             self.r.changes.focus = CFocus::Unstaged;
             self.focus = Focus::List;
         }

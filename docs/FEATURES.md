@@ -237,8 +237,8 @@
 
 | Feature | ffwd | Notes |
 |---|---|---|
-| Activity manager: every operation with its output and result, sections so auto-fetch doesn't flood it | M1 | FF-13 operation log |
-| Verbose Git output option; highlighted Git output | M1 | |
+| Activity manager: every operation with its output and result, sections so auto-fetch doesn't flood it | **Built** | Every user operation with the exact git commands, exit codes, times and output; sections for auto-fetch come with auto-fetch |
+| Verbose Git output option; highlighted Git output | Partial | Errors are highlighted; a verbose option comes later |
 | Progress for long checkouts | M1 | |
 | Repository benchmark | M2 | ffwd measures more: `FFWD_TRACE`, snapshots |
 

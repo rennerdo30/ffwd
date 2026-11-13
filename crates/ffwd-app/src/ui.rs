@@ -17,6 +17,8 @@ use std::collections::HashSet;
 #[path = "ui_sidebar.rs"]
 mod sidebar;
 use sidebar::SideItem;
+#[path = "ui_activity.rs"]
+mod activity_view;
 #[path = "ui_agents.rs"]
 mod agents_view;
 #[path = "ui_changes.rs"]
@@ -25,6 +27,7 @@ mod changes_view;
 mod conflict_view;
 #[path = "ui_diff.rs"]
 mod diff_view;
+pub use activity_view::Entry as ActivityEntry;
 #[path = "ui_files.rs"]
 mod files_view;
 pub use files_view::{Loaded as FileLoaded, TreeResult as FilesTreeResult};
@@ -277,6 +280,7 @@ const CMD_TAG: &str = "Create tag here";
 const CMD_PICK: &str = "Cherry-pick this commit";
 const CMD_REVERT: &str = "Revert this commit";
 const CMD_STASH: &str = "Stash changes";
+const CMD_ACTIVITY: &str = "Activity log";
 const CMD_ADD_REMOTE: &str = "Add remote…";
 const CMD_CANCEL_OP: &str = "Cancel the running fetch, pull or push";
 
@@ -299,6 +303,7 @@ const WORKING: &[&str] = &[
     CMD_PICK,
     CMD_REVERT,
     CMD_STASH,
+    CMD_ACTIVITY,
     CMD_ADD_REMOTE,
     CMD_CANCEL_OP,
     CMD_SETTINGS,
@@ -333,6 +338,7 @@ const COMMANDS: &[(&str, &str)] = &[
     (CMD_REVERT, ""),
     ("Interactive rebase from here", "Ctrl Shift R"),
     (CMD_STASH, "Ctrl Shift S"),
+    (CMD_ACTIVITY, ""),
     (CMD_ADD_REMOTE, ""),
     (CMD_CANCEL_OP, ""),
     ("Open file history", ""),
@@ -391,6 +397,8 @@ pub struct RepoState {
     /// The Files view: folder tree, content, blame, file history (FF-51, FF-43).
     pub files_view: bool,
     pub files: files_view::Files,
+    /// The activity log view (FF-48); the log itself is app-wide.
+    pub activity_view: bool,
     /// The find bar over the commit list (FF-34).
     pub search: Option<search_view::Search>,
 }
@@ -456,6 +464,8 @@ pub struct Ui {
     /// Experimental agent runs of every tab, and the panel when open.
     agents: Vec<AgentRun>,
     agent_view: Option<AgentView>,
+    /// The activity log (FF-48), across tabs.
+    activity: activity_view::Activity,
     agents_loaded: HashSet<String>,
     /// Per-repository settings (agent overrides), by `repo_key`.
     repo_settings: HashMap<String, crate::settings::Settings>,
@@ -565,6 +575,7 @@ impl Ui {
             settings_view: None,
             agents: Vec::new(),
             agent_view: None,
+            activity: Default::default(),
             agents_loaded: HashSet::new(),
             repo_settings: HashMap::new(),
             repo_settings_requested: HashSet::new(),
@@ -807,6 +818,7 @@ impl Ui {
         let (git, tz, notice) = (self.r.git.take(), self.r.tz, self.notice.take());
         let (changes_view, changes) = (self.r.changes_view, std::mem::take(&mut self.r.changes));
         let (files_view, files) = (self.r.files_view, std::mem::take(&mut self.r.files));
+        let activity_view = self.r.activity_view;
         self.r = RepoState {
             repo_name: name,
             git,
@@ -816,6 +828,7 @@ impl Ui {
             changes,
             files_view,
             files,
+            activity_view,
             ..Default::default()
         };
         self.notice = notice;
@@ -831,6 +844,10 @@ impl Ui {
         }
         if let Msg::RepoSettings(p, s) = m {
             return self.on_repo_settings(p, s);
+        }
+        // The activity log is app-wide: background tabs log at once.
+        if let Msg::Activity(e) = m {
+            return self.on_activity(*e);
         }
         if let Msg::Repos(list) = m {
             for p in list {
@@ -1151,6 +1168,7 @@ impl Ui {
                 }
             }
             Msg::OpDone(out) => {
+                self.log_sync(&out);
                 self.r.op = None;
                 self.r.op_cancel = None;
                 self.set_notice(format!("{} ({:.1} s)", out.summary, out.ms / 1000.0));
@@ -1190,6 +1208,7 @@ impl Ui {
                 }
             }
             Msg::ConflictFile { seq, path, result } => self.on_conflict_file(seq, path, result),
+            Msg::Activity(e) => self.on_activity(*e),
             Msg::FilesTree(r) => self.on_files_tree(r),
             Msg::FileContent { seq, result } => self.on_file_content(seq, result),
             Msg::FileBlame { seq, result } => self.on_file_blame(seq, result),
@@ -1381,7 +1400,7 @@ impl Ui {
             return self.open_menu_for_selection();
         }
         if self.settings_view.is_none() && self.agent_view.is_none() && self.palette.is_none() {
-            if matches!(k, Key::Ctrl('f')) && !self.r.changes_view && !self.r.files_view {
+            if matches!(k, Key::Ctrl('f')) && !self.r.changes_view && !self.r.files_view && !self.r.activity_view {
                 return self.open_search();
             }
             if self.r.search.as_ref().is_some_and(|s| s.typing) && !self.r.changes_view && self.search_key(k) {
@@ -1462,6 +1481,10 @@ impl Ui {
         if self.r.files_view && self.focus != Focus::Side && self.focus != Focus::SideFilter && self.files_key(k) {
             return;
         }
+        if self.r.activity_view && self.focus != Focus::Side && self.focus != Focus::SideFilter && self.activity_key(k)
+        {
+            return;
+        }
         let page = self.visible_rows().saturating_sub(1).max(1);
         match (self.focus, k) {
             (_, Key::Palette) => self.open_palette(),
@@ -1538,6 +1561,8 @@ impl Ui {
             self.agents_wheel(n);
         } else if self.lay.side.contains(x, y) {
             self.side_wheel(n);
+        } else if self.r.activity_view {
+            self.activity_wheel(x, y, n);
         } else if self.r.files_view {
             self.files_wheel(x, y, n);
         } else if self.r.changes_view {
@@ -1605,6 +1630,13 @@ impl Ui {
         }
         if let Some(&(_, a)) = self.top_buttons.iter().find(|(r, _)| r.contains(x, y)) {
             self.top_action(a);
+            return;
+        }
+        if self.r.activity_view && self.activity_click(x, y) {
+            if self.focus == Focus::Side || self.focus == Focus::SideFilter {
+                self.focus = Focus::List;
+                self.damage.rects.push(self.lay.side);
+            }
             return;
         }
         if self.r.files_view && self.files_click(x, y) {
@@ -1803,6 +1835,19 @@ impl Ui {
         self.open_dialog(DialogKind::Name { act: NameAct::StashSave, field: TextField::default(), checkout: true });
     }
 
+    /// Logs a finished fetch, pull or push (FF-48).
+    fn log_sync(&mut self, out: &ffwd_core::ops::Outcome) {
+        let Some(g) = self.r.git.clone() else { return };
+        let ran = vec![ffwd_core::git::Ran {
+            args: out.command.strip_prefix("git ").unwrap_or(&out.command).to_string(),
+            code: out.ok.then_some(0),
+            stderr: out.output.chars().take(16 * 1024).collect(),
+            ms: out.ms as u32,
+        }];
+        let e = ActivityEntry::new(&g, out.op.name(), out.ok, out.summary.clone(), out.ms as u32, ran);
+        self.on_activity(e);
+    }
+
     /// A command for the selected commit (palette or shortcut).
     fn selected_commit_command(&mut self, c: &str) {
         let Some(sha) = self.r.commits.get(self.r.sel).map(|c| c.id.to_string()) else {
@@ -1839,6 +1884,7 @@ impl Ui {
             CMD_SEARCH => self.open_search(),
             CMD_BRANCH | CMD_TAG | CMD_PICK | CMD_REVERT => self.selected_commit_command(c),
             CMD_STASH => self.open_stash_dialog(),
+            CMD_ACTIVITY => self.enter_activity(),
             CMD_ADD_REMOTE => self.open_dialog(DialogKind::Name {
                 act: NameAct::AddRemoteUrl,
                 field: TextField::default(),
@@ -1912,8 +1958,11 @@ impl Ui {
                 let action = p.items.get(p.sel).map(|i| i.action.clone());
                 self.close_palette();
                 match action {
-                    Some(PAction::Goto(_) | PAction::GotoRef(..)) if self.r.changes_view || self.r.files_view => {
+                    Some(PAction::Goto(_) | PAction::GotoRef(..))
+                        if self.r.changes_view || self.r.files_view || self.r.activity_view =>
+                    {
                         // A jump shows history again.
+                        self.leave_activity();
                         self.leave_changes();
                         self.leave_files();
                         if let Some(PAction::Goto(id) | PAction::GotoRef(id, ..)) = action
@@ -2019,7 +2068,11 @@ impl Ui {
         if !clip.intersect(l.side).is_empty() {
             self.paint_side(cv);
         }
-        if self.r.files_view {
+        if self.r.activity_view {
+            if !clip.intersect(self.activity_layout().area).is_empty() {
+                self.paint_activity(cv);
+            }
+        } else if self.r.files_view {
             if !clip.intersect(self.files_layout().area).is_empty() {
                 self.paint_files(cv);
             }
@@ -4006,6 +4059,91 @@ mod tests {
         assert!(ui.notice.as_deref().is_some_and(|n| n.contains("Fetch cancelled")), "{:?}", ui.notice);
         assert!(t.elapsed() < std::time::Duration::from_secs(15), "cancel took {:?}", t.elapsed());
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// The activity log (FF-48): a branch operation, a failing checkout and
+    /// a staged file each log their git commands; failures raise the
+    /// sidebar badge until the view opens; partial repaints match.
+    #[test]
+    fn activity_log_records_operations_with_their_commands() {
+        use std::sync::mpsc;
+        let mut te = TextEngine::new();
+        let Some(f) = load_fonts(&mut te) else { return };
+        let dir = std::env::temp_dir().join(format!("ffwd-ui-activity-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = Git { root: dir.clone() };
+        for a in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.name", "ffwd test"],
+            &["config", "user.email", "test@example.invalid"],
+            &["config", "commit.gpgsign", "false"],
+        ] {
+            g.output(a).unwrap();
+        }
+        std::fs::write(dir.join("a.txt"), "a\n").unwrap();
+        g.output(&["add", "."]).unwrap();
+        g.output(&["commit", "-q", "-m", "first"]).unwrap();
+        std::fs::write(dir.join("b.txt"), "b\n").unwrap();
+        let (tx, rx) = mpsc::channel::<(u64, Msg)>();
+        let tx = Arc::new(std::sync::Mutex::new(tx));
+        let sinks: SinkFactory = Arc::new(move |id| {
+            let tx = tx.clone();
+            Arc::new(move |m| {
+                if let Ok(t) = tx.lock() {
+                    let _ = t.send((id, m));
+                }
+            })
+        });
+        crate::work::start(dir.clone(), &sinks(1));
+        let empty = crate::settings::Settings::parse("");
+        let mut ui = Ui::new(te, f, empty.clone(), empty, Some((1, dir.clone())), sinks, 1280, 800, 1.0);
+        let pump = |ui: &mut Ui, what: &str, done: &dyn Fn(&Ui) -> bool| {
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while !done(ui) {
+                let left = until.saturating_duration_since(std::time::Instant::now());
+                assert!(!left.is_zero(), "timed out waiting for {what}; notice: {:?}", ui.notice);
+                if let Ok((id, m)) = rx.recv_timeout(left) {
+                    ui.on_tab_msg(id, m);
+                }
+            }
+        };
+        pump(&mut ui, "history", &|u| u.r.log_done);
+        ui.run_refop(crate::work::RefOp::CreateBranch("feat/x".into(), "main".into(), false));
+        pump(&mut ui, "the branch", &|u| u.activity.entries.len() == 1);
+        ui.run_refop(crate::work::RefOp::Checkout("no-such-branch".into()));
+        pump(&mut ui, "the failed checkout", &|u| u.activity.entries.len() == 2);
+        ui.enter_changes();
+        pump(&mut ui, "the changes", &|u| u.r.changes.status.as_ref().is_some_and(|s| !s.entries.is_empty()));
+        ui.key(Key::Char(' '));
+        pump(&mut ui, "the stage", &|u| u.activity.entries.len() == 3);
+        let a = &ui.activity;
+        assert_eq!(a.get(2).unwrap().title, "Create branch feat/x");
+        assert!(a.get(2).unwrap().ok);
+        assert!(a.get(2).unwrap().ran.iter().any(|r| r.args.starts_with("branch")), "{:?}", a.get(2).unwrap().ran);
+        let failed = a.get(1).unwrap();
+        assert!(!failed.ok && failed.title == "Checkout no-such-branch");
+        assert!(failed.ran.iter().any(|r| r.code != Some(0)), "the failing command is logged with its code");
+        assert_eq!(a.get(0).unwrap().title, "Stage 1 file");
+        assert_eq!(&*a.get(0).unwrap().repo, dir.file_name().unwrap().to_str().unwrap());
+        assert_eq!(a.unseen_failures, 1);
+        assert!(ui.r.side.iter().any(|i| i.key == "activity" && i.badge == "1 failed"));
+        // Open the view: the badge clears; moving and copying works.
+        let mut screen = vec![0u32; 1280 * 800];
+        ui.paint(&mut Canvas::new(&mut screen, 1280, 800), true);
+        ui.enter_activity();
+        assert_eq!(ui.activity.unseen_failures, 0);
+        assert!(ui.r.side.iter().any(|i| i.key == "activity" && i.badge.is_empty()), "the badge clears");
+        assert_partial_paint_is_full(&mut ui, &mut screen, "open the activity log");
+        ui.key(Key::Down);
+        assert_eq!(ui.activity.sel, 1);
+        assert_partial_paint_is_full(&mut ui, &mut screen, "select the failure");
+        ui.pointer(400, 200);
+        assert_partial_paint_is_full(&mut ui, &mut screen, "hover a row");
+        ui.key(Key::Esc);
+        assert!(!ui.r.activity_view);
+        assert_partial_paint_is_full(&mut ui, &mut screen, "leave the log");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The find bar from the keyboard: message search selects the match,

@@ -134,6 +134,20 @@ pub fn run(args: &Args, t0: Instant) -> i32 {
     if args.stash_dialog {
         ui.open_stash_dialog();
     }
+    if args.activity {
+        // Both fail without changing anything (a missing branch and tag).
+        ui.snapshot_activity();
+        let until = Instant::now() + Duration::from_secs(20);
+        let mut n = 0;
+        while let Ok((id, m)) = rx.recv_timeout(until.saturating_duration_since(Instant::now())) {
+            n += usize::from(matches!(m, Msg::Activity(_)));
+            ui.on_tab_msg(id, m);
+            if n >= 2 {
+                break;
+            }
+        }
+        ui.enter_activity();
+    }
     if args.diff_split {
         ui.diff_split = true;
     }

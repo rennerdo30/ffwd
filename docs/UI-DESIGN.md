@@ -91,6 +91,15 @@ The capture above is the real PoC UI. `ffwd --snapshot` rendered it offscreen fr
 - **Cancel:** while a fetch, pull or push runs, its button reads "Fetching…" and shows **Cancel** on hover; clicking it (or the palette command) ends git and every helper it started.
 - **Diverged pull:** when both sides have new commits and Git's settings don't decide, a dialog offers **Merge** or **Rebase**.
 
+## Activity log (FF-48)
+
+- **Where:** the sidebar's Workspace section has **Activity**; the palette has "Activity log". A red "n failed" badge counts failures since the log was last open.
+- **What:** every operation the user starts, in every tab: fetch, pull, push; branch, tag and history operations; stashes; Local Changes actions.
+- **List (left):** newest first, with a tick or cross, the title and repository, the result line, the time and the duration.
+- **Detail (right):** each git command the operation ran (`$ git …`), with its exit code, its duration and what it printed. Errors are red.
+- **Keys:** `↑`/`↓` move; `j`/`k`/Space scroll the detail; `Ctrl+C` copies the entry with its commands and output; `Esc` goes back to the history.
+- **Privacy and memory:** the log lives in memory only, capped at 500 entries and 200 commands of 16 KB output each; nothing is written to disk.
+
 ## Stashes (FF-38)
 
 - **Save:** `Ctrl+Shift+S` (or the palette's "Stash changes") opens a dialog with an optional message. Untracked files are included by default; `Tab` toggles that.

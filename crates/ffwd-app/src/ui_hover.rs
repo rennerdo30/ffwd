@@ -25,6 +25,8 @@ pub enum Hot {
     Change(usize),
     /// An entry of the Files view's hit list.
     Files(usize),
+    /// A row of the activity log.
+    Activity(usize),
     /// An element of the find bar.
     Find(usize),
     /// A control in the diff bar.
@@ -90,6 +92,9 @@ impl Ui {
         if let Some(&(_, a)) = self.top_buttons.iter().find(|(r, _)| r.contains(x, y)) {
             return Some(Hot::Top(a));
         }
+        if self.r.activity_view {
+            return self.activity_hit_at(x, y).map(Hot::Activity);
+        }
         if self.r.files_view {
             return self.files_hit_at(x, y).map(Hot::Files);
         }
@@ -139,6 +144,7 @@ impl Ui {
             Hot::Dialog(_) => self.dialog_rect(),
             Hot::Change(i) => self.r.changes.hits.get(i).map_or(self.lay.list, |h| h.0.inset(-2, -2)),
             Hot::Files(i) => self.files_hit_rect(i),
+            Hot::Activity(i) => self.activity_hit_rect(i),
         }
     }
 

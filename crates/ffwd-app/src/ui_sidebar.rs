@@ -31,6 +31,7 @@ pub(super) enum SideKind {
     Header,
     Changes,
     Files,
+    Activity,
     All,
     Branch,
     Folder,
@@ -155,6 +156,11 @@ impl Ui {
             v.push(c);
             v.push(SideItem::new(0, SideKind::All, "All Commits", "all".into()));
             v.push(SideItem::new(0, SideKind::Files, "Files", "files".into()));
+            let mut a = SideItem::new(0, SideKind::Activity, "Activity", "activity".into());
+            if self.activity.unseen_failures > 0 {
+                a.badge = format!("{} failed", self.activity.unseen_failures);
+            }
+            v.push(a);
         }
         let refs = &self.r.refs.refs;
         let locals: Vec<(String, &Ref)> = refs
@@ -312,14 +318,17 @@ impl Ui {
             SideKind::Header | SideKind::Folder | SideKind::Remote => self.toggle_side(i),
             SideKind::Changes => self.enter_changes(),
             SideKind::Files => self.enter_files(),
+            SideKind::Activity => self.enter_activity(),
             SideKind::All => {
                 self.leave_changes();
                 self.leave_files();
+                self.leave_activity();
             }
             _ => match it.target.and_then(|t| self.r.by_id.get(&t).copied()) {
                 Some(row) => {
                     self.leave_changes();
                     self.leave_files();
+                    self.leave_activity();
                     self.select(row as usize)
                 }
                 None if it.target.is_some() => {
@@ -541,7 +550,7 @@ impl Ui {
                 SideKind::Tag => (TAG_FG, TEXT_2),
                 SideKind::Stash => (STASH_FG, TEXT_2),
                 SideKind::Changes => (MOD, TEXT),
-                SideKind::All | SideKind::Files => (TEXT_2, TEXT),
+                SideKind::All | SideKind::Files | SideKind::Activity => (TEXT_2, TEXT),
                 SideKind::Worktree => (TEXT_3, TEXT_2),
                 SideKind::Header => (TEXT_3, TEXT_3),
             };
@@ -568,6 +577,22 @@ impl Ui {
                     cv.round_border(b, self.pf(2.0), icon, BG_SIDEBAR);
                 }
                 SideKind::Changes => cv.fill_circle(ix, cy, self.pf(4.0), icon),
+                SideKind::Activity => {
+                    // A pulse line.
+                    let s = self.pf(5.0);
+                    cv.stroke(
+                        &[
+                            (ix - s, cy),
+                            (ix - s * 0.4, cy),
+                            (ix - s * 0.1, cy - s * 0.8),
+                            (ix + s * 0.3, cy + s * 0.8),
+                            (ix + s * 0.6, cy),
+                            (ix + s, cy),
+                        ],
+                        self.pf(1.4),
+                        icon,
+                    );
+                }
                 SideKind::All => {
                     for j in 0..3 {
                         let yy = cy - self.pf(4.0) + j as f32 * self.pf(4.0);
@@ -600,6 +625,7 @@ impl Ui {
                 let bx = row.right() as f32 - bw - self.pf(10.0);
                 let color = match it.kind {
                     SideKind::Changes => MOD,
+                    SideKind::Activity => DEL,
                     SideKind::Branch => ACCENT,
                     _ => TEXT_4,
                 };
@@ -654,7 +680,7 @@ impl Ui {
         }
     }
 
-    fn check(&self, cv: &mut Canvas, cx: f32, cy: f32, color: u32) {
+    pub(super) fn check(&self, cv: &mut Canvas, cx: f32, cy: f32, color: u32) {
         let s = self.pf(4.5);
         cv.stroke(&[(cx - s, cy), (cx - s * 0.3, cy + s * 0.7), (cx + s, cy - s * 0.8)], self.pf(1.8), color);
     }

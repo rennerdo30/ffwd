@@ -65,6 +65,8 @@ pub struct Args {
     pub prompt: bool,
     /// Opens the stash dialog (Ctrl+Shift+S).
     pub stash_dialog: bool,
+    /// Runs two harmless failing operations, then shows the activity log.
+    pub activity: bool,
     /// Snapshot with the find bar searching messages for this text.
     pub find: Option<String>,
     /// Snapshot with the diff side by side.
@@ -98,6 +100,7 @@ fn parse_args() -> Result<Args, String> {
         menu: false,
         prompt: false,
         stash_dialog: false,
+        activity: false,
         find: None,
         diff_split: false,
         file: None,
@@ -140,6 +143,7 @@ fn parse_args() -> Result<Args, String> {
             "--menu" => a.menu = true,
             "--prompt" => a.prompt = true,
             "--stash-dialog" => a.stash_dialog = true,
+            "--activity" => a.activity = true,
             "--find" => a.find = Some(val("--find")?),
             "--diff-split" => a.diff_split = true,
             "--file" => a.file = Some(val("--file")?.parse().map_err(|_| "bad file index")?),

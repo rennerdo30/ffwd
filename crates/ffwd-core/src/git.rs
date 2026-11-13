@@ -106,6 +106,7 @@ impl Git {
     /// Runs git to completion and returns stdout. Output above `limit` bytes
     /// is cut, so a pathological repository cannot exhaust memory.
     pub fn output_limited(&self, args: &[&str], limit: usize) -> Result<Vec<u8>, GitError> {
+        let t = std::time::Instant::now();
         let mut child = self.spawn(args)?;
         // stderr drains on its own thread so a chatty git can never block on
         // a full pipe while we read stdout.
@@ -124,6 +125,7 @@ impl Git {
         // Dropping stdout early may make git exit on SIGPIPE; that is fine
         // once we have read as much as we accept.
         let status = child.wait().map_err(GitError::Spawn)?;
+        note(args, status.code(), &err, t);
         if !status.success() && out.len() < limit {
             return Err(GitError::Failed {
                 args: args.join(" "),
@@ -138,6 +140,7 @@ impl Git {
     /// as success (`git diff --no-index` exits 1 when files differ).
     /// Returns stdout, capped at `limit` bytes.
     pub fn run_with(&self, args: &[&str], input: Option<&[u8]>, ok: &[i32], limit: usize) -> Result<Vec<u8>, GitError> {
+        let t = std::time::Instant::now();
         let mut cmd = self.command(args);
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
         if input.is_some() {
@@ -173,6 +176,7 @@ impl Git {
         let err = err_reader.and_then(|t| t.join().ok()).unwrap_or_default();
         let status = child.wait().map_err(GitError::Spawn)?;
         let code = status.code();
+        note(args, code, &err, t);
         if status.success() || code.is_some_and(|c| ok.contains(&c)) {
             return Ok(out);
         }
@@ -182,6 +186,60 @@ impl Git {
     pub fn output(&self, args: &[&str]) -> Result<Vec<u8>, GitError> {
         self.output_limited(args, 256 * 1024 * 1024)
     }
+}
+
+/// One git command an operation ran, for the activity log.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Ran {
+    /// The arguments after `git` (without ffwd's fixed `-c` options).
+    pub args: String,
+    pub code: Option<i32>,
+    /// What git wrote to stderr, capped.
+    pub stderr: String,
+    pub ms: u32,
+}
+
+thread_local! {
+    static RECORD: std::cell::RefCell<Option<Vec<Ran>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// At most this many commands and this much stderr per command are kept.
+const MAX_RAN: usize = 200;
+const MAX_RAN_STDERR: usize = 16 * 1024;
+
+/// Runs `f` and returns the git commands it ran on this thread (an
+/// operation's worker), for the activity log. Nests: an inner recording
+/// does not hide commands from the outer one's caller.
+pub fn recording<T>(f: impl FnOnce() -> T) -> (T, Vec<Ran>) {
+    let outer = RECORD.with(|r| r.replace(Some(Vec::new())));
+    let out = f();
+    let ran = RECORD.with(|r| r.replace(outer)).unwrap_or_default();
+    if !ran.is_empty() {
+        RECORD.with(|r| {
+            if let Some(v) = r.borrow_mut().as_mut() {
+                v.extend(ran.iter().cloned());
+                v.truncate(MAX_RAN);
+            }
+        });
+    }
+    (out, ran)
+}
+
+/// Records a finished command when this thread is recording.
+pub fn note(args: &[&str], code: Option<i32>, stderr: &[u8], t: std::time::Instant) {
+    RECORD.with(|r| {
+        if let Some(v) = r.borrow_mut().as_mut()
+            && v.len() < MAX_RAN
+        {
+            let e = &stderr[..stderr.len().min(MAX_RAN_STDERR)];
+            v.push(Ran {
+                args: args.join(" "),
+                code,
+                stderr: String::from_utf8_lossy(e).into_owned(),
+                ms: t.elapsed().as_millis().min(u32::MAX as u128) as u32,
+            });
+        }
+    });
 }
 
 /// Lossy UTF-8 into a boxed str: repository text is never trusted to be valid.
@@ -257,5 +315,27 @@ impl Drop for Killable {
                 windows_sys::Win32::Foundation::CloseHandle(self.job as _);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recording_collects_the_commands_of_this_thread() {
+        let g = Git { root: std::env::temp_dir() };
+        let ((), ran) = recording(|| {
+            let _ = g.output(&["--version"]);
+            let _ = g.run_with(&["rev-parse", "--verify", "--quiet", "no-such-ref-ffwd"], None, &[], 1024);
+        });
+        assert_eq!(ran.len(), 2);
+        assert_eq!(ran[0].args, "--version");
+        assert_eq!(ran[0].code, Some(0));
+        assert_ne!(ran[1].code, Some(0));
+        // Not recording: nothing is kept.
+        let _ = g.output(&["--version"]);
+        let ((), again) = recording(|| {});
+        assert!(again.is_empty());
     }
 }

@@ -75,6 +75,8 @@ pub enum Msg {
         seq: u64,
         result: Result<Vec<ffwd_core::Oid>, String>,
     },
+    /// An operation for the activity log (FF-48).
+    Activity(Box<crate::ui::ActivityEntry>),
     /// A branch, tag or history operation ended.
     RefOp(Result<String, ffwd_core::refops::OpError>),
     /// What a discard removed (for Ctrl+Z).
@@ -131,6 +133,36 @@ pub enum RefOp {
 }
 
 impl RefOp {
+    /// What the activity log calls it.
+    pub fn title(&self) -> String {
+        match self {
+            RefOp::Checkout(t) => format!("Checkout {t}"),
+            RefOp::CreateBranch(n, ..) => format!("Create branch {n}"),
+            RefOp::Rename(o, n) => format!("Rename {o} to {n}"),
+            RefOp::DeleteBranch(n, _) => format!("Delete branch {n}"),
+            RefOp::CreateTag(n, _) => format!("Create tag {n}"),
+            RefOp::DeleteTag(n) => format!("Delete tag {n}"),
+            RefOp::Merge(w, _) => format!("Merge {w}"),
+            RefOp::Rebase(o) => format!("Rebase onto {o}"),
+            RefOp::CherryPick(c) => format!("Cherry-pick {}", &c[..c.len().min(10)]),
+            RefOp::Revert(c) => format!("Revert {}", &c[..c.len().min(10)]),
+            RefOp::Reset(to, _) => format!("Reset to {}", &to[..to.len().min(10)]),
+            RefOp::Abort(k) => format!("Abort the {k}"),
+            RefOp::StashSave(..) => "Stash".into(),
+            RefOp::StashApply(n, true) => format!("Pop {n}"),
+            RefOp::StashApply(n, false) => format!("Apply {n}"),
+            RefOp::StashDrop(n) => format!("Drop {n}"),
+            RefOp::StashRename(n, _) => format!("Rename {n}"),
+            RefOp::RemoteAdd(n, _) => format!("Add remote {n}"),
+            RefOp::RemoteSetUrl(n, _) => format!("Change the URL of {n}"),
+            RefOp::RemoteRename(o, n) => format!("Rename remote {o} to {n}"),
+            RefOp::RemoteRemove(n) => format!("Remove remote {n}"),
+            RefOp::RemoteFetch(n) => format!("Fetch {n}"),
+            RefOp::RemoteTest(n) => format!("Test {n}"),
+            RefOp::Sync(op) => op.name().to_string(),
+        }
+    }
+
     pub fn verb(&self) -> &'static str {
         match self {
             RefOp::Checkout(_) => "Checking out",
@@ -162,7 +194,8 @@ impl RefOp {
 pub fn refop(git: Git, op: RefOp, sink: &Sink) {
     spawn("refop", sink, move |sink| {
         use ffwd_core::refops as r;
-        let res = match &op {
+        let t = std::time::Instant::now();
+        let (res, ran) = ffwd_core::git::recording(|| match &op {
             RefOp::Checkout(t) => r::checkout(&git, t),
             RefOp::CreateBranch(n, at, sw) => r::create_branch(&git, n, at, *sw),
             RefOp::Rename(o, n) => r::rename_branch(&git, o, n),
@@ -188,7 +221,13 @@ pub fn refop(git: Git, op: RefOp, sink: &Sink) {
                 ffwd_core::remotes::test(&git, n, std::time::Duration::from_secs(30), Default::default())
             }
             RefOp::Sync(_) => Err(r::OpError::Failed("internal: a sync runs through start_op".into())),
+        });
+        let (ok, summary) = match &res {
+            Ok(m) => (true, m.clone()),
+            Err(e) => (false, e.to_string()),
         };
+        let ms = t.elapsed().as_millis() as u32;
+        sink(Msg::Activity(Box::new(crate::ui::ActivityEntry::new(&git, op.title(), ok, summary, ms, ran))));
         sink(Msg::RefOp(res));
         sink(Msg::InProgress(r::in_progress(&git)));
     });
@@ -223,10 +262,34 @@ pub fn changes_load(git: Git, sink: &Sink) {
     });
 }
 
+impl ChangeOp {
+    /// What the activity log calls it.
+    pub fn title(&self) -> String {
+        let files = |n: usize| if n == 1 { "1 file".to_string() } else { format!("{n} files") };
+        match self {
+            ChangeOp::Stage(p) => format!("Stage {}", files(p.len())),
+            ChangeOp::Unstage(p) => format!("Unstage {}", files(p.len())),
+            ChangeOp::Hunk(e, side, _) => {
+                let verb = if *side == ffwd_core::changes::Side::Unstaged { "Stage" } else { "Unstage" };
+                format!("{verb} a hunk of {}", e.path)
+            }
+            ChangeOp::Lines(e, ..) => format!("Stage lines of {}", e.path),
+            ChangeOp::Discard(v) => format!("Discard {}", files(v.len())),
+            ChangeOp::Restore(_) => "Undo the discard".into(),
+            ChangeOp::Ignore(p) => format!("Ignore {p}"),
+            ChangeOp::Commit(..) => "Commit".into(),
+            ChangeOp::TakeSide(p, _) => format!("Resolve {p}"),
+            ChangeOp::SaveResolved(p, _) => format!("Resolve {p}"),
+            ChangeOp::Continue(k) => format!("Continue the {k}"),
+        }
+    }
+}
+
 pub fn changes_op(git: Git, op: ChangeOp, sink: &Sink) {
     spawn("change-op", sink, move |sink| {
         use ffwd_core::changes as c;
-        let (commit, result) = match &op {
+        let t = std::time::Instant::now();
+        let ((commit, result), ran) = ffwd_core::git::recording(|| match &op {
             ChangeOp::Stage(p) => (false, c::stage(&git, &refs(p)).map(|_| format!("Staged {}", count(p.len())))),
             ChangeOp::Unstage(p) => (false, c::unstage(&git, &refs(p)).map(|_| format!("Unstaged {}", count(p.len())))),
             ChangeOp::Hunk(e, side, h) => (
@@ -262,7 +325,13 @@ pub fn changes_op(git: Git, op: ChangeOp, sink: &Sink) {
             ChangeOp::TakeSide(p, ours) => (false, ffwd_core::conflict::take_side(&git, p, *ours)),
             ChangeOp::SaveResolved(p, t) => (false, ffwd_core::conflict::save_resolved(&git, p, t)),
             ChangeOp::Continue(kind) => (true, ffwd_core::conflict::continue_op(&git, kind)),
+        });
+        let (ok, summary) = match &result {
+            Ok(m) => (true, m.clone()),
+            Err(e) => (false, e.clone()),
         };
+        let ms = t.elapsed().as_millis() as u32;
+        sink(Msg::Activity(Box::new(crate::ui::ActivityEntry::new(&git, op.title(), ok, summary, ms, ran))));
         sink(Msg::ChangesOp { commit, result });
         sink(Msg::Changes(c::load(&git).map_err(|e| e.to_string())));
         sink(Msg::InProgress(ffwd_core::refops::in_progress(&git)));

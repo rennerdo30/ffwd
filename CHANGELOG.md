@@ -15,6 +15,7 @@
   - check out (also remote branches, with tracking, and detached), create, rename and delete branches and tags;
   - merge (four modes), rebase, cherry-pick, revert, reset (soft, mixed, hard), each with a backup ref where commits could be lost;
   - double-click checkout; `Ctrl+B` and `Ctrl+Shift+G`.
+- **Activity log** (FF-48): every operation with the exact git commands it ran, their exit codes, times and output; a sidebar badge counts new failures.
 - **Remotes and sync** (FF-39):
   - add (with a suggested name and a first fetch), edit the URL, rename, remove (asks first), fetch one, test the connection;
   - cancel a running fetch, pull or push from its button;
