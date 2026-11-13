@@ -187,7 +187,7 @@
 | History for the selected code | M2 | |
 | Timeline in the history window | M2 | |
 | Blame with a timeline, back and forward | Partial | Blame per line with commit bands; timeline and back and forward come later |
-| Reflog: show and recover lost commits | M2 | Also feeds undo |
+| Reflog: show and recover lost commits | **Built** | Reflog view (sidebar, palette): entries on no branch are marked “lost”; Create branch here, Check out, Reset to here, Show in history, Copy SHA |
 
 ## 12. Repositories, tabs and workspaces (FF-44)
 

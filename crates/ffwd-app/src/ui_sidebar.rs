@@ -32,6 +32,7 @@ pub(super) enum SideKind {
     Changes,
     Files,
     Activity,
+    Reflog,
     All,
     Branch,
     Folder,
@@ -163,6 +164,7 @@ impl Ui {
                 a.badge = format!("{} failed", self.activity.unseen_failures);
             }
             v.push(a);
+            v.push(SideItem::new(0, SideKind::Reflog, "Reflog", "reflog".into()));
         }
         let refs = &self.r.refs.refs;
         let locals: Vec<(String, &Ref)> = refs
@@ -356,10 +358,12 @@ impl Ui {
             SideKind::Files => self.enter_files(),
             SideKind::Submodule => self.open_submodule(it.key.trim_start_matches("m:")),
             SideKind::Activity => self.enter_activity(),
+            SideKind::Reflog => self.enter_reflog(),
             SideKind::All => {
                 self.leave_changes();
                 self.leave_files();
                 self.leave_activity();
+                self.leave_reflog();
             }
             _ => match it.target.and_then(|t| self.r.by_id.get(&t).copied()) {
                 Some(row) => {
@@ -587,8 +591,8 @@ impl Ui {
                 SideKind::Tag => (TAG_FG, TEXT_2),
                 SideKind::Stash => (STASH_FG, TEXT_2),
                 SideKind::Changes => (MOD, TEXT),
-                SideKind::All | SideKind::Files | SideKind::Activity => (TEXT_2, TEXT),
                 SideKind::Worktree | SideKind::Submodule | SideKind::PullRequest => (TEXT_3, TEXT_2),
+                SideKind::All | SideKind::Files | SideKind::Activity | SideKind::Reflog => (TEXT_2, TEXT),
                 SideKind::Header => (TEXT_3, TEXT_3),
             };
             let text = if selected { TEXT } else { text };
@@ -614,6 +618,15 @@ impl Ui {
                     cv.round_border(b, self.pf(2.0), icon, BG_SIDEBAR);
                 }
                 SideKind::Changes => cv.fill_circle(ix, cy, self.pf(4.0), icon),
+                SideKind::Reflog => {
+                    // A clock: where HEAD has been.
+                    cv.ring(ix, cy, self.pf(5.0), self.pf(1.4), icon);
+                    cv.stroke(
+                        &[(ix, cy - self.pf(3.0)), (ix, cy), (ix + self.pf(2.5), cy + self.pf(1.5))],
+                        self.pf(1.3),
+                        icon,
+                    );
+                }
                 SideKind::Activity => {
                     // A pulse line.
                     let s = self.pf(5.0);

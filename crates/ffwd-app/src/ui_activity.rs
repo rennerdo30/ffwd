@@ -134,6 +134,7 @@ impl Ui {
             self.r.activity_view = true;
             self.r.changes_view = false;
             self.r.files_view = false;
+            self.r.reflog_view = false;
             self.focus = Focus::List;
         }
         self.activity.unseen_failures = 0;

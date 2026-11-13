@@ -35,6 +35,8 @@ pub use ai_view::Prepared as AiPrepared;
 mod files_view;
 #[path = "ui_rebase.rs"]
 mod rebase_view;
+#[path = "ui_reflog.rs"]
+mod reflog_view;
 pub use files_view::{Loaded as FileLoaded, TreeResult as FilesTreeResult};
 #[path = "ui_menu.rs"]
 mod menu;
@@ -290,6 +292,7 @@ const CMD_PATCH_STAGED: &str = "Copy staged changes as patch";
 const CMD_APPLY_CLIP: &str = "Apply patch from the clipboard";
 const CMD_APPLY_FILE: &str = "Apply patch from a file…";
 const CMD_CREATE_PR: &str = "Create pull request on GitHub";
+const CMD_REFLOG: &str = "Reflog (recover lost commits)";
 const CMD_AI_COMMIT: &str = "AI: Draft a commit message";
 const CMD_CLONE: &str = "Clone repository…";
 const CMD_INIT: &str = "Create a new repository…";
@@ -325,6 +328,7 @@ const WORKING: &[&str] = &[
     CMD_APPLY_CLIP,
     CMD_APPLY_FILE,
     CMD_CREATE_PR,
+    CMD_REFLOG,
     CMD_AI_COMMIT,
     CMD_CLONE,
     CMD_INIT,
@@ -372,6 +376,7 @@ const COMMANDS: &[(&str, &str)] = &[
     (CMD_APPLY_CLIP, ""),
     (CMD_APPLY_FILE, ""),
     (CMD_CREATE_PR, ""),
+    (CMD_REFLOG, ""),
     (CMD_AI_COMMIT, ""),
     (CMD_CLONE, ""),
     (CMD_INIT, ""),
@@ -439,6 +444,9 @@ pub struct RepoState {
     pub files: files_view::Files,
     /// The activity log view (FF-48); the log itself is app-wide.
     pub activity_view: bool,
+    /// The reflog view (FF-43).
+    pub reflog_view: bool,
+    pub reflog: reflog_view::Reflog,
     /// The interactive rebase plan, shown over the other views (FF-37).
     pub rebase: Option<rebase_view::RebaseState>,
     /// The find bar over the commit list (FF-34).
@@ -879,6 +887,7 @@ impl Ui {
         let (changes_view, changes) = (self.r.changes_view, std::mem::take(&mut self.r.changes));
         let (files_view, files) = (self.r.files_view, std::mem::take(&mut self.r.files));
         let activity_view = self.r.activity_view;
+        let reflog_view = self.r.reflog_view;
         self.r = RepoState {
             repo_name: name,
             git,
@@ -889,6 +898,7 @@ impl Ui {
             files_view,
             files,
             activity_view,
+            reflog_view,
             ..Default::default()
         };
         self.notice = notice;
@@ -1294,6 +1304,7 @@ impl Ui {
                 Ok(m) => self.set_notice(m),
                 Err(e) => self.set_notice(format!("Failed: {e}")),
             },
+            Msg::Reflog(r) => self.on_reflog(r),
             Msg::AiPrepared { seq, result } => self.on_ai_prepared(seq, result),
             Msg::AiToken { seq, text } => self.on_ai_token(seq, text),
             Msg::AiDone { seq, result } => self.on_ai_done(seq, result),
@@ -1590,6 +1601,9 @@ impl Ui {
         {
             return;
         }
+        if self.r.reflog_view && self.focus != Focus::Side && self.focus != Focus::SideFilter && self.reflog_key(k) {
+            return;
+        }
         let page = self.visible_rows().saturating_sub(1).max(1);
         match (self.focus, k) {
             (_, Key::Palette) => self.open_palette(),
@@ -1670,6 +1684,8 @@ impl Ui {
             self.side_wheel(n);
         } else if self.r.rebase.is_some() {
             self.rebase_wheel(n);
+        } else if self.r.reflog_view {
+            self.reflog_wheel(n);
         } else if self.r.activity_view {
             self.activity_wheel(x, y, n);
         } else if self.r.files_view {
@@ -1742,6 +1758,13 @@ impl Ui {
         }
         if let Some(&(_, a)) = self.top_buttons.iter().find(|(r, _)| r.contains(x, y)) {
             self.top_action(a);
+            return;
+        }
+        if self.r.reflog_view && self.reflog_click(x, y) {
+            if self.focus == Focus::Side || self.focus == Focus::SideFilter {
+                self.focus = Focus::List;
+                self.damage.rects.push(self.lay.side);
+            }
             return;
         }
         if self.r.activity_view && self.activity_click(x, y) {
@@ -2096,6 +2119,7 @@ impl Ui {
                 checkout: false,
             }),
             CMD_CREATE_PR => self.create_pr(),
+            CMD_REFLOG => self.enter_reflog(),
             CMD_AI_COMMIT => self.ai_draft(),
             CMD_CLONE => self.open_dialog(DialogKind::Name {
                 act: NameAct::CloneUrl,
@@ -2199,9 +2223,10 @@ impl Ui {
                 self.close_palette();
                 match action {
                     Some(PAction::Goto(_) | PAction::GotoRef(..))
-                        if self.r.changes_view || self.r.files_view || self.r.activity_view =>
+                        if self.r.changes_view || self.r.files_view || self.r.activity_view || self.r.reflog_view =>
                     {
                         // A jump shows history again.
+                        self.leave_reflog();
                         self.leave_activity();
                         self.leave_changes();
                         self.leave_files();
@@ -2311,6 +2336,10 @@ impl Ui {
         if self.r.rebase.is_some() {
             if !clip.intersect(self.rebase_area()).is_empty() {
                 self.paint_rebase(cv);
+            }
+        } else if self.r.reflog_view {
+            if !clip.intersect(self.reflog_area()).is_empty() {
+                self.paint_reflog(cv);
             }
         } else if self.r.activity_view {
             if !clip.intersect(self.activity_layout().area).is_empty() {
@@ -5238,6 +5267,87 @@ mod tests {
         pump(&mut ui, "the checkout", &|u| u.r.refs.head_branch.as_deref() == Some("pr/7"));
         assert!(g.root.join("b.txt").exists());
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// The reflog (FF-43): a commit lost by a hard reset shows as "lost";
+    /// its menu creates a branch that brings it back; partial repaints
+    /// match full ones.
+    #[test]
+    fn reflog_recovers_a_lost_commit() {
+        use std::sync::mpsc;
+        let mut te = TextEngine::new();
+        let Some(f) = load_fonts(&mut te) else { return };
+        let dir = std::env::temp_dir().join(format!("ffwd-ui-reflog-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = Git { root: dir.clone() };
+        for a in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.name", "ffwd test"],
+            &["config", "user.email", "test@example.invalid"],
+            &["config", "commit.gpgsign", "false"],
+        ] {
+            g.output(a).unwrap();
+        }
+        for m in ["one", "precious work"] {
+            std::fs::write(dir.join("a.txt"), m).unwrap();
+            g.output(&["add", "."]).unwrap();
+            g.output(&["commit", "-q", "-m", m]).unwrap();
+        }
+        let lost = String::from_utf8(g.output(&["rev-parse", "HEAD"]).unwrap()).unwrap().trim().to_string();
+        g.output(&["reset", "-q", "--hard", "HEAD~1"]).unwrap();
+        let (tx, rx) = mpsc::channel::<(u64, Msg)>();
+        let tx = Arc::new(std::sync::Mutex::new(tx));
+        let sinks: SinkFactory = Arc::new(move |id| {
+            let tx = tx.clone();
+            Arc::new(move |m| {
+                if let Ok(t) = tx.lock() {
+                    let _ = t.send((id, m));
+                }
+            })
+        });
+        crate::work::start(dir.clone(), &sinks(1));
+        let empty = crate::settings::Settings::parse("");
+        let mut ui = Ui::new(te, f, empty.clone(), empty, Some((1, dir.clone())), sinks, 1280, 800, 1.0);
+        let pump = |ui: &mut Ui, what: &str, done: &dyn Fn(&Ui) -> bool| {
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while !done(ui) {
+                let left = until.saturating_duration_since(std::time::Instant::now());
+                assert!(!left.is_zero(), "timed out waiting for {what}; notice: {:?}", ui.notice);
+                if let Ok((id, m)) = rx.recv_timeout(left) {
+                    ui.on_tab_msg(id, m);
+                }
+            }
+        };
+        pump(&mut ui, "history", &|u| u.r.log_done && u.r.commits.len() == 1 && u.r.refs.head_branch.is_some());
+        let mut screen = vec![0u32; 1280 * 800];
+        ui.paint(&mut Canvas::new(&mut screen, 1280, 800), true);
+        ui.enter_reflog();
+        pump(&mut ui, "the reflog", &|u| u.r.reflog.entries.is_some());
+        assert_partial_paint_is_full(&mut ui, &mut screen, "the reflog");
+        let entries = ui.r.reflog.entries.clone().unwrap().unwrap();
+        let k = entries.iter().position(|e| e.id.to_string() == lost).expect("the lost commit is in the reflog");
+        assert!(!ui.r.by_id.contains_key(&entries[k].id), "it is on no branch");
+        // Its menu: Create branch here…, named "rescue".
+        ui.key(Key::Home);
+        for _ in 0..k {
+            ui.key(Key::Down);
+        }
+        assert_partial_paint_is_full(&mut ui, &mut screen, "select the lost commit");
+        let items = ui.reflog_menu(k);
+        assert!(!items.iter().any(|i| i.label == "Show in history"), "not in the loaded history");
+        let c = items.iter().position(|i| i.label == "Create branch here…").unwrap();
+        ui.open_menu(100, 100, items);
+        ui.menu_activate(c);
+        for ch in "rescue".chars() {
+            ui.key(Key::Char(ch));
+        }
+        ui.key(Key::Tab); // do not check it out
+        ui.key(Key::Enter);
+        pump(&mut ui, "the branch", &|u| u.dialog.is_none() && u.r.refs.refs.iter().any(|r| &*r.name == "rescue"));
+        let tip = String::from_utf8(g.output(&["rev-parse", "rescue"]).unwrap()).unwrap();
+        assert_eq!(tip.trim(), lost);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The find bar from the keyboard: message search selects the match,

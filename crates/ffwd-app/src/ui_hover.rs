@@ -29,6 +29,8 @@ pub enum Hot {
     Files(usize),
     /// A row of the activity log.
     Activity(usize),
+    /// A reflog entry.
+    Reflog(usize),
     /// An element of the interactive rebase plan.
     Rebase(usize),
     /// An element of the find bar.
@@ -99,6 +101,9 @@ impl Ui {
         if self.r.rebase.is_some() {
             return self.rebase_hit_at(x, y).map(Hot::Rebase);
         }
+        if self.r.reflog_view {
+            return self.reflog_hit_at(x, y).map(Hot::Reflog);
+        }
         if self.r.activity_view {
             return self.activity_hit_at(x, y).map(Hot::Activity);
         }
@@ -156,6 +161,7 @@ impl Ui {
             Hot::Change(i) => self.r.changes.hits.get(i).map_or(self.lay.list, |h| h.0.inset(-2, -2)),
             Hot::Files(i) => self.files_hit_rect(i),
             Hot::Activity(i) => self.activity_hit_rect(i),
+            Hot::Reflog(i) => self.reflog_hit_rect(i),
             Hot::Rebase(i) => self.rebase_hit_rect(i),
         }
     }

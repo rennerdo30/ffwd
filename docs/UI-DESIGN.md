@@ -170,6 +170,13 @@ The capture above is the real PoC UI. `ffwd --snapshot` rendered it offscreen fr
 - **Sidebar:** a Pull requests section with "#<n> <title>", "draft" marked. Its menu: Check out as `pr/<n>` (fetches GitHub's `pull/<n>/head`, no `gh` needed), Open in the browser, Copy link, Copy branch name.
 - **Create:** the section header's menu or the palette, "Create pull request on GitHub", runs `gh pr create --web`. GitHub's page opens with the repository's template. If the branch is not pushed yet, ffwd says so.
 
+## Reflog (FF-43)
+
+- **Where:** the sidebar's Workspace section has **Reflog**; the palette has "Reflog (recover lost commits)".
+- **List:** every place HEAD has been, newest first: `HEAD@{n}`, the SHA, what moved HEAD ("commit: …", "reset: moving to …", "checkout: moving from …") and when. Commits on no loaded branch carry a red **lost** chip.
+- **Menu** (`Enter` or right click): Create branch here… (brings a lost commit back), Show in history (when it is in the list), Check out (detached), Reset <branch> to here… (asks first, keeps a backup ref), Copy SHA.
+- `↑`/`↓`/Page keys move; `Esc` goes back to the history. Up to 2,000 entries, read on a worker.
+
 ## Stashes (FF-38)
 
 - **Save:** `Ctrl+Shift+S` (or the palette's "Stash changes") opens a dialog with an optional message. Untracked files are included by default; `Tab` toggles that.

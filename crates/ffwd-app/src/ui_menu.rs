@@ -30,21 +30,14 @@ pub enum MenuAct {
     CopyPatch(PatchSrc),
     /// `gh pr create --web` for the current branch.
     CreatePr,
+    /// Select a commit in the history view.
+    ShowCommit(String),
     /// Files (FF-47): open in the editor (or the default app), show in
     /// the folder, external diff and merge tools.
     OpenFile(PathBuf, bool),
     ShowFile(PathBuf),
     DiffTool(String, ffwd_core::tools::DiffOf),
     MergeTool(String),
-}
-
-/// What a patch is made from (FF-46).
-#[derive(Clone, Debug)]
-pub enum PatchSrc {
-    Commit(String),
-    Stash(String),
-    /// The staged (true) or unstaged changes.
-    Working(bool),
 }
 
 #[derive(Clone, Debug)]
@@ -399,7 +392,7 @@ impl Ui {
         }
     }
 
-    fn reset_ask(&self, sha: &str, short: &str, head: &str) -> Ask {
+    pub(super) fn reset_ask(&self, sha: &str, short: &str, head: &str) -> Ask {
         Ask {
             title: format!("Reset {head} to {short}?"),
             text: "Soft keeps every change staged. Mixed keeps them as unstaged changes. Hard throws away staged and unstaged changes too. The current tip is kept as a backup ref first, so the commits can be restored.".into(),
@@ -482,6 +475,13 @@ impl Ui {
             Some(MenuAct::OpenUrl(u)) => crate::platform::open_url(u),
             Some(MenuAct::CopyPatch(src)) => self.make_patch(src, None),
             Some(MenuAct::CreatePr) => self.create_pr(),
+            Some(MenuAct::ShowCommit(sha)) => {
+                if let Some(&row) = ffwd_core::Oid::from_hex(sha.as_bytes()).and_then(|id| self.r.by_id.get(&id)) {
+                    self.leave_reflog();
+                    self.side_select("all");
+                    self.select(row as usize);
+                }
+            }
             Some(MenuAct::RebaseFrom(sha)) => self.open_rebase(sha),
             Some(MenuAct::OpenSubmodule(name)) => self.open_submodule(&name),
             Some(MenuAct::Ask(a)) => self.open_dialog(DialogKind::Ask(*a)),
@@ -1139,6 +1139,9 @@ impl Ui {
             return;
         }
         self.close_menu();
+        if self.r.reflog_view && self.reflog_right_click(x, y) {
+            return;
+        }
         if let Some(i) = self.tab_at(x, y) {
             let items = self.tab_menu(i);
             return self.open_menu(x, y, items);
@@ -1495,4 +1498,30 @@ fn show_label() -> &'static str {
     } else {
         "Show in the folder"
     }
+}
+
+/// The actions on a reflog entry's commit (FF-43).
+pub(super) fn reflog_items(ui: &Ui, sha: &str, in_history: bool) -> Vec<MenuItem> {
+    let short = sha[..sha.len().min(8)].to_string();
+    let mut v = vec![item("Create branch here…", MenuAct::Name(NameAct::CreateBranch { at: sha.to_string() }))];
+    if in_history {
+        v.push(item("Show in history", MenuAct::ShowCommit(sha.to_string())));
+    }
+    v.push(item(format!("Check out {short} (detached)"), MenuAct::Run(RefOp::Checkout(sha.to_string()))));
+    if let Some(h) = ui.r.refs.head_branch.as_deref() {
+        v.push(sep());
+        v.push(danger(format!("Reset {h} to {short}…"), MenuAct::Ask(Box::new(ui.reset_ask(sha, &short, h)))));
+    }
+    v.push(sep());
+    v.push(item("Copy SHA", MenuAct::Copy(sha.to_string())));
+    v
+}
+
+/// What a patch is made from (FF-46).
+#[derive(Clone, Debug)]
+pub enum PatchSrc {
+    Commit(String),
+    Stash(String),
+    /// The staged (true) or unstaged changes.
+    Working(bool),
 }

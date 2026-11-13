@@ -170,6 +170,7 @@ impl Ui {
             self.r.files_view = true;
             self.r.changes_view = false;
             self.r.activity_view = false;
+            self.r.reflog_view = false;
             self.focus = Focus::List;
         }
         self.side_select("files");

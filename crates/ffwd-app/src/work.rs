@@ -117,6 +117,8 @@ pub enum Msg {
     PullRequests(Result<Vec<ffwd_core::hosting::PullRequest>, String>),
     /// `gh pr create --web` finished (it opens the browser).
     PrCreate(Result<String, String>),
+    /// The reflog of HEAD (FF-43).
+    Reflog(Result<Vec<ffwd_core::reflog::Entry>, String>),
     /// A branch, tag or history operation ended.
     RefOp(Result<String, ffwd_core::refops::OpError>),
     /// What a discard removed (for Ctrl+Z).
