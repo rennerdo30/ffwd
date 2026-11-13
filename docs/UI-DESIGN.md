@@ -58,14 +58,20 @@ The capture above is the real PoC UI. `ffwd --snapshot` rendered it offscreen fr
 - **Left column:**
   - **Unstaged** (with **Stage all**) and **Staged** (with **Unstage all**): one row per file, with a status letter (A, M, D, R, U), its name and its folder.
   - Below them, the commit box: a subject (its length turns amber past 50 characters and red past 72), a multi-line description, **Amend**, and the **Commit** button (`Ctrl+Enter`).
-- **Right:** the selected file's diff. Every hunk header has a **Stage hunk** or **Unstage hunk** button. An untracked file shows as all added and stages whole.
+- **Right:** the selected file's diff.
+  - Every hunk header has a **Stage hunk** or **Unstage hunk** button.
+  - Single lines: `Space` (or a click) picks a `+` or `−` line, and `S` (or the **Stage N lines** button) stages the picked lines, also across hunks and in new files.
 - **Keys:**
   - `↑ ↓` move through both lists as one.
   - `Space` or `Enter` stages or unstages the selected file; a double click does the same.
   - `→` goes into the diff; `Tab` moves through the lists, subject and description.
   - Typing a letter in a list starts the subject.
   - `Ctrl+Enter` commits from anywhere in the view.
-- **Amend** fills an empty message with the last commit's message.
+  - `Delete` discards the selected file's unstaged changes, or deletes a new file. The first press names what will be lost; a second press within 4 s discards it.
+  - `Ctrl+Z` undoes the discard: the content was saved in Git's object store first.
+  - `I` adds an untracked file to `.gitignore`.
+  - `Ctrl+R` cycles through the last 20 commit messages.
+- **Amend** fills an empty message with the last commit's message. **Skip hooks** commits with `--no-verify`.
 - **Hook failures** show their message above the Commit button, and the message stays.
 - **Fresh state:**
   - the view reloads when the window gets the focus back, and after every operation;
@@ -159,7 +165,7 @@ Planned M1 keys follow common Git-client conventions (for example `Ctrl+Shift+G`
 
 ## Next design steps
 
-1. Local Changes, next steps: line staging, discard with undo, `.gitignore`, and an AI draft of the commit message.
+1. Local Changes, next steps: a combined list, drag-and-drop staging, and an AI draft of the commit message.
 2. Side-by-side diff with token highlights.
 3. Interactive rebase as an editable list in the history pane.
 4. A light theme, with theme files in the Kwil format.

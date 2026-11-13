@@ -6,7 +6,10 @@
   - unstaged and staged lists, and the diff of the selected file;
   - stage or unstage files (Space, double click, Stage all, Unstage all) and single hunks;
   - commit with a subject and a description, and amend (`Ctrl+Enter`);
-  - a tab badge for uncommitted changes, and a refresh when the window gets the focus back.
+  - a tab badge for uncommitted changes, and a refresh when the window gets the focus back;
+  - stage single lines (`Space` picks, `S` stages);
+  - discard with a confirmation and `Ctrl+Z` to undo;
+  - add to `.gitignore` (`I`), skip hooks, recent messages (`Ctrl+R`).
 - **Fix:** the Settings backdrop no longer stays on screen after closing (FF-52).
 
 ## 0.2.0-beta.1

@@ -1069,6 +1069,7 @@ impl Ui {
             Msg::ChangesDiff { seq, result } => self.on_changes_diff(seq, result),
             Msg::ChangesOp { commit, result } => self.on_changes_op(commit, result),
             Msg::LastMessage(m) => self.on_last_message(m),
+            Msg::Discarded(b) => self.r.changes.undo.push(b),
         }
     }
 
@@ -1263,6 +1264,16 @@ impl Ui {
             )
         {
             self.palette_key(k);
+            return;
+        }
+        // Local Changes' own Ctrl keys (text editing, undo, recent
+        // messages, commit) come before the global shortcuts.
+        if self.r.changes_view
+            && self.palette.is_none()
+            && !matches!(self.focus, Focus::Side | Focus::SideFilter)
+            && matches!(k, Key::Ctrl('a' | 'c' | 'v' | 'x' | 'z' | 'r') | Key::CtrlBackspace | Key::CtrlEnter)
+            && self.changes_key(k)
+        {
             return;
         }
         // Global shortcuts work everywhere, also with the palette open.
@@ -3173,6 +3184,91 @@ mod tests {
         pump(&mut ui, &|u| u.r.changes.busy.is_none() && u.r.changes.subject.text().is_empty());
         let log = String::from_utf8(g.output(&["log", "--format=%s"]).unwrap()).unwrap();
         assert_eq!(log.lines().collect::<Vec<_>>(), vec!["Add b", "first"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Lines, discard and undo, recent messages, all from the keyboard.
+    #[test]
+    fn local_changes_lines_discard_undo_with_keys() {
+        use std::sync::mpsc;
+        let mut te = TextEngine::new();
+        let Some(f) = load_fonts(&mut te) else { return };
+        let dir = std::env::temp_dir().join(format!("ffwd-ui-changes2-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = Git { root: dir.clone() };
+        for a in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.name", "ffwd test"],
+            &["config", "user.email", "test@example.invalid"],
+            &["config", "commit.gpgsign", "false"],
+            &["config", "core.autocrlf", "false"],
+        ] {
+            g.output(a).unwrap();
+        }
+        std::fs::write(dir.join("a.txt"), "1\n2\n").unwrap();
+        g.output(&["add", "."]).unwrap();
+        g.output(&["commit", "-q", "-m", "first"]).unwrap();
+        std::fs::write(dir.join("a.txt"), "1\n2\nadd-one\nadd-two\n").unwrap();
+        let (tx, rx) = mpsc::channel::<(u64, Msg)>();
+        let tx = Arc::new(std::sync::Mutex::new(tx));
+        let sinks: SinkFactory = Arc::new(move |id| {
+            let tx = tx.clone();
+            Arc::new(move |m| {
+                if let Ok(t) = tx.lock() {
+                    let _ = t.send((id, m));
+                }
+            })
+        });
+        crate::work::start(dir.clone(), &sinks(1));
+        let empty = crate::settings::Settings::parse("");
+        let mut ui = Ui::new(te, f, empty.clone(), empty, Some((1, dir.clone())), sinks, 1280, 800, 1.0);
+        let pump = |ui: &mut Ui, what: &str, done: &dyn Fn(&Ui) -> bool| {
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while !done(ui) {
+                let left = until.saturating_duration_since(std::time::Instant::now());
+                assert!(!left.is_zero(), "timed out waiting for {what}");
+                if let Ok((id, m)) = rx.recv_timeout(left) {
+                    ui.on_tab_msg(id, m);
+                }
+            }
+        };
+        let idle = |u: &Ui| u.r.changes.busy.is_none();
+        pump(&mut ui, "the repository", &|u| u.r.git.is_some());
+        ui.enter_changes();
+        pump(&mut ui, "the diff", &|u| u.r.changes.diff.is_some());
+        // In the diff: go to "+add-two" and pick it, then S stages it.
+        ui.key(Key::Right);
+        let target = ui.r.changes.diff.as_ref().unwrap().lines.iter().position(|l| &*l.text == "add-two").unwrap();
+        for _ in 0..target {
+            ui.key(Key::Down);
+        }
+        ui.key(Key::Char(' '));
+        assert_eq!(ui.r.changes.picked.len(), 1);
+        ui.key(Key::Char('s'));
+        pump(&mut ui, "line staging", &|u| {
+            idle(u) && u.r.changes.status.as_ref().is_some_and(|s| s.side(changes_view_side(false)).len() == 1)
+        });
+        assert_eq!(String::from_utf8(g.output(&["show", ":a.txt"]).unwrap()).unwrap(), "1\n2\nadd-two\n");
+        // Discard the rest: the first Delete only asks.
+        ui.key(Key::Esc);
+        ui.key(Key::Home);
+        ui.key(Key::Delete);
+        assert!(std::fs::read_to_string(dir.join("a.txt")).unwrap().contains("add-one"), "one Delete never discards");
+        ui.key(Key::Delete);
+        pump(&mut ui, "the discard", &|u| idle(u) && !u.r.changes.undo.is_empty());
+        assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "1\n2\nadd-two\n");
+        ui.key(Key::Ctrl('z'));
+        pump(&mut ui, "the undo", &|u| idle(u) && u.r.changes.undo.is_empty());
+        assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "1\n2\nadd-one\nadd-two\n");
+        // Commit, then Ctrl+R brings the message back.
+        for c in "Two | lines".chars() {
+            ui.key(Key::Char(c));
+        }
+        ui.key(Key::CtrlEnter);
+        pump(&mut ui, "the commit", &|u| idle(u) && u.r.changes.subject.text().is_empty());
+        ui.key(Key::Ctrl('r'));
+        assert_eq!(ui.r.changes.subject.text(), "Two | lines");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

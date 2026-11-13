@@ -47,6 +47,8 @@ pub enum Msg {
         commit: bool,
         result: Result<String, String>,
     },
+    /// What a discard removed (for Ctrl+Z).
+    Discarded(ffwd_core::changes::Backup),
     /// The last commit's message, for amend.
     LastMessage(String),
     /// A repository's own settings file, read on a worker.
@@ -66,6 +68,11 @@ pub enum ChangeOp {
     Stage(Vec<String>),
     Unstage(Vec<String>),
     Hunk(Box<ffwd_core::changes::Entry>, ffwd_core::changes::Side, usize),
+    /// Chosen lines, as (hunk, body lines) per hunk.
+    Lines(Box<ffwd_core::changes::Entry>, ffwd_core::changes::Side, Vec<(usize, Vec<usize>)>),
+    Discard(Vec<ffwd_core::changes::Entry>),
+    Restore(ffwd_core::changes::Backup),
+    Ignore(String),
     Commit(String, ffwd_core::changes::CommitOptions),
 }
 
@@ -91,6 +98,29 @@ pub fn changes_op(git: Git, op: ChangeOp, sink: &Sink) {
                     if *side == c::Side::Unstaged { "Staged the hunk".into() } else { "Unstaged the hunk".into() }
                 }),
             ),
+            ChangeOp::Lines(e, side, picks) => {
+                // The last hunk first: earlier hunks keep their indexes.
+                let mut r = Ok(());
+                let mut n = 0;
+                for (h, lines) in picks.iter().rev() {
+                    n += lines.len();
+                    r = r.and_then(|_| c::toggle_lines(&git, e, *side, *h, lines));
+                }
+                let verb = if *side == c::Side::Unstaged { "Staged" } else { "Unstaged" };
+                (false, r.map(|_| format!("{verb} {n} line{}", if n == 1 { "" } else { "s" })))
+            }
+            ChangeOp::Discard(entries) => (
+                false,
+                c::discard(&git, entries).map(|b| {
+                    let n = entries.len();
+                    sink(Msg::Discarded(b));
+                    format!("Discarded the changes to {} (Ctrl+Z undoes it)", count(n))
+                }),
+            ),
+            ChangeOp::Restore(b) => {
+                (false, c::restore_backup(&git, b).map(|_| "Restored the discarded changes".into()))
+            }
+            ChangeOp::Ignore(p) => (false, c::ignore(&git, p).map(|_| format!("Added {p} to .gitignore"))),
             ChangeOp::Commit(m, o) => (true, c::commit(&git, m, o).map(|s| format!("Committed {s}"))),
         };
         sink(Msg::ChangesOp { commit, result });

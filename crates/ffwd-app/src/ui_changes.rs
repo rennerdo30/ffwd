@@ -25,6 +25,8 @@ pub enum CHit {
     Subject,
     Desc,
     Amend,
+    SkipHooks,
+    StageLines,
     Commit,
 }
 
@@ -45,6 +47,17 @@ pub struct Changes {
     pub hits: Vec<(Rect, CHit)>,
     /// The last error, shown above the commit button.
     pub error: Option<String>,
+    pub skip_hooks: bool,
+    /// Line cursor in the diff (an index into the diff's lines).
+    pub line: usize,
+    /// Lines picked for staging (indexes into the diff's lines).
+    pub picked: std::collections::BTreeSet<usize>,
+    /// Discards that Ctrl+Z can undo, newest last.
+    pub undo: Vec<ffwd_core::changes::Backup>,
+    /// A discard waiting for its confirming second Delete.
+    armed: Option<(std::time::Instant, Vec<String>)>,
+    /// Which recent message Ctrl+R showed last.
+    recent_ix: usize,
 }
 
 impl Default for Changes {
@@ -64,6 +77,12 @@ impl Default for Changes {
             busy: None,
             hits: Vec::new(),
             error: None,
+            skip_hooks: false,
+            line: 0,
+            picked: std::collections::BTreeSet::new(),
+            undo: Vec::new(),
+            armed: None,
+            recent_ix: 0,
         }
     }
 }
@@ -225,7 +244,10 @@ impl Ui {
                 let same = self.r.changes.diff.as_ref().is_some_and(|o| o.path == d.path);
                 if !same {
                     self.r.changes.diff_top = 0;
+                    self.r.changes.line = 0;
                 }
+                // Line numbers shift after any staging: picks start over.
+                self.r.changes.picked.clear();
                 self.r.changes.diff = Some(d);
             }
             Err(e) => {
@@ -243,7 +265,9 @@ impl Ui {
             Ok(msg) => {
                 self.r.changes.error = None;
                 if commit {
+                    self.remember_message();
                     let c = &mut self.r.changes;
+                    c.skip_hooks = false;
                     c.subject = TextField::default();
                     c.desc = TextArea::default();
                     c.amend = false;
@@ -326,8 +350,149 @@ impl Ui {
             return self.set_notice("Write a commit subject first.".into());
         }
         let msg = ffwd_core::changes::message(c.subject.text(), &c.desc.text());
-        let opts = CommitOptions { amend: c.amend, ..Default::default() };
+        let opts = CommitOptions { amend: c.amend, no_verify: c.skip_hooks, ..Default::default() };
         self.run_change_op(crate::work::ChangeOp::Commit(msg, opts), "Committing");
+    }
+
+    /// Keeps the committed message for Ctrl+R (the newest 20).
+    fn remember_message(&mut self) {
+        let c = &self.r.changes;
+        let m = ffwd_core::changes::message(c.subject.text(), &c.desc.text()).trim_end().to_string();
+        if m.is_empty() {
+            return;
+        }
+        let mut recent = self.state.get_list("commit.recent");
+        // The state file stores lists with `|` between entries.
+        let enc = m.replace('|', "\u{2}").replace('\n', "\u{1}");
+        recent.retain(|r| *r != enc);
+        recent.insert(0, enc);
+        recent.truncate(20);
+        self.state.set_list("commit.recent", &recent);
+    }
+
+    /// Ctrl+R: the next recent message into the subject and description.
+    fn recall_message(&mut self) {
+        let recent = self.state.get_list("commit.recent");
+        if recent.is_empty() {
+            return self.set_notice("No recent commit messages yet.".into());
+        }
+        let c = &mut self.r.changes;
+        let m = recent[c.recent_ix % recent.len()].replace('\u{1}', "\n").replace('\u{2}', "|");
+        c.recent_ix += 1;
+        let (subject, rest) = m.split_once('\n').unwrap_or((m.as_str(), ""));
+        c.subject = TextField::new(subject.trim());
+        c.desc = TextArea::new(rest.trim_start_matches('\n'));
+        c.focus = CFocus::Subject;
+        let n = recent.len();
+        self.set_notice(format!(
+            "Recent message {} of {n} (Ctrl+R for the next)",
+            (self.r.changes.recent_ix - 1) % n + 1
+        ));
+    }
+
+    /// Delete on a file: the first press names what will be lost, the
+    /// second (within 4 s) discards it; Ctrl+Z puts it back (rule 8).
+    fn discard_selected(&mut self) {
+        if self.r.changes.side != Side::Unstaged {
+            return self.set_notice("Discard works on unstaged changes; unstage first.".into());
+        }
+        let Some(e) = self.selected_entry() else { return };
+        let path = e.path.to_string();
+        let armed = self.r.changes.armed.take();
+        if let Some((t, paths)) = armed
+            && t.elapsed().as_secs() < 4
+            && paths == [path.clone()]
+        {
+            return self.run_change_op(crate::work::ChangeOp::Discard(vec![e]), "Discarding");
+        }
+        let what = if e.untracked() { "delete the new file" } else { "throw away the unstaged changes of" };
+        self.r.changes.armed = Some((std::time::Instant::now(), vec![path.clone()]));
+        self.set_notice(format!("Press Delete again to {what} {path}. Ctrl+Z will bring it back."));
+    }
+
+    fn undo_discard(&mut self) {
+        match self.r.changes.undo.pop() {
+            Some(b) => self.run_change_op(crate::work::ChangeOp::Restore(b), "Restoring"),
+            None => self.set_notice("Nothing to undo.".into()),
+        }
+    }
+
+    fn ignore_selected(&mut self) {
+        let Some(e) = self.selected_entry() else { return };
+        if !e.untracked() {
+            return self.set_notice("Only untracked files can be ignored; tracked files stay tracked.".into());
+        }
+        let p = format!("/{}", e.path);
+        self.run_change_op(crate::work::ChangeOp::Ignore(p), "Ignoring");
+    }
+
+    /// The picked lines, grouped by hunk, as body-line indexes.
+    fn picked_by_hunk(&self) -> Vec<(usize, Vec<usize>)> {
+        let Some(d) = &self.r.changes.diff else { return Vec::new() };
+        let mut out: Vec<(usize, Vec<usize>)> = Vec::new();
+        let mut hunk: Option<usize> = None;
+        let mut body = 0;
+        for (i, l) in d.lines.iter().enumerate() {
+            if l.kind == LineKind::Hunk {
+                hunk = Some(hunk.map_or(0, |h| h + 1));
+                body = 0;
+                continue;
+            }
+            if let Some(h) = hunk
+                && self.r.changes.picked.contains(&i)
+            {
+                match out.last_mut() {
+                    Some((lh, v)) if *lh == h => v.push(body),
+                    _ => out.push((h, vec![body])),
+                }
+            }
+            body += 1;
+        }
+        out
+    }
+
+    fn stage_picked(&mut self) {
+        let picks = self.picked_by_hunk();
+        let Some(e) = self.selected_entry() else { return };
+        if picks.is_empty() {
+            return self.set_notice("Pick lines first: Space on a + or − line (or click it).".into());
+        }
+        let side = self.r.changes.side;
+        self.r.changes.picked.clear();
+        self.run_change_op(crate::work::ChangeOp::Lines(Box::new(e), side, picks), "Staging");
+    }
+
+    fn toggle_pick(&mut self, i: usize) {
+        let Some(d) = &self.r.changes.diff else { return };
+        if !matches!(d.lines.get(i).map(|l| l.kind), Some(LineKind::Add | LineKind::Del)) {
+            return;
+        }
+        let p = &mut self.r.changes.picked;
+        if !p.remove(&i) {
+            p.insert(i);
+        }
+        let r = self.changes_layout().diff;
+        self.damage.rects.push(r);
+    }
+
+    /// Moves the diff's line cursor, keeping it on screen.
+    fn move_line(&mut self, d: i64) {
+        let n = self.r.changes.diff.as_ref().map_or(0, |d| d.lines.len());
+        if n == 0 {
+            return;
+        }
+        let c = &mut self.r.changes;
+        c.line = (c.line as i64 + d).clamp(0, n as i64 - 1) as usize;
+        let body_h = self.changes_layout().diff.h - self.px(32.0);
+        let fit = (body_h / self.px(20.0).max(1)).max(1) as usize;
+        let c = &mut self.r.changes;
+        if c.line < c.diff_top {
+            c.diff_top = c.line;
+        } else if c.line >= c.diff_top + fit {
+            c.diff_top = c.line + 1 - fit;
+        }
+        let r = self.changes_layout().diff;
+        self.damage.rects.push(r);
     }
 
     fn set_amend(&mut self, on: bool) {
@@ -367,9 +532,21 @@ impl Ui {
     /// Keys while the view is shown. Returns false for keys it leaves to
     /// the rest of the UI.
     pub(super) fn changes_key(&mut self, k: Key) -> bool {
-        if matches!(k, Key::CtrlEnter) {
-            self.commit_changes();
-            return true;
+        match k {
+            Key::CtrlEnter => {
+                self.commit_changes();
+                return true;
+            }
+            Key::Ctrl('z') if !matches!(self.r.changes.focus, CFocus::Subject | CFocus::Desc) => {
+                self.undo_discard();
+                return true;
+            }
+            Key::Ctrl('r') => {
+                self.recall_message();
+                self.changes_dirty();
+                return true;
+            }
+            _ => {}
         }
         let focus = self.r.changes.focus;
         match focus {
@@ -435,10 +612,16 @@ impl Ui {
                 }
             }
             CFocus::Diff => match k {
-                Key::Up | Key::Char('k') => self.scroll_change_diff(-1),
-                Key::Down | Key::Char('j') => self.scroll_change_diff(1),
-                Key::PageUp => self.scroll_change_diff(-20),
-                Key::PageDown => self.scroll_change_diff(20),
+                Key::Up | Key::Char('k') => self.move_line(-1),
+                Key::Down | Key::Char('j') => self.move_line(1),
+                Key::PageUp => self.move_line(-20),
+                Key::PageDown => self.move_line(20),
+                Key::Char(' ') => {
+                    let l = self.r.changes.line;
+                    self.toggle_pick(l);
+                    self.move_line(1);
+                }
+                Key::Char('s') | Key::Enter => self.stage_picked(),
                 Key::Tab => self.r.changes.focus = CFocus::Subject,
                 Key::BackTab | Key::Esc => {
                     let s = self.r.changes.side;
@@ -483,6 +666,8 @@ impl Ui {
                         }
                     }
                     Key::BackTab => self.r.changes.focus = CFocus::Desc,
+                    Key::Delete => self.discard_selected(),
+                    Key::Char('i') if self.selected_entry().is_some_and(|e| e.untracked()) => self.ignore_selected(),
                     Key::Char(c) if c.is_alphanumeric() => {
                         // Typing starts the commit subject.
                         self.r.changes.focus = CFocus::Subject;
@@ -554,12 +739,22 @@ impl Ui {
             Some(CHit::Hunk(h)) => self.toggle_hunk(h),
             Some(CHit::Subject) => self.r.changes.focus = CFocus::Subject,
             Some(CHit::Desc) => self.r.changes.focus = CFocus::Desc,
+            Some(CHit::SkipHooks) => self.r.changes.skip_hooks = !self.r.changes.skip_hooks,
+            Some(CHit::StageLines) => self.stage_picked(),
             Some(CHit::Amend) => {
                 let on = !self.r.changes.amend;
                 self.set_amend(on);
             }
             Some(CHit::Commit) => self.commit_changes(),
-            None if l.diff.contains(x, y) => self.r.changes.focus = CFocus::Diff,
+            None if l.diff.contains(x, y) => {
+                self.r.changes.focus = CFocus::Diff;
+                let body_y = l.diff.y + self.px(32.0);
+                if y >= body_y {
+                    let i = self.r.changes.diff_top + ((y - body_y) / self.px(20.0).max(1)) as usize;
+                    self.r.changes.line = i;
+                    self.toggle_pick(i);
+                }
+            }
             None => {}
         }
         self.changes_dirty();
@@ -730,7 +925,11 @@ impl Ui {
         let maxw = sf.w as f32 - self.pf(60.0);
         let subject = self.r.changes.subject.clone();
         if subject.text().is_empty() {
-            let ph = if self.r.changes.amend { "Subject (amend keeps the last one)" } else { "Commit subject" };
+            let ph = if self.r.changes.amend {
+                "Subject (amend keeps the last one)"
+            } else {
+                "Commit subject · Ctrl+R recent messages"
+            };
             self.te.draw(cv, ui, self.pf(12.5), tx, sb, ph, TEXT_4, maxw);
         } else {
             if subject.all_selected() {
@@ -818,37 +1017,14 @@ impl Ui {
         // Amend and Commit.
         let by = r.bottom() - self.px(42.0);
         let amend = self.r.changes.amend;
-        let ab = Rect::new(sf.x, by, self.px(90.0), self.px(30.0));
-        if self.change_hot(hits.len()) {
-            cv.fill_round(ab, self.pf(6.0), BG_HOVER);
-        }
-        let bx = Rect::new(ab.x + self.px(8.0), ab.y + self.px(8.0), self.px(14.0), self.px(14.0));
-        if amend {
-            cv.fill_round(bx, self.pf(3.0), ACCENT);
-            let (x0, y0) = (bx.x as f32, bx.y as f32);
-            cv.stroke(
-                &[
-                    (x0 + self.pf(3.0), y0 + self.pf(7.5)),
-                    (x0 + self.pf(6.0), y0 + self.pf(10.5)),
-                    (x0 + self.pf(11.0), y0 + self.pf(4.0)),
-                ],
-                self.pf(1.8),
-                ACCENT_TEXT,
-            );
-        } else {
-            cv.round_border(bx, self.pf(3.0), BORDER_HOVER, BG_INPUT);
-        }
-        self.te.draw(
-            cv,
-            ui,
-            self.pf(12.5),
-            bx.right() as f32 + self.pf(8.0),
-            (ab.y as f32 + self.pf(20.0)).round(),
-            "Amend",
-            TEXT_2,
-            self.pf(60.0),
-        );
+        let hot = self.change_hot(hits.len());
+        let ab = self.checkbox(cv, sf.x, by, "Amend", amend, hot);
         hits.push((ab, CHit::Amend));
+        let hot = self.change_hot(hits.len());
+        let skip = self.r.changes.skip_hooks;
+        let hb = self.checkbox(cv, ab.right() + self.px(4.0), by, "Skip hooks", skip, hot);
+        hits.push((hb, CHit::SkipHooks));
+        let ab = hb;
         let staged = self.side_list(Side::Staged).len();
         let label = match self.r.changes.busy {
             Some(v) => format!("{v}…"),
@@ -910,6 +1086,35 @@ impl Ui {
         }
     }
 
+    /// A checkbox with its label; returns its whole hit area.
+    fn checkbox(&mut self, cv: &mut Canvas, x: i32, y: i32, label: &str, on: bool, hot: bool) -> Rect {
+        let ui = self.f.ui;
+        let tw = self.te.measure(ui, self.pf(12.5), label);
+        let r = Rect::new(x, y, self.px(34.0) + tw as i32, self.px(30.0));
+        if hot {
+            cv.fill_round(r, self.pf(6.0), BG_HOVER);
+        }
+        let bx = Rect::new(r.x + self.px(8.0), r.y + self.px(8.0), self.px(14.0), self.px(14.0));
+        if on {
+            cv.fill_round(bx, self.pf(3.0), ACCENT);
+            let (x0, y0) = (bx.x as f32, bx.y as f32);
+            cv.stroke(
+                &[
+                    (x0 + self.pf(3.0), y0 + self.pf(7.5)),
+                    (x0 + self.pf(6.0), y0 + self.pf(10.5)),
+                    (x0 + self.pf(11.0), y0 + self.pf(4.0)),
+                ],
+                self.pf(1.8),
+                ACCENT_TEXT,
+            );
+        } else {
+            cv.round_border(bx, self.pf(3.0), BORDER_HOVER, BG_INPUT);
+        }
+        let b = (r.y as f32 + self.pf(20.0)).round();
+        self.te.draw(cv, ui, self.pf(12.5), bx.right() as f32 + self.pf(8.0), b, label, TEXT_2, tw + 2.0);
+        r
+    }
+
     fn paint_changes_diff(&mut self, cv: &mut Canvas, r: Rect, hits: &mut Vec<(Rect, CHit)>) {
         let (ui, semi) = (self.f.ui, self.f.semi);
         cv.fill(r, BG);
@@ -933,8 +1138,8 @@ impl Ui {
             r.w as f32 - self.pf(200.0),
         );
         let hint = match side {
-            Side::Unstaged => "unstaged · click a hunk's button to stage it",
-            Side::Staged => "staged · click a hunk's button to unstage it",
+            Side::Unstaged => "unstaged · Space or click picks lines · S stages them",
+            Side::Staged => "staged · Space or click picks lines · S unstages them",
         };
         let hw = self.te.measure(ui, self.pf(11.0), hint);
         self.te.draw(cv, ui, self.pf(11.0), r.right() as f32 - hw - pad, base, hint, TEXT_4, hw + 2.0);
@@ -960,6 +1165,52 @@ impl Ui {
         let label = if side == Side::Unstaged { "Stage hunk" } else { "Unstage hunk" };
         let top = self.r.changes.diff_top;
         let buttons = self.paint_diff_body(cv, body, &diff, top, Some(label), hits.len());
+        // Picked lines and the line cursor, over the painted lines.
+        let lh = self.px(20.0);
+        let focus = self.r.changes.focus == CFocus::Diff;
+        let picked: Vec<usize> = self.r.changes.picked.iter().copied().collect();
+        for i in picked.iter().copied().chain(focus.then_some(self.r.changes.line)) {
+            if i < top {
+                continue;
+            }
+            let y = body.y + (i - top) as i32 * lh;
+            if y >= body.bottom() {
+                continue;
+            }
+            let c = if picked.contains(&i) { ACCENT } else { BORDER_HOVER };
+            cv.fill(Rect::new(body.x, y, self.px(3.0), lh), c);
+            if picked.contains(&i) {
+                cv.fill_circle(body.x as f32 + self.pf(12.0), y as f32 + lh as f32 / 2.0, self.pf(3.0), ACCENT);
+            }
+        }
+        if !picked.is_empty() {
+            let n = picked.len();
+            let verb = if side == Side::Unstaged { "Stage" } else { "Unstage" };
+            let label = format!("{verb} {n} line{} (S)", if n == 1 { "" } else { "s" });
+            let w = self.te.measure(semi, self.pf(11.5), &label) + self.pf(22.0);
+            let b = Rect::new(r.right() - self.px(16.0) - w as i32, r.y + self.px(4.0), w as i32, self.px(24.0));
+            let hot = Hot::Change(hits.len() + buttons.len());
+            // Over the bar's hint text.
+            cv.fill(Rect::new(b.x - self.px(10.0), r.y, r.right() - b.x + self.px(10.0), self.px(31.0)), BG_BAR);
+            let (bg, border) = if self.is_hot(hot) { (ACCENT, ACCENT) } else { (ACCENT_SOFT_HOVER, ACCENT_BORDER) };
+            cv.round_border(b, self.pf(6.0), border, bg);
+            let fg = if self.is_hot(hot) { ACCENT_TEXT } else { ACCENT_FG };
+            self.te.draw(
+                cv,
+                semi,
+                self.pf(11.5),
+                b.x as f32 + self.pf(11.0),
+                (b.y as f32 + self.pf(16.5)).round(),
+                &label,
+                fg,
+                w,
+            );
+            for (h, rect) in &buttons {
+                hits.push((*rect, CHit::Hunk(*h)));
+            }
+            hits.push((b, CHit::StageLines));
+            return;
+        }
         for (h, rect) in buttons {
             hits.push((rect, CHit::Hunk(h)));
         }
