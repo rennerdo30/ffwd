@@ -4,7 +4,7 @@
 
 use crate::git::{Git, GitError, text};
 use std::fmt;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::time::{Duration, Instant};
 
 /// A SHA-1 or SHA-256 object id, stored inline (no allocation per commit).
@@ -75,12 +75,14 @@ pub struct Commit {
 
 const FIELD: u8 = 0x1f;
 const RECORD: u8 = 0x1e;
-pub const LOG_FORMAT: &str = "--format=%x1e%H%x1f%P%x1f%an%x1f%ae%x1f%at%x1f%s%x1f%b";
+/// Each record ends with RECORD, so a record is complete as soon as its own
+/// bytes arrive (git adds a newline after each one).
+pub const LOG_FORMAT: &str = "--format=%H%x1f%P%x1f%an%x1f%ae%x1f%at%x1f%s%x1f%b%x1e";
 
 /// Parses one log record (the bytes between two record separators).
 /// Malformed records return `None` and are skipped, never panic.
 pub fn parse_record(rec: &[u8]) -> Option<Commit> {
-    let rec = rec.strip_suffix(b"\n").unwrap_or(rec);
+    let rec = rec.trim_ascii_start();
     let mut f = rec.splitn(7, |&b| b == FIELD);
     let id = Oid::from_hex(f.next()?)?;
     let parents = f.next()?.split(|&b| b == b' ').filter(|p| !p.is_empty()).filter_map(Oid::from_hex).collect();
@@ -99,7 +101,7 @@ pub fn stream(
     git: &Git,
     first: usize,
     interval: Duration,
-    mut sink: impl FnMut(Vec<Commit>, bool),
+    sink: impl FnMut(Vec<Commit>, bool),
 ) -> Result<usize, GitError> {
     // Branches, remotes, tags and HEAD. Not `--all`: tools add
     // private refs (for example refs/t3/*) that are not part of the history
@@ -117,28 +119,76 @@ pub fn stream(
     let Some(out) = child.stdout.take() else {
         return Ok(0);
     };
-    let mut rd = BufReader::with_capacity(256 * 1024, out);
+    let total = stream_from(BufReader::with_capacity(256 * 1024, out), first, interval, sink);
+    let _ = child.wait();
+    Ok(total)
+}
+
+/// Longest record kept from `git log`. The fields we show come first; the
+/// rest of an oversized record (a huge message body) is skipped unread.
+pub const MAX_RECORD: usize = 16 * 1024;
+
+/// Reads one record up to the next separator into `rec`, keeping at most
+/// `MAX_RECORD` bytes. Returns `false` at end of input.
+fn read_record(rd: &mut impl BufRead, rec: &mut Vec<u8>) -> bool {
+    rec.clear();
+    let mut any = false;
+    loop {
+        let buf = match rd.fill_buf() {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => return any,
+        };
+        if buf.is_empty() {
+            return any;
+        }
+        any = true;
+        let (chunk, found) = match memchr(RECORD, buf) {
+            Some(i) => (&buf[..i], Some(i)),
+            None => (buf, None),
+        };
+        let room = MAX_RECORD.saturating_sub(rec.len());
+        rec.extend_from_slice(&chunk[..chunk.len().min(room)]);
+        let used = found.map_or(buf.len(), |i| i + 1);
+        rd.consume(used);
+        if found.is_some() {
+            return true;
+        }
+    }
+}
+
+fn memchr(b: u8, s: &[u8]) -> Option<usize> {
+    s.iter().position(|&c| c == b)
+}
+
+/// The streaming core of [`stream`], over any reader.
+///
+/// The first batch goes out as soon as `first` commits are parsed or the
+/// reader has nothing more buffered (the next read would wait on git), so
+/// a small or slow history shows up without waiting for the end.
+pub fn stream_from<R: Read>(
+    mut rd: BufReader<R>,
+    first: usize,
+    interval: Duration,
+    mut sink: impl FnMut(Vec<Commit>, bool),
+) -> usize {
     let mut batch = Vec::with_capacity(first);
     let mut total = 0usize;
     let mut sent_first = false;
     let mut last = Instant::now();
     let mut rec = Vec::with_capacity(512);
-    // Records start with RECORD; read_until splits right before the next one.
-    let _ = rd.read_until(RECORD, &mut rec);
-    loop {
-        rec.clear();
-        let n = rd.read_until(RECORD, &mut rec).unwrap_or(0);
-        if n == 0 {
-            break;
-        }
-        let body = rec.strip_suffix(&[RECORD]).unwrap_or(&rec);
-        // Bodies are only needed for the "has description" marker; huge
-        // ones are cut at parse time by `splitn` and never stored.
-        if let Some(c) = parse_record(body) {
+    while read_record(&mut rd, &mut rec) {
+        if let Some(c) = parse_record(&rec) {
             batch.push(c);
             total += 1;
         }
-        let due = if sent_first { last.elapsed() >= interval && !batch.is_empty() } else { batch.len() >= first };
+        // uffer() never reads, so this check cannot wait on git.
+        let drained = rd.buffer().iter().all(|b| b.is_ascii_whitespace());
+        let due = if sent_first {
+            last.elapsed() >= interval && !batch.is_empty()
+        } else {
+            batch.len() >= first || (drained && !batch.is_empty())
+        };
         if due {
             sink(std::mem::take(&mut batch), false);
             sent_first = true;
@@ -146,13 +196,80 @@ pub fn stream(
         }
     }
     sink(batch, true);
-    let _ = child.wait();
-    Ok(total)
+    total
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Mutex};
+
+    fn rec(n: u8, body_len: usize) -> Vec<u8> {
+        let mut r = format!("{:040x}\x1f\x1fA\x1fa@x\x1f1700000000\x1fsubject {n}\x1f", n).into_bytes();
+        r.extend(std::iter::repeat_n(b'x', body_len));
+        r.extend_from_slice(b"\x1e\n");
+        r
+    }
+
+    /// Serves one chunk per read and counts reads, standing in for a git
+    /// pipe that delivers output in pieces.
+    struct Chunks {
+        parts: Vec<Vec<u8>>,
+        reads: Arc<Mutex<usize>>,
+    }
+
+    impl Read for Chunks {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            *self.reads.lock().unwrap() += 1;
+            if self.parts.is_empty() {
+                return Ok(0);
+            }
+            let p = &mut self.parts[0];
+            let n = p.len().min(buf.len());
+            buf[..n].copy_from_slice(&p[..n]);
+            p.drain(..n);
+            if p.is_empty() {
+                self.parts.remove(0);
+            }
+            Ok(n)
+        }
+    }
+
+    #[test]
+    fn first_batch_does_not_wait_for_end_of_log() {
+        let reads = Arc::new(Mutex::new(0));
+        let mut part1 = rec(1, 0);
+        part1.extend(rec(2, 0));
+        let parts = vec![part1, rec(3, 0), rec(4, 0)];
+        let rd = BufReader::new(Chunks { parts, reads: reads.clone() });
+        let mut calls: Vec<(usize, usize, bool)> = Vec::new();
+        let r2 = reads.clone();
+        let total = stream_from(rd, 200, Duration::from_secs(60), |b, done| {
+            calls.push((b.len(), *r2.lock().unwrap(), done));
+        });
+        assert_eq!(total, 4);
+        // The two commits of the first chunk go out after the first read,
+        // long before the 200-commit batch size or the end of the log.
+        assert_eq!(calls[0], (2, 1, false));
+        assert!(calls.last().unwrap().2);
+    }
+
+    #[test]
+    fn oversized_records_are_capped_and_the_stream_continues() {
+        let mut data = rec(1, 5 * MAX_RECORD);
+        data.extend(rec(2, 0));
+        let mut probe = BufReader::with_capacity(4096, &data[..]);
+        let mut kept = Vec::new();
+        assert!(read_record(&mut probe, &mut kept));
+        assert_eq!(kept.len(), MAX_RECORD, "an oversized record is cut at the cap");
+        let rd = BufReader::with_capacity(4096, &data[..]);
+        let mut got = Vec::new();
+        stream_from(rd, 1, Duration::ZERO, |b, _| got.extend(b));
+        assert_eq!(got.len(), 2);
+        assert_eq!(&*got[0].subject, "subject 1");
+        assert!(got[0].has_body);
+        assert_eq!(&*got[1].subject, "subject 2");
+    }
 
     #[test]
     fn parses_records_and_rejects_garbage() {

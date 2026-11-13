@@ -345,6 +345,7 @@ impl ApplicationHandler<UserEvent> for App {
                 }
                 if let (Some(ui), Some(g)) = (&mut self.ui, &self.gfx) {
                     ui.resize(new.0, new.1, g.window.scale_factor() as f32);
+                    ui.set_remote(platform::is_remote_session());
                 }
             }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
@@ -356,6 +357,13 @@ impl ApplicationHandler<UserEvent> for App {
                 self.render();
                 self.smoke_check(el);
                 return;
+            }
+            // RDP connects and disconnects resize and refocus the window, so the
+            // session type is re-read on those events (no timer, no polling).
+            WindowEvent::Focused(true) => {
+                if let Some(ui) = &mut self.ui {
+                    ui.set_remote(platform::is_remote_session());
+                }
             }
             WindowEvent::ModifiersChanged(m) => self.mods = m.state(),
             WindowEvent::KeyboardInput { event, .. } => self.key(&event),

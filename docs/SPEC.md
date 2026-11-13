@@ -96,7 +96,13 @@ Proposal, to be measured in M1 before deciding: read in-process with gitoxide (h
   - hosting integrations;
   - remote-desktop qualification with measured bytes on the wire.
 
-## 7. Open questions for the owner
+## 7. Known PoC limits (from the 2026-11-13 review)
+
+- **History memory grows with the repository.** Every commit row and its graph row stay in memory, about 150 to 250 bytes each, so 1M commits need roughly 150 to 250 MB. M1 replaces this with a compact columnar store and a string arena, measured against the 300 MB budget in §3. It comes together with the backend decision, because gitoxide can re-read rows on demand.
+- **Font loading is on the startup path.** The UI thread waits for the font worker before the first frame. Measured, the wait is 0 to 6 ms, inside the 30 ms first-frame budget. If it ever grows, the fix is a first frame of solid chrome with the text following.
+- **Remote mode is re-checked on focus and resize, not on `WM_WTSSESSION_CHANGE`.** RDP connects and disconnects trigger both, but a direct session notification is still the proper signal. Remote mode changes no behaviour yet, because the PoC has no animations.
+
+## 8. Open questions for the owner
 
 1. Your daily workflows in other clients that ffwd must make faster first.
 2. Typical repository sizes (commits, files, LFS, submodules), for the M1 benchmarks.

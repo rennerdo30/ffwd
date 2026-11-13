@@ -414,6 +414,13 @@ impl Ui {
         }
     }
 
+    pub fn set_remote(&mut self, remote: bool) {
+        if remote != self.remote {
+            self.remote = remote;
+            self.damage.rects.push(self.lay.status);
+        }
+    }
+
     fn set_notice(&mut self, n: String) {
         self.notice = Some(n);
         self.damage.rects.push(self.lay.status);
