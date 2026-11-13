@@ -33,6 +33,7 @@ The third beta: easier to read, more to click, and a stronger diff viewer.
   - a warning for a gone upstream, and Stop tracking;
   - names are checked as you type.
 - **Fix:** on some fonts the diff bar drew into the pane next to it.
+- **Agents (experimental):** Settings → Agents lists the installed WSL distributions; pick the one the WSL sandbox runs in (it was a settings-file-only value).
 
 ## 0.2.0-beta.2
 

@@ -600,6 +600,8 @@ pub struct Ui {
     /// The commit's details and diff fill the main area, the history list
     /// hidden (Space or the diff bar's expand button; FF-33).
     pub diff_max: bool,
+    /// Installed WSL distributions, read when Settings opens (Windows).
+    pub wsl_distros: Vec<String>,
     pub diff_tab: usize,
     /// Code text size in points (diffs, file viewer; FF-41).
     pub code_pt: u8,
@@ -756,6 +758,7 @@ impl Ui {
             diff_wrap: diff_view::wrap_from(&settings),
             code_left: 0.0,
             diff_max: false,
+            wsl_distros: Vec::new(),
             diff_tab: diff_view::view_from(&settings).1 as usize,
             code_pt: diff_view::code_size_from(&settings),
             diff_opts: diff_view::opts_from(&settings).1,
@@ -1062,6 +1065,14 @@ impl Ui {
         // The activity log is app-wide: background tabs log at once.
         if let Msg::Activity(e) = m {
             return self.on_activity(*e);
+        }
+        if let Msg::WslDistros(list) = m {
+            self.wsl_distros = list;
+            if self.settings_view.is_some() {
+                let r = self.settings_rect();
+                self.damage.rects.push(r);
+            }
+            return;
         }
         if let Msg::Repos(list) = m {
             for p in list {
@@ -1484,7 +1495,7 @@ impl Ui {
                 }
             }
             // Handled in on_tab_msg; repeated here so a stray one is harmless.
-            Msg::Repos(_) => {}
+            Msg::Repos(_) | Msg::WslDistros(_) => {}
             Msg::Agent(e) => self.on_agent_event(e),
             Msg::RepoSettings(p, s) => self.on_repo_settings(p, s),
             Msg::Changes(r) => self.on_changes(r),
@@ -8125,6 +8136,31 @@ mod tests {
         ui.key(Key::Esc);
         assert!(!ui.diff_max);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The WSL distribution (FF-23): the Agents page lists the installed
+    /// ones as choices; picking one sets agents.wsl_distro, Default clears it.
+    #[test]
+    fn wsl_distribution_is_a_choice() {
+        let mut te = TextEngine::new();
+        let Some(f) = load_fonts(&mut te) else { return };
+        let empty = crate::settings::Settings::parse("");
+        let sinks: SinkFactory = Arc::new(|_| Arc::new(|_| {}));
+        let mut ui = Ui::new(te, f, empty.clone(), empty, None, sinks, 1280, 800, 1.0);
+        ui.wsl_distros = vec!["Ubuntu-24.04".into(), "Debian".into()];
+        ui.open_settings_page(1);
+        let mut screen = vec![0u32; 1280 * 800];
+        ui.paint(&mut Canvas::new(&mut screen, 1280, 800), true);
+        let choices = ui.row_choices(settings_view::Row::WslDistro);
+        assert_eq!(choices, ["Default", "Ubuntu-24.04", "Debian"]);
+        let hits = ui.settings_view.as_ref().unwrap().hits.clone();
+        let row = settings_view::AGENT_ROWS.iter().position(|r| *r == settings_view::Row::WslDistro).unwrap();
+        let (_, _, r) = *hits.iter().find(|h| h.0 == row && h.1 == 1).expect("the Ubuntu choice is on screen");
+        ui.click(r.x + r.w / 2, r.y + r.h / 2);
+        assert_eq!(ui.settings.get("agents.wsl_distro"), Some("Ubuntu-24.04"));
+        let (_, _, r) = *hits.iter().find(|h| h.0 == row && h.1 == 0).unwrap();
+        ui.click(r.x + r.w / 2, r.y + r.h / 2);
+        assert_eq!(ui.settings.get("agents.wsl_distro").unwrap_or(""), "", "Default clears it");
     }
 
     /// Find in the diff (FF-34): `Ctrl+F` with the diff focused searches

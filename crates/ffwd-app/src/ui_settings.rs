@@ -5,7 +5,7 @@
 use super::*;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Row {
+pub(super) enum Row {
     Layout,
     Updates,
     Channel,
@@ -23,6 +23,8 @@ enum Row {
     Preset,
     AgentCommand,
     Sandbox,
+    /// The WSL distribution the sandbox uses (Windows).
+    WslDistro,
     AllowUnsandboxed,
     Network,
     GitAccess,
@@ -50,12 +52,13 @@ const GENERAL: &[Row] = &[
     Row::CheckUpdates,
 ];
 
-const AGENT_ROWS: &[Row] = &[
+pub(super) const AGENT_ROWS: &[Row] = &[
     Row::Scope,
     Row::AgentsOn,
     Row::Preset,
     Row::AgentCommand,
     Row::Sandbox,
+    Row::WslDistro,
     Row::AllowUnsandboxed,
     Row::Network,
     Row::GitAccess,
@@ -91,6 +94,7 @@ impl Row {
             Row::Preset => "Agent",
             Row::AgentCommand => "Agent command",
             Row::Sandbox => "Sandbox",
+            Row::WslDistro => "WSL distribution",
             Row::AllowUnsandboxed => "Allow no sandbox",
             Row::Network => "Network",
             Row::GitAccess => "Git access",
@@ -123,6 +127,7 @@ impl Row {
             Row::Preset => "Built-in command and grants; Custom uses your command",
             Row::AgentCommand => "{prompt} {prompt_file} {worktree} {branch}, one argument each",
             Row::Sandbox => "Auto: bwrap (Linux), WSL (Windows), macOS sandbox",
+            Row::WslDistro => "Where the WSL sandbox runs the agent (wsl -d)",
             Row::AllowUnsandboxed => "Sandbox None: the agent has all your permissions",
             Row::Network => "Agents that call a hosted model need it",
             Row::GitAccess => "Read-only: ffwd commits the agent's edits at the end",
@@ -212,7 +217,7 @@ pub struct SettingsView {
     /// The text row being edited and its field.
     edit: Option<(usize, TextField)>,
     /// Option hit areas from the last paint: (row, choice, rect).
-    hits: Vec<(usize, usize, Rect)>,
+    pub(super) hits: Vec<(usize, usize, Rect)>,
     /// Page tabs from the last paint.
     page_hits: Vec<(usize, Rect)>,
 }
@@ -228,7 +233,28 @@ impl Ui {
         self.open_settings_page(page);
     }
 
+    /// A row's choices: fixed, or for the WSL distribution the installed
+    /// ones (FF-23).
+    pub(super) fn row_choices(&self, row: Row) -> Vec<String> {
+        if row != Row::WslDistro {
+            return row.choices().iter().map(|s| s.to_string()).collect();
+        }
+        let mut v = vec!["Default".to_string()];
+        v.extend(self.wsl_distros.iter().cloned());
+        if let Some(cur) = self.sget("agents.wsl_distro").filter(|c| !c.is_empty())
+            && !v.iter().any(|d| d == cur)
+        {
+            v.push(cur.to_string());
+        }
+        v
+    }
+
     pub fn open_settings_page(&mut self, page: usize) {
+        // The WSL distributions, for the agents' sandbox (never in tests).
+        if cfg!(windows) && !cfg!(test) {
+            let sink = (self.sinks)(0);
+            std::thread::spawn(move || sink(Msg::WslDistros(crate::platform::wsl_distros())));
+        }
         self.palette = None;
         self.damage.full = true;
         self.settings_view = Some(SettingsView {
@@ -375,6 +401,14 @@ impl Ui {
                     .position(|s| Some(*s) == k.map(|k| k.as_setting()))
                     .unwrap_or(0)
             }
+            Row::WslDistro => {
+                let cur = self.sget("agents.wsl_distro").unwrap_or("").to_string();
+                if cur.is_empty() {
+                    0
+                } else {
+                    self.row_choices(Row::WslDistro).iter().position(|d| *d == cur).unwrap_or(0)
+                }
+            }
             Row::AllowUnsandboxed => self.flag_now("agents.allow_unsandboxed", false) as usize,
             Row::Network => !self.flag_now("agents.network", true) as usize,
             Row::GitAccess => (self.sget("agents.git_access") == Some("write")) as usize,
@@ -409,6 +443,14 @@ impl Ui {
                 }
             }
             Row::Sandbox => self.sset("agents.sandbox", ["auto", "bwrap", "wsl", "macos", "custom", "none"][i.min(5)]),
+            Row::WslDistro => {
+                let v = if i == 0 {
+                    String::new()
+                } else {
+                    self.row_choices(Row::WslDistro).get(i).cloned().unwrap_or_default()
+                };
+                self.sset("agents.wsl_distro", &v);
+            }
             Row::AllowUnsandboxed => self.sset("agents.allow_unsandboxed", if i == 1 { "true" } else { "false" }),
             Row::Network => self.sset("agents.network", if i == 1 { "false" } else { "true" }),
             Row::GitAccess => self.sset("agents.git_access", if i == 1 { "write" } else { "read" }),
@@ -434,7 +476,7 @@ impl Ui {
                 }
             }
             r => {
-                let n = r.choices().len().max(1);
+                let n = self.row_choices(r).len().max(1);
                 let next = (self.choice_now(r) + 1) % n;
                 self.set_choice(r, next);
             }
@@ -505,8 +547,8 @@ impl Ui {
             Key::PageUp | Key::Home => v.sel = 0,
             Key::PageDown | Key::End => v.sel = rows.len() - 1,
             Key::Enter | Key::Char(' ') => self.settings_act(sel),
-            Key::Left | Key::Right if !rows[sel].choices().is_empty() => {
-                let n = rows[sel].choices().len();
+            Key::Left | Key::Right if !self.row_choices(rows[sel]).is_empty() => {
+                let n = self.row_choices(rows[sel]).len();
                 let cur = self.choice_now(rows[sel]);
                 let next = if matches!(k, Key::Left) { (cur + n - 1) % n } else { (cur + 1) % n };
                 self.set_choice(rows[sel], next);
@@ -556,7 +598,7 @@ impl Ui {
             if let Some(v) = &mut self.settings_view {
                 v.sel = row;
             }
-            if rows[row].choices().is_empty() {
+            if self.row_choices(rows[row]).is_empty() {
                 self.settings_act(row);
             } else {
                 self.set_choice(rows[row], choice);
@@ -735,7 +777,7 @@ impl Ui {
                 }
                 r2 => {
                     // Segmented control.
-                    let choices = r2.choices();
+                    let choices = self.row_choices(r2);
                     let now = self.choice_now(r2);
                     let seg_w = ctrl.w / choices.len().max(1) as i32;
                     cv.round_border(ctrl, self.pf(7.0), BORDER, BG_INPUT);
