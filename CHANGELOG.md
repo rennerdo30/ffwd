@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.2.0-beta.4
+
+A fix release for the experimental agents.
+
 - **Agents (experimental), fix:** inside WSL, an agent installed in your own folders (for example `~/.local/bin/claude`, put on PATH by your shell profile) was reported as not installed. ffwd now asks your login shell for it, starts it by its real path, and mounts its folder read-only into the sandbox, so it also runs with a private home.
 
 ## 0.2.0-beta.3
