@@ -28,6 +28,8 @@ pub enum CHit {
     SkipHooks,
     StageLines,
     Commit,
+    /// The conflict resolver and the stopped-operation banner.
+    Conflict(conflict_view::KHit),
 }
 
 pub struct Changes {
@@ -36,8 +38,12 @@ pub struct Changes {
     pub sel: usize,
     tops: [usize; 2],
     pub diff: Option<Box<FileDiff>>,
+    /// A stopped merge, rebase, cherry-pick or revert.
+    pub in_progress: Option<&'static str>,
+    /// The selected conflicted file's conflicts.
+    pub conflict: Option<conflict_view::ConflictView>,
     diff_top: usize,
-    seq: u64,
+    pub(super) seq: u64,
     pub subject: TextField,
     pub desc: TextArea,
     pub amend: bool,
@@ -68,6 +74,8 @@ impl Default for Changes {
             sel: 0,
             tops: [0, 0],
             diff: None,
+            in_progress: None,
+            conflict: None,
             diff_top: 0,
             seq: 0,
             subject: TextField::default(),
@@ -95,6 +103,8 @@ pub struct CLayout {
     pub heads: [Rect; 2],
     pub lists: [Rect; 2],
     pub commit: Rect,
+    /// The stopped-operation banner (zero height when none).
+    pub banner: Rect,
     pub diff: Rect,
 }
 
@@ -112,9 +122,11 @@ impl Ui {
         let ch = self.px(196.0).min(left.h / 2);
         let commit = Rect::new(left.x, left.bottom() - ch, left.w, ch);
         let head = self.px(32.0);
-        let lists_h = (commit.y - left.y - 2 * head).max(0);
+        let bh = if self.r.changes.in_progress.is_some() { self.px(36.0) } else { 0 };
+        let banner = Rect::new(left.x, left.y, left.w, bh);
+        let lists_h = (commit.y - left.y - bh - 2 * head).max(0);
         let uh = lists_h * 55 / 100;
-        let h0 = Rect::new(left.x, left.y, left.w, head);
+        let h0 = Rect::new(left.x, left.y + bh, left.w, head);
         let l0 = Rect::new(left.x, h0.bottom(), left.w, uh);
         let h1 = Rect::new(left.x, l0.bottom(), left.w, head);
         let l1 = Rect::new(left.x, h1.bottom(), left.w, commit.y - h1.bottom());
@@ -124,6 +136,7 @@ impl Ui {
             heads: [h0, h1],
             lists: [l0, l1],
             commit,
+            banner,
             diff: Rect::new(left.right(), area.y, area.right() - left.right(), area.h),
         }
     }
@@ -179,6 +192,11 @@ impl Ui {
             self.r.changes.diff = None;
             return;
         };
+        if e.conflicted {
+            self.r.changes.diff = None;
+            return self.request_conflict(e.path.to_string());
+        }
+        self.r.changes.conflict = None;
         self.r.changes.seq += 1;
         let (seq, side) = (self.r.changes.seq, self.r.changes.side);
         if let Some(w) = &self.r.worker {
@@ -297,7 +315,7 @@ impl Ui {
         }
     }
 
-    fn run_change_op(&mut self, op: crate::work::ChangeOp, verb: &'static str) {
+    pub(super) fn run_change_op(&mut self, op: crate::work::ChangeOp, verb: &'static str) {
         if self.r.changes.busy.is_some() {
             return self.set_notice("Another change is still running.".into());
         }
@@ -310,6 +328,14 @@ impl Ui {
     /// Stages or unstages the selected file.
     fn toggle_selected(&mut self) {
         let Some(e) = self.selected_entry() else { return };
+        if e.conflicted {
+            // Staging it now would mark the markers as the resolution.
+            self.r.changes.focus = CFocus::Diff;
+            self.changes_dirty_all();
+            return self.set_notice(
+                "Resolve the conflicts first (o, t, b on each), or take one side for the whole file.".into(),
+            );
+        }
         let p = vec![e.path.to_string()];
         if self.r.changes.side == Side::Unstaged {
             self.run_change_op(crate::work::ChangeOp::Stage(p), "Staging");
@@ -611,6 +637,7 @@ impl Ui {
                     _ => return false,
                 }
             }
+            CFocus::Diff if self.r.changes.conflict.is_some() && self.conflict_key(k) => {}
             CFocus::Diff => match k {
                 Key::Up | Key::Char('k') => self.move_line(-1),
                 Key::Down | Key::Char('j') => self.move_line(1),
@@ -694,6 +721,9 @@ impl Ui {
     pub(super) fn changes_wheel(&mut self, x: i32, y: i32, n: i64) {
         let l = self.changes_layout();
         if l.diff.contains(x, y) {
+            if self.r.changes.conflict.is_some() {
+                return self.conflict_wheel(n);
+            }
             return self.scroll_change_diff(n);
         }
         for side in [Side::Unstaged, Side::Staged] {
@@ -746,6 +776,7 @@ impl Ui {
                 self.set_amend(on);
             }
             Some(CHit::Commit) => self.commit_changes(),
+            Some(CHit::Conflict(h)) => self.conflict_click(h),
             None if l.diff.contains(x, y) => {
                 self.r.changes.focus = CFocus::Diff;
                 let body_y = l.diff.y + self.px(32.0);
@@ -775,6 +806,9 @@ impl Ui {
         let mut hits: Vec<(Rect, CHit)> = Vec::new();
         let (ui, semi, mono) = (self.f.ui, self.f.semi, self.f.mono);
         cv.fill(l.left, BG);
+        if l.banner.h > 0 {
+            self.paint_op_banner(cv, l.banner, &mut hits);
+        }
         cv.fill(Rect::new(l.left.right() - 1, l.left.y, 1, l.left.h), BORDER);
         let loading = self.r.changes.status.is_none();
         let rh = self.change_row_h();
@@ -1116,6 +1150,9 @@ impl Ui {
     }
 
     fn paint_changes_diff(&mut self, cv: &mut Canvas, r: Rect, hits: &mut Vec<(Rect, CHit)>) {
+        if self.selected_entry().is_some_and(|e| e.conflicted) {
+            return self.paint_conflict(cv, r, hits);
+        }
         let (ui, semi) = (self.f.ui, self.f.semi);
         cv.fill(r, BG);
         let bar = Rect::new(r.x, r.y, r.w, self.px(32.0));

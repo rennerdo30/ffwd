@@ -6,6 +6,7 @@
 //! CLI, gitoxide and libgit2 is open (docs/SPEC.md §4) and will be measured.
 
 pub mod changes;
+pub mod conflict;
 pub mod diff;
 pub mod git;
 pub mod graph;

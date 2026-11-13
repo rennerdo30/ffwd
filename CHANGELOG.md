@@ -15,6 +15,10 @@
   - check out (also remote branches, with tracking, and detached), create, rename and delete branches and tags;
   - merge (four modes), rebase, cherry-pick, revert, reset (soft, mixed, hard), each with a backup ref where commits could be lost;
   - double-click checkout; `Ctrl+B` and `Ctrl+Shift+G`.
+- **Conflict resolver** (FF-42):
+  - a banner for a stopped merge, rebase, cherry-pick or revert, with Continue and Abort (which asks first);
+  - per-conflict choices (ours, theirs, both in either order), or one side for the whole file, then save and mark resolved;
+  - keys `o`, `t`, `b`, `Enter`.
 - **Diff viewer** (FF-41): side by side or unified, syntax colours, word highlights within changed lines, context of 3 or 10 lines or the whole file, whitespace ignored or shown (remembered; `s`, `c`, `w` in the diff).
 - **Find bar** (`Ctrl+F`, FF-34): search messages, authors, SHAs, content (`-S`) and paths. Results stream in, non-matches are dimmed, matches are marked on the scroll track, and `↑`/`↓` jump between them.
 - **Fix:** the Settings backdrop no longer stays on screen after closing (FF-52).

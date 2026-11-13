@@ -21,6 +21,8 @@ use sidebar::SideItem;
 mod agents_view;
 #[path = "ui_changes.rs"]
 mod changes_view;
+#[path = "ui_conflict.rs"]
+mod conflict_view;
 #[path = "ui_diff.rs"]
 mod diff_view;
 #[path = "ui_menu.rs"]
@@ -1115,6 +1117,15 @@ impl Ui {
             Msg::Discarded(b) => self.r.changes.undo.push(b),
             Msg::RefOp(r) => self.on_refop(r),
             Msg::SearchBatch { seq, ids, done } => self.on_search_batch(seq, ids, done),
+            Msg::InProgress(k) => {
+                if self.r.changes.in_progress != k {
+                    self.r.changes.in_progress = k;
+                    if self.r.changes_view {
+                        self.damage.full = true;
+                    }
+                }
+            }
+            Msg::ConflictFile { seq, path, result } => self.on_conflict_file(seq, path, result),
         }
     }
 
@@ -3609,6 +3620,83 @@ mod tests {
         assert_eq!(ui.r.search.as_ref().unwrap().rows.len(), 1);
         ui.key(Key::Esc);
         assert!(ui.r.search.is_none() && !ui.row_dimmed(0));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A merge conflict from the keyboard: the banner shows the merge,
+    /// Space refuses to stage a conflicted file, `o` picks ours, Enter
+    /// saves it as resolved, and Continue makes the merge commit.
+    #[test]
+    fn resolve_a_conflict_with_keys() {
+        use std::sync::mpsc;
+        let mut te = TextEngine::new();
+        let Some(f) = load_fonts(&mut te) else { return };
+        let dir = std::env::temp_dir().join(format!("ffwd-ui-conflict-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = Git { root: dir.clone() };
+        for a in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.name", "t"],
+            &["config", "user.email", "t@example.invalid"],
+            &["config", "commit.gpgsign", "false"],
+            &["config", "core.autocrlf", "false"],
+        ] {
+            g.output(a).unwrap();
+        }
+        let commit = |t: &str, m: &str| {
+            std::fs::write(dir.join("a.txt"), t).unwrap();
+            g.output(&["add", "."]).unwrap();
+            g.output(&["commit", "-q", "-m", m]).unwrap();
+        };
+        commit("base\n", "base");
+        g.output(&["switch", "-q", "-c", "feature"]).unwrap();
+        commit("feature\n", "feature");
+        g.output(&["switch", "-q", "main"]).unwrap();
+        commit("main\n", "main");
+        assert!(g.output(&["merge", "feature"]).is_err());
+        let (tx, rx) = mpsc::channel::<(u64, Msg)>();
+        let tx = Arc::new(std::sync::Mutex::new(tx));
+        let sinks: SinkFactory = Arc::new(move |id| {
+            let tx = tx.clone();
+            Arc::new(move |m| {
+                if let Ok(t) = tx.lock() {
+                    let _ = t.send((id, m));
+                }
+            })
+        });
+        crate::work::start(dir.clone(), &sinks(1));
+        let empty = crate::settings::Settings::parse("");
+        let mut ui = Ui::new(te, f, empty.clone(), empty, Some((1, dir.clone())), sinks, 1280, 800, 1.0);
+        let pump = |ui: &mut Ui, what: &str, done: &dyn Fn(&Ui) -> bool| {
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while !done(ui) {
+                let left = until.saturating_duration_since(std::time::Instant::now());
+                assert!(!left.is_zero(), "timed out waiting for {what}; notice: {:?}", ui.notice);
+                if let Ok((id, m)) = rx.recv_timeout(left) {
+                    ui.on_tab_msg(id, m);
+                }
+            }
+        };
+        pump(&mut ui, "the repository", &|u| u.r.git.is_some());
+        ui.enter_changes();
+        pump(&mut ui, "the conflict view", &|u| {
+            u.r.changes.in_progress == Some("merge") && u.r.changes.conflict.is_some()
+        });
+        ui.key(Key::Char(' '));
+        let staged = String::from_utf8(g.output(&["diff", "--name-only", "--diff-filter=U"]).unwrap()).unwrap();
+        assert!(staged.contains("a.txt"), "Space never marks a conflicted file resolved");
+        ui.key(Key::Char('o'));
+        ui.key(Key::Enter);
+        pump(&mut ui, "the resolution", &|u| {
+            u.r.changes.busy.is_none()
+                && u.r.changes.status.as_ref().is_some_and(|s| s.entries.iter().all(|e| !e.conflicted))
+        });
+        assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "main\n");
+        ui.conflict_click(conflict_view::KHit::Continue);
+        pump(&mut ui, "the merge commit", &|u| u.r.changes.busy.is_none() && u.r.changes.in_progress.is_none());
+        let parents = String::from_utf8(g.output(&["log", "-1", "--format=%P"]).unwrap()).unwrap();
+        assert_eq!(parents.split_whitespace().count(), 2);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

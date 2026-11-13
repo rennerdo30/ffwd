@@ -53,6 +53,14 @@ pub enum Msg {
         ids: Vec<Oid>,
         done: bool,
     },
+    /// A merge, rebase, cherry-pick or revert is stopped (or none is).
+    InProgress(Option<&'static str>),
+    /// A conflicted file's conflicts (Local Changes).
+    ConflictFile {
+        seq: u64,
+        path: String,
+        result: Result<(Vec<ffwd_core::conflict::Seg>, &'static str), String>,
+    },
     /// A branch, tag or history operation ended.
     RefOp(Result<String, ffwd_core::refops::OpError>),
     /// What a discard removed (for Ctrl+Z).
@@ -87,6 +95,8 @@ pub enum RefOp {
     CherryPick(String),
     Revert(String),
     Reset(String, ffwd_core::refops::ResetMode),
+    /// Abort the stopped merge, rebase, cherry-pick or revert.
+    Abort(&'static str),
 }
 
 impl RefOp {
@@ -102,6 +112,7 @@ impl RefOp {
             RefOp::CherryPick(_) => "Cherry-picking",
             RefOp::Revert(_) => "Reverting",
             RefOp::Reset(..) => "Resetting",
+            RefOp::Abort(_) => "Aborting",
         }
     }
 }
@@ -121,8 +132,10 @@ pub fn refop(git: Git, op: RefOp, sink: &Sink) {
             RefOp::CherryPick(c) => r::cherry_pick(&git, c),
             RefOp::Revert(c) => r::revert(&git, c),
             RefOp::Reset(to, m) => r::reset(&git, to, *m),
+            RefOp::Abort(kind) => ffwd_core::conflict::abort_op(&git, kind).map_err(r::OpError::Failed),
         };
         sink(Msg::RefOp(res));
+        sink(Msg::InProgress(r::in_progress(&git)));
     });
 }
 
@@ -137,11 +150,17 @@ pub enum ChangeOp {
     Restore(ffwd_core::changes::Backup),
     Ignore(String),
     Commit(String, ffwd_core::changes::CommitOptions),
+    /// Resolve a conflicted file: one side whole, or the chosen text.
+    TakeSide(String, bool),
+    SaveResolved(String, String),
+    /// Continue the stopped operation.
+    Continue(&'static str),
 }
 
 pub fn changes_load(git: Git, sink: &Sink) {
     spawn("changes", sink, move |sink| {
         sink(Msg::Changes(ffwd_core::changes::load(&git).map_err(|e| e.to_string())));
+        sink(Msg::InProgress(ffwd_core::refops::in_progress(&git)));
         // The sidebar's counts follow.
         if let Ok(s) = refs::status(&git) {
             sink(Msg::Status(s));
@@ -185,9 +204,13 @@ pub fn changes_op(git: Git, op: ChangeOp, sink: &Sink) {
             }
             ChangeOp::Ignore(p) => (false, c::ignore(&git, p).map(|_| format!("Added {p} to .gitignore"))),
             ChangeOp::Commit(m, o) => (true, c::commit(&git, m, o).map(|s| format!("Committed {s}"))),
+            ChangeOp::TakeSide(p, ours) => (false, ffwd_core::conflict::take_side(&git, p, *ours)),
+            ChangeOp::SaveResolved(p, t) => (false, ffwd_core::conflict::save_resolved(&git, p, t)),
+            ChangeOp::Continue(kind) => (true, ffwd_core::conflict::continue_op(&git, kind)),
         };
         sink(Msg::ChangesOp { commit, result });
         sink(Msg::Changes(c::load(&git).map_err(|e| e.to_string())));
+        sink(Msg::InProgress(ffwd_core::refops::in_progress(&git)));
         if let Ok(s) = refs::status(&git) {
             sink(Msg::Status(s));
         }

@@ -166,11 +166,11 @@
 
 | Feature | ffwd | Notes |
 |---|---|---|
-| Built-in three-way resolver with manual editing | M2 | |
+| Built-in three-way resolver with manual editing | Partial | Choices per conflict (ours, theirs, both) are built; manual editing comes later |
 | Alternative three-column layout | M2 | |
-| Branch names instead of ours/theirs | M2 | |
+| Branch names instead of ours/theirs | **Built** | From the conflict markers |
 | Conflict marks on the scrollbar; navigation links | M2 | |
-| Resolve several files at once (ours or theirs) | M1 | |
+| Resolve several files at once (ours or theirs) | Partial | Take ours or theirs per file is built; several at once comes later |
 | Merge images, LFS files and submodules | M2 | |
 | External merge tools (many presets, several configured); UnityYAMLMerge | M1 | |
 | Diff of conflicted files resolved in an external editor | M2 | |

@@ -78,6 +78,19 @@ The capture above is the real PoC UI. `ffwd --snapshot` rendered it offscreen fr
   - a tab shows an amber ring while its repository has uncommitted changes;
   - every Git call runs on a worker.
 
+## Conflicts (FF-42)
+
+- **Banner:** while a merge, rebase, cherry-pick or revert is stopped, an amber banner at the top of Local Changes names it and counts the conflicted files.
+  - **Continue** becomes available once no file is conflicted.
+  - **Abort…** asks first, naming what is thrown away.
+- **Resolver:** selecting a conflicted file (letter U) shows its conflicts in place of the diff.
+  - Every conflict has buttons: **Ours · HEAD**, **Theirs · branch**, **Both**, **Both, theirs first**.
+  - The chosen result replaces the two sides in the view; clicking the choice again undoes it.
+  - Unchanged text between conflicts folds into "⋯ n unchanged lines".
+- **Whole file:** **Take ours** or **Take theirs**, and **Save and mark resolved** once every conflict has a choice.
+- **Keys:** `o`, `t`, `b`, `B` choose for the current conflict and move to the next unresolved one; `↑`/`↓` move between conflicts; `Enter` saves.
+- **Safety:** Space on a conflicted file never stages it, because that would mark the markers themselves as the resolution. Git never opens an editor (`GIT_EDITOR=true`), so Continue cannot hang.
+
 ## Diff viewer (FF-41)
 
 - **Diff bar** of a commit's file: **Unified** or **Side by side**, the context (**3 lines**, **10 lines**, **Whole file**) and **Whitespace shown** or **ignored**. The choices are remembered (`[diff]` in settings.toml).
