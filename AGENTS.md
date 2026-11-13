@@ -3,6 +3,7 @@
 Read `E:/Development/AGENTS.md` and `E:/Development/general-agent-rules.md` first. They win over anything here unless this file is stricter.
 
 - **Product:** ffwd (say "fast-forward"), a desktop Git client in Rust for Windows, macOS and Linux. It covers everything a complete desktop Git client does, plus AI features against an endpoint the user configures, with local AI preferred. **P0 is speed.** Existing clients render late, crash and feel slow (owner, 2026-11-13). Scope and budgets: `docs/SPEC.md`.
+- **No sub-agents** (owner, 2026-11-13: "Please do not use any sub-agents."): the main session does all work in this repository itself. No `delegate_task`, bridge jobs, native subagents or other delegated chats, including for reviews. This overrides the shared rules' delegation and separate-review-job steps for ffwd; the main reviews its own changes against the rules before merging and says so.
 - **Quality bar:** it must feel better than every other Git client, not just match them (owner, 2026-11-13).
 - **Pair Desk:** project `ffwd` (ids `FF-n`; owner, 2026-11-13). Handoff, backlog, plans and evidence live there, never in committed files.
 - **Identity:** commit only as `rennerdo30 <9086097+rennerdo30@users.noreply.github.com>`.
