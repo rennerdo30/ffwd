@@ -238,6 +238,7 @@ The capture above is the real PoC UI. `ffwd --snapshot` rendered it offscreen fr
 - **Speed:** only visible lines are tokenized; the pairing and comment state are computed once per diff.
 - **Next and previous change:** `n` and `p` in the diff jump between blocks of changes (unified or side by side), with three lines of context above; past the last one the status bar says so.
 - **Images:** a changed PNG shows before and after side by side on a checkerboard, each with its pixel size and file size (enlarged at most 2x, large ones shrunk on decoding). A new or deleted image says so on its side.
+- **Overview strip:** a slim strip on the diff's right edge marks every change (green added, red removed, amber both) and shades the visible part. A click jumps there.
 
 ## Find bar (FF-34)
 

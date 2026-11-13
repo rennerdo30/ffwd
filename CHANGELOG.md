@@ -25,6 +25,7 @@
 - **Conflicts:** edit a conflict by hand (`e`, `Ctrl+Enter` keeps) (FF-42).
 - **History:** conventional-commit prefixes (`feat:`, `fix:`) in the accent colour (FF-33).
 - **Sidebar:** sort branches by most recent commit or by name (FF-36).
+- **Diff:** an overview strip with change marks; a click jumps there (FF-41).
 - **CI status** (FF-24): GitHub Actions results as a dot on each commit, and "Open the CI run" in its menu.
 - **Image diff** (FF-41): changed PNGs show before and after side by side.
 - **Find bar:** recent queries with `↑`/`↓` in the empty field (FF-34).

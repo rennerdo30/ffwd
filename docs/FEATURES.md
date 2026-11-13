@@ -153,7 +153,7 @@
 | Token and inline highlights | **Built** | Word highlights within paired lines |
 | Ignore whitespace, show the entire file, context size dropdown | **Built** | 3, 10 or the whole file |
 | Show whitespace characters, `-`/`+` marks for colour blindness, word wrap, tab width, font size | M1 | |
-| Minimap or change marks on the scrollbar; next and previous change (`Ctrl+Up/Down`) | Partial | Next and previous change (`n`, `p`) and the selection mark are built; change marks on the scrollbar come later |
+| Minimap or change marks on the scrollbar; next and previous change (`Ctrl+Up/Down`) | **Built** | An overview strip with change marks and the visible part (a click jumps there), and `n`/`p` |
 | Reveal the line in an editor | M1 | |
 | Copy as patch | M1 | |
 | Remember the scroll position per file | M1 | |

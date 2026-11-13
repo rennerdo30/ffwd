@@ -568,6 +568,8 @@ pub struct Ui {
     title_controls: Vec<(i32, i32)>,
     top_buttons: Vec<(Rect, TopAction)>,
     search_rect: Rect,
+    /// The diff's overview strip (change marks; a click jumps there).
+    diff_strip: Rect,
     /// The list title, which switches all branches / current branch.
     scope_rect: Rect,
     pub win_action: Option<WinAction>,
@@ -705,6 +707,7 @@ impl Ui {
             title_controls: Vec::new(),
             top_buttons: Vec::new(),
             search_rect: Rect::default(),
+            diff_strip: Rect::default(),
             scope_rect: Rect::default(),
             win_action: None,
             hot: None,
@@ -1845,6 +1848,9 @@ impl Ui {
         }
         if !self.r.changes_view && self.diff_bar_click(x, y) {
             return;
+        }
+        if !self.r.changes_view && self.r.diff.is_some() && self.diff_strip.contains(x, y) {
+            return self.diff_strip_click(y);
         }
         if self.r.changes_view && self.changes_click(x, y) {
             if self.focus == Focus::Side || self.focus == Focus::SideFilter {
@@ -3497,7 +3503,80 @@ impl Ui {
         } else {
             self.paint_diff_body(cv, body, &diff, top, None, 0);
         }
+        if !diff.binary {
+            self.paint_diff_strip(cv, body);
+        }
         let _ = ui;
+    }
+
+    /// The overview strip on the diff's right edge (FF-41): a tick where
+    /// changes are (green added, red removed, amber both) and a band for
+    /// what is in view. One pass over the rows into pixel buckets.
+    fn paint_diff_strip(&mut self, cv: &mut Canvas, body: Rect) {
+        let w = self.px(8.0);
+        let strip = Rect::new(body.right() - w, body.y, w, body.h);
+        self.diff_strip = strip;
+        let n = self.diff_row_count();
+        if n == 0 || strip.h <= 0 {
+            return;
+        }
+        cv.fill(strip, BG_SIDEBAR);
+        let fit = (body.h / self.px(20.0).max(1)) as usize;
+        if n > fit {
+            let y0 = strip.y + (self.r.diff_top * strip.h as usize / n) as i32;
+            let hh = ((fit * strip.h as usize / n) as i32).max(self.px(6.0));
+            cv.fill(Rect::new(strip.x, y0, strip.w, hh), BG_HOVER);
+        }
+        for (py, m) in self.diff_marks(strip.h as usize).into_iter().enumerate() {
+            let color = match m {
+                1 => ADD,
+                2 => DEL,
+                3 => MOD,
+                _ => continue,
+            };
+            cv.fill(
+                Rect::new(strip.x + self.px(2.0), strip.y + py as i32, strip.w - self.px(4.0), self.px(2.0).max(1)),
+                color,
+            );
+        }
+    }
+
+    /// Change marks per pixel of a strip `h` high: 1 added, 2 removed, 3 both.
+    fn diff_marks(&mut self, h: usize) -> Vec<u8> {
+        use ffwd_core::diff::LineKind;
+        let mut out = vec![0u8; h];
+        let Some(d) = self.r.diff.clone() else { return out };
+        let kind = |i: usize| match d.lines[i].kind {
+            LineKind::Add => 1u8,
+            LineKind::Del => 2,
+            _ => 0,
+        };
+        let rows: Vec<u8> = if self.diff_split {
+            let (p, _) = self.diff_meta(&d);
+            diff_view::split_rows_of(&d, &p).into_iter().map(|(l, r)| l.map_or(0, kind) | r.map_or(0, kind)).collect()
+        } else {
+            (0..d.lines.len()).map(kind).collect()
+        };
+        let n = rows.len().max(1);
+        for (i, m) in rows.into_iter().enumerate() {
+            if m != 0 {
+                out[(i * h / n).min(h - 1)] |= m;
+            }
+        }
+        out
+    }
+
+    /// A click on the strip scrolls there.
+    fn diff_strip_click(&mut self, y: i32) {
+        let n = self.diff_row_count();
+        let s = self.diff_strip;
+        if n == 0 || s.h <= 0 {
+            return;
+        }
+        let row = ((y - s.y).max(0) as usize * n / s.h as usize).min(n - 1);
+        let fit = (s.h / self.px(20.0).max(1)) as usize;
+        self.r.diff_top = row.saturating_sub(fit / 2);
+        self.damage.rects.push(self.diff_rect());
     }
 
     /// The lines of a diff in `body`, from line `top`. With `hunk_label`,
@@ -5922,6 +6001,81 @@ mod tests {
         assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "top\nmerged by hand\nend\n");
         let still = String::from_utf8(g.output(&["rev-parse", "HEAD"]).unwrap()).unwrap();
         assert_eq!(head, still, "nothing was committed");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The diff's overview strip (FF-41): marks where the changes are
+    /// (here near the top and the bottom); a click near the bottom jumps
+    /// there; repaints match full paints.
+    #[test]
+    fn diff_strip_marks_and_jumps() {
+        use std::sync::mpsc;
+        let mut te = TextEngine::new();
+        let Some(f) = load_fonts(&mut te) else { return };
+        let dir = std::env::temp_dir().join(format!("ffwd-ui-strip-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = Git { root: dir.clone() };
+        for a in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.name", "ffwd test"],
+            &["config", "user.email", "test@example.invalid"],
+            &["config", "commit.gpgsign", "false"],
+            &["config", "core.autocrlf", "false"],
+        ] {
+            g.output(a).unwrap();
+        }
+        let lines: Vec<String> = (1..=300).map(|i| format!("line {i}")).collect();
+        std::fs::write(dir.join("a.txt"), lines.join("\n") + "\n").unwrap();
+        g.output(&["add", "."]).unwrap();
+        g.output(&["commit", "-q", "-m", "first"]).unwrap();
+        let mut changed = lines.clone();
+        changed[4] = "CHANGED 5".into();
+        changed[294] = "CHANGED 295".into();
+        std::fs::write(dir.join("a.txt"), changed.join("\n") + "\n").unwrap();
+        g.output(&["commit", "-q", "-am", "two changes"]).unwrap();
+        let (tx, rx) = mpsc::channel::<(u64, Msg)>();
+        let tx = Arc::new(std::sync::Mutex::new(tx));
+        let sinks: SinkFactory = Arc::new(move |id| {
+            let tx = tx.clone();
+            Arc::new(move |m| {
+                if let Ok(t) = tx.lock() {
+                    let _ = t.send((id, m));
+                }
+            })
+        });
+        crate::work::start(dir.clone(), &sinks(1));
+        let empty = crate::settings::Settings::parse("");
+        let mut ui = Ui::new(te, f, empty.clone(), empty, Some((1, dir.clone())), sinks, 1280, 800, 1.0);
+        let pump = |ui: &mut Ui, what: &str, done: &dyn Fn(&Ui) -> bool| {
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while !done(ui) {
+                let left = until.saturating_duration_since(std::time::Instant::now());
+                assert!(!left.is_zero(), "timed out waiting for {what}; notice: {:?}", ui.notice);
+                if let Ok((id, m)) = rx.recv_timeout(left) {
+                    ui.on_tab_msg(id, m);
+                }
+            }
+        };
+        pump(&mut ui, "the diff", &|u| u.r.log_done && u.r.diff.is_some());
+        ui.diff_opts.context = u32::MAX; // the whole file, so the changes sit far apart
+        ui.r.diff = None;
+        ui.apply_diff_bar(diff_view::DiffBar::Context(u32::MAX));
+        pump(&mut ui, "the whole-file diff", &|u| u.r.diff.as_ref().is_some_and(|d| d.lines.len() > 250));
+        let mut screen = vec![0u32; 1280 * 800];
+        ui.paint(&mut Canvas::new(&mut screen, 1280, 800), true);
+        let h = ui.diff_strip.h as usize;
+        assert!(h > 50, "the strip is painted");
+        let marks = ui.diff_marks(h);
+        let first = marks.iter().position(|&m| m != 0).unwrap();
+        let last = marks.iter().rposition(|&m| m != 0).unwrap();
+        assert!(first < h / 10 && last > h * 9 / 10, "marks near the top and the bottom: {first} {last} of {h}");
+        let near = marks[first] | marks[(first + 1).min(h - 1)] | marks[(first + 2).min(h - 1)];
+        assert_eq!(near, 3, "a changed line is removed and added: {:?}", &marks[first..(first + 3).min(h)]);
+        let s = ui.diff_strip;
+        ui.click(s.x + 2, s.y + (last as i32));
+        assert!(ui.r.diff_top > 200, "the click jumps near the bottom: {}", ui.r.diff_top);
+        assert_partial_paint_is_full(&mut ui, &mut screen, "strip click");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

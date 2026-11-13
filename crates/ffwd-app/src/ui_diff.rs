@@ -348,3 +348,8 @@ impl Ui {
         self.damage.rects.push(r);
     }
 }
+
+/// The side-by-side rows of a diff (left, right line), for other views.
+pub(super) fn split_rows_of(d: &FileDiff, pairs: &[u32]) -> Vec<(Option<usize>, Option<usize>)> {
+    Ui::split_rows(d, pairs)
+}
