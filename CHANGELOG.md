@@ -22,6 +22,7 @@
 - **File menus and external tools** (FF-47): right-click files to open them in your editor or the default app, show them in the folder, or open the external diff or merge tool from your Git config; choose the Git binary (`git.path`, `FFWD_GIT`).
 - **Diff:** `n` and `p` jump to the next and previous change (FF-41).
 - **Conflicts:** take ours or theirs for all conflicted files at once, after asking (FF-42).
+- **Conflicts:** edit a conflict by hand (`e`, `Ctrl+Enter` keeps) (FF-42).
 - **History:** conventional-commit prefixes (`feat:`, `fix:`) in the accent colour (FF-33).
 - **CI status** (FF-24): GitHub Actions results as a dot on each commit, and "Open the CI run" in its menu.
 - **Image diff** (FF-41): changed PNGs show before and after side by side.

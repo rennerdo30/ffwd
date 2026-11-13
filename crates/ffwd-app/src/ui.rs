@@ -5841,6 +5841,90 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Editing a conflict by hand (FF-42): `e` opens the conflict with
+    /// ours then theirs, typing replaces it, Ctrl+Enter keeps the edit
+    /// (not a commit), Enter saves the file resolved; repaints match.
+    #[test]
+    fn edit_a_conflict_by_hand() {
+        use std::sync::mpsc;
+        let mut te = TextEngine::new();
+        let Some(f) = load_fonts(&mut te) else { return };
+        let dir = std::env::temp_dir().join(format!("ffwd-ui-conflict-edit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = Git { root: dir.clone() };
+        for a in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.name", "t"],
+            &["config", "user.email", "t@example.invalid"],
+            &["config", "commit.gpgsign", "false"],
+            &["config", "core.autocrlf", "false"],
+        ] {
+            g.output(a).unwrap();
+        }
+        let commit = |t: &str, m: &str| {
+            std::fs::write(dir.join("a.txt"), t).unwrap();
+            g.output(&["add", "."]).unwrap();
+            g.output(&["commit", "-q", "-m", m]).unwrap();
+        };
+        commit("top\nbase\nend\n", "base");
+        g.output(&["switch", "-q", "-c", "feature"]).unwrap();
+        commit("top\nfeature\nend\n", "feature");
+        g.output(&["switch", "-q", "main"]).unwrap();
+        commit("top\nmain\nend\n", "main");
+        assert!(g.output(&["merge", "feature"]).is_err());
+        let (tx, rx) = mpsc::channel::<(u64, Msg)>();
+        let tx = Arc::new(std::sync::Mutex::new(tx));
+        let sinks: SinkFactory = Arc::new(move |id| {
+            let tx = tx.clone();
+            Arc::new(move |m| {
+                if let Ok(t) = tx.lock() {
+                    let _ = t.send((id, m));
+                }
+            })
+        });
+        crate::work::start(dir.clone(), &sinks(1));
+        let empty = crate::settings::Settings::parse("");
+        let mut ui = Ui::new(te, f, empty.clone(), empty, Some((1, dir.clone())), sinks, 1280, 800, 1.0);
+        let pump = |ui: &mut Ui, what: &str, done: &dyn Fn(&Ui) -> bool| {
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while !done(ui) {
+                let left = until.saturating_duration_since(std::time::Instant::now());
+                assert!(!left.is_zero(), "timed out waiting for {what}; notice: {:?}", ui.notice);
+                if let Ok((id, m)) = rx.recv_timeout(left) {
+                    ui.on_tab_msg(id, m);
+                }
+            }
+        };
+        pump(&mut ui, "the repository", &|u| u.r.git.is_some());
+        ui.enter_changes();
+        pump(&mut ui, "the conflict view", &|u| u.r.changes.conflict.is_some());
+        let mut screen = vec![0u32; 1280 * 800];
+        ui.paint(&mut Canvas::new(&mut screen, 1280, 800), true);
+        ui.key(Key::Char('e'));
+        let start = ui.r.changes.conflict.as_ref().and_then(|c| c.editing.as_ref()).map(|e| e.1.text());
+        assert_eq!(start.as_deref(), Some("main\nfeature"), "the edit starts with ours then theirs");
+        assert_partial_paint_is_full(&mut ui, &mut screen, "start editing");
+        ui.key(Key::Ctrl('a'));
+        for c in "merged by hand".chars() {
+            ui.key(Key::Char(c));
+        }
+        assert_partial_paint_is_full(&mut ui, &mut screen, "typing");
+        ui.key(Key::CtrlEnter);
+        let c = ui.r.changes.conflict.as_ref().unwrap();
+        assert!(c.editing.is_none() && c.resolved() == 1, "Ctrl+Enter keeps the edit");
+        let head = String::from_utf8(g.output(&["rev-parse", "HEAD"]).unwrap()).unwrap();
+        ui.key(Key::Enter);
+        pump(&mut ui, "the resolution", &|u| {
+            u.r.changes.busy.is_none()
+                && u.r.changes.status.as_ref().is_some_and(|s| s.entries.iter().all(|e| !e.conflicted))
+        });
+        assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "top\nmerged by hand\nend\n");
+        let still = String::from_utf8(g.output(&["rev-parse", "HEAD"]).unwrap()).unwrap();
+        assert_eq!(head, still, "nothing was committed");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// The find bar from the keyboard: message search selects the match,
     /// Tab changes the field, content waits for Enter, Esc closes.
     #[test]

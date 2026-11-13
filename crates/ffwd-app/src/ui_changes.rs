@@ -571,6 +571,10 @@ impl Ui {
         if self.ai_key(k) {
             return true;
         }
+        // A conflict being edited by hand takes every key (FF-42).
+        if self.r.changes.conflict.as_ref().is_some_and(|c| c.editing.is_some()) {
+            return self.conflict_key(k);
+        }
         match k {
             Key::CtrlEnter => {
                 self.commit_changes();
@@ -708,6 +712,13 @@ impl Ui {
                     Key::BackTab => self.r.changes.focus = CFocus::Desc,
                     Key::Delete => self.discard_selected(),
                     Key::Char('i') if self.selected_entry().is_some_and(|e| e.untracked()) => self.ignore_selected(),
+                    // A conflicted file: the resolver's keys work from the list too.
+                    Key::Char('o' | 't' | 'b' | 'B' | 'e')
+                        if self.r.changes.conflict.is_some() && self.selected_entry().is_some_and(|e| e.conflicted) =>
+                    {
+                        self.r.changes.focus = CFocus::Diff;
+                        self.conflict_key(k);
+                    }
                     Key::Char(c) if c.is_alphanumeric() => {
                         // Typing starts the commit subject.
                         self.r.changes.focus = CFocus::Subject;

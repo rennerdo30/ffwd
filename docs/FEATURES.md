@@ -166,7 +166,7 @@
 
 | Feature | ffwd | Notes |
 |---|---|---|
-| Built-in three-way resolver with manual editing | Partial | Choices per conflict (ours, theirs, both) are built; manual editing comes later |
+| Built-in three-way resolver with manual editing | **Built** | Choices per conflict (ours, theirs, both) and editing a conflict by hand (`e`) |
 | Alternative three-column layout | M2 | |
 | Branch names instead of ours/theirs | **Built** | From the conflict markers |
 | Conflict marks on the scrollbar; navigation links | M2 | |

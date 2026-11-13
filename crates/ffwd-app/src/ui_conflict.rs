@@ -12,6 +12,10 @@ pub struct ConflictView {
     pub segs: Vec<Seg>,
     pub eol: &'static str,
     pub choices: Vec<Option<Choice>>,
+    /// Hand-edited results, per conflict; they win over a choice.
+    pub manual: Vec<Option<Vec<String>>>,
+    /// The conflict being edited, with its text.
+    pub editing: Option<(usize, crate::text_area::TextArea)>,
     /// The conflict the keys act on.
     pub cur: usize,
     pub top: usize,
@@ -28,6 +32,8 @@ enum Row {
     Ours(String),
     Theirs(String),
     Result(String),
+    /// A line of the conflict being edited (its index in the editor).
+    Edit(usize),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -75,6 +81,18 @@ impl ConflictView {
                 }
                 Seg::Conflict(b) => {
                     rows.push(Row::Head(k));
+                    if let Some((e, area)) = &self.editing
+                        && *e == k
+                    {
+                        rows.extend((0..area.lines().len()).map(Row::Edit));
+                        k += 1;
+                        continue;
+                    }
+                    if let Some(Some(lines)) = self.manual.get(k) {
+                        rows.extend(lines.iter().cloned().map(Row::Result));
+                        k += 1;
+                        continue;
+                    }
                     match self.choices.get(k).copied().flatten() {
                         Some(c) => rows.extend(choose(b, c).into_iter().map(Row::Result)),
                         None => {
@@ -100,7 +118,47 @@ impl ConflictView {
     }
 
     pub fn resolved(&self) -> usize {
-        self.choices.iter().filter(|c| c.is_some()).count()
+        (0..self.choices.len()).filter(|&k| self.is_resolved(k)).count()
+    }
+
+    pub fn is_resolved(&self, k: usize) -> bool {
+        self.choices.get(k).copied().flatten().is_some() || self.manual.get(k).is_some_and(|m| m.is_some())
+    }
+
+    /// The text to start editing conflict `k` with: its current result,
+    /// else ours followed by theirs.
+    fn edit_start(&self, k: usize) -> Vec<String> {
+        if let Some(Some(m)) = self.manual.get(k) {
+            return m.clone();
+        }
+        let b = self.blocks()[k];
+        match self.choices.get(k).copied().flatten() {
+            Some(c) => choose(b, c),
+            None => b.ours.iter().chain(&b.theirs).cloned().collect(),
+        }
+    }
+
+    /// The file's text with every conflict resolved (hand edits become
+    /// plain text, choices are rendered by the core).
+    pub fn render(&self) -> String {
+        let mut segs = Vec::with_capacity(self.segs.len());
+        let mut choices = Vec::new();
+        let mut k = 0;
+        for s in &self.segs {
+            match s {
+                Seg::Conflict(_) if self.manual.get(k).is_some_and(|m| m.is_some()) => {
+                    segs.push(Seg::Text(self.manual[k].clone().unwrap_or_default()));
+                    k += 1;
+                }
+                Seg::Conflict(_) => {
+                    segs.push(s.clone());
+                    choices.push(self.choices[k]);
+                    k += 1;
+                }
+                Seg::Text(_) => segs.push(s.clone()),
+            }
+        }
+        ffwd_core::conflict::render(&segs, &choices, self.eol)
     }
 }
 
@@ -135,7 +193,16 @@ impl Ui {
                         c.segs = segs;
                         c
                     }
-                    None => ConflictView { path, segs, eol, choices: vec![None; n], cur: 0, top: 0 },
+                    None => ConflictView {
+                        path,
+                        segs,
+                        eol,
+                        choices: vec![None; n],
+                        manual: vec![None; n],
+                        editing: None,
+                        cur: 0,
+                        top: 0,
+                    },
                 });
             }
             Err(e) => {
@@ -152,11 +219,11 @@ impl Ui {
             && k < v.choices.len()
         {
             v.choices[k] = if v.choices[k] == Some(c) { None } else { Some(c) };
+            // A choice replaces a hand edit.
+            v.manual[k] = None;
             // Move on to the next unresolved conflict.
-            v.cur = (0..v.choices.len())
-                .map(|i| (k + 1 + i) % v.choices.len())
-                .find(|&i| v.choices[i].is_none())
-                .unwrap_or(k);
+            let n = v.choices.len();
+            v.cur = (0..n).map(|i| (k + 1 + i) % n).find(|&i| !v.is_resolved(i)).unwrap_or(k);
         }
         let d = self.changes_layout().diff;
         self.damage.rects.push(d);
@@ -169,7 +236,7 @@ impl Ui {
             return self
                 .set_notice(format!("{left} conflict{} still need a choice.", if left == 1 { "" } else { "s" }));
         }
-        let text = ffwd_core::conflict::render(&v.segs, &v.choices, v.eol);
+        let text = v.render();
         let path = v.path.clone();
         self.r.changes.conflict = None;
         self.run_change_op(crate::work::ChangeOp::SaveResolved(path, text), "Saving");
@@ -177,6 +244,47 @@ impl Ui {
 
     pub(super) fn conflict_key(&mut self, k: Key) -> bool {
         let Some(v) = &mut self.r.changes.conflict else { return false };
+        // Editing a conflict by hand: the keys go to the text.
+        if let Some((e, area)) = &mut v.editing {
+            let e = *e;
+            match k {
+                Key::Esc => v.editing = None,
+                Key::CtrlEnter => {
+                    let lines = area.lines().to_vec();
+                    v.editing = None;
+                    v.manual[e] = Some(lines);
+                    v.choices[e] = None;
+                    let n = v.choices.len();
+                    v.cur = (0..n).map(|i| (e + 1 + i) % n).find(|&i| !v.is_resolved(i)).unwrap_or(e);
+                }
+                Key::Enter => area.newline(),
+                Key::Char(c) => area.insert(c.encode_utf8(&mut [0; 4])),
+                Key::Tab => area.insert("    "),
+                Key::Backspace => area.backspace(),
+                Key::CtrlBackspace => area.delete_word(),
+                Key::Delete => area.delete(),
+                Key::Left => area.left(),
+                Key::Right => area.right(),
+                Key::Up => {
+                    area.vertical(false);
+                }
+                Key::Down => {
+                    area.vertical(true);
+                }
+                Key::Home => area.home(),
+                Key::End => area.end(),
+                Key::Ctrl('a') => area.select_all(),
+                Key::Ctrl('v') => {
+                    if let Some(t) = crate::platform::clipboard() {
+                        area.insert(&t);
+                    }
+                }
+                _ => return true,
+            }
+            let d = self.changes_layout().diff;
+            self.damage.rects.push(d);
+            return true;
+        }
         let n = v.choices.len();
         let cur = v.cur.min(n.saturating_sub(1));
         match k {
@@ -184,6 +292,13 @@ impl Ui {
             Key::Char('t') => self.pick(cur, Choice::Theirs),
             Key::Char('b') => self.pick(cur, Choice::OursThenTheirs),
             Key::Char('B') => self.pick(cur, Choice::TheirsThenOurs),
+            Key::Char('e') if n > 0 => {
+                let start = v.edit_start(cur);
+                let mut area = crate::text_area::TextArea::new(&start.join("\n"));
+                area.select_all();
+                area.right();
+                v.editing = Some((cur, area));
+            }
             Key::Char('n') | Key::Down if n > 0 => v.cur = (cur + 1) % n,
             Key::Char('p') | Key::Up if n > 0 => v.cur = (cur + n - 1) % n,
             Key::PageDown => v.top += 20,
@@ -426,7 +541,15 @@ impl Ui {
                     if on {
                         cv.fill(Rect::new(rr.x, rr.y, self.px(3.0), rr.h), ACCENT);
                     }
-                    let t = format!("Conflict {} of {n}", k + 1);
+                    let edited = v.manual.get(*k).is_some_and(|m| m.is_some());
+                    let editing = v.editing.as_ref().is_some_and(|x| x.0 == *k);
+                    let t = if editing {
+                        format!("Conflict {} of {n} · editing: Ctrl+Enter keeps, Esc cancels", k + 1)
+                    } else if edited {
+                        format!("Conflict {} of {n} · edited by hand (e edits again)", k + 1)
+                    } else {
+                        format!("Conflict {} of {n}", k + 1)
+                    };
                     let e = self.te.draw(cv, semi, self.pf(11.5), tx, lb, &t, HUNK_TEXT, self.pf(140.0));
                     let mut bx = e + self.pf(14.0);
                     let chosen = v.choices[*k];
@@ -458,6 +581,24 @@ impl Ui {
                         );
                         hits.push((br, changes_view::CHit::Conflict(KHit::Pick(*k, c))));
                         bx += w + self.pf(6.0);
+                    }
+                }
+                Row::Edit(i) => {
+                    cv.fill(rr, BG_INPUT);
+                    cv.fill(Rect::new(rr.x, rr.y, self.px(3.0), rr.h), ACCENT);
+                    if let Some((_, area)) = &v.editing {
+                        let line = area.lines().get(*i).cloned().unwrap_or_default();
+                        let shown = line.replace('\t', "    ");
+                        self.te.draw(cv, mono, self.pf(12.0), tx, lb, &shown, TEXT, body.w as f32 - self.pf(40.0));
+                        let (cl, cc) = area.cursor();
+                        if cl == *i {
+                            let before: String = line.chars().take(cc).collect::<String>().replace('\t', "    ");
+                            let cx = tx + self.te.measure(mono, self.pf(12.0), &before);
+                            cv.fill(
+                                Rect::new(cx as i32, y + self.px(3.0), self.px(1.5).max(1), lh - self.px(6.0)),
+                                ACCENT,
+                            );
+                        }
                     }
                 }
                 Row::Ours(t) | Row::Theirs(t) | Row::Result(t) => {
@@ -492,7 +633,7 @@ impl Ui {
                 }
             }
         }
-        let hint = "o ours · t theirs · b both · ↑↓ conflicts · Enter saves";
+        let hint = "o ours · t theirs · b both · e edit · ↑↓ conflicts · Enter saves";
         let hw = self.te.measure(ui, self.pf(11.0), hint);
         let hy = r.bottom() as f32 - self.pf(10.0);
         if rows.len() < fit {
