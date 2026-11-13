@@ -279,6 +279,7 @@ impl App {
                 NamedKey::Tab if ctrl => Some(Key::NextTab),
                 NamedKey::Tab if self.mods.shift_key() => Some(Key::BackTab),
                 NamedKey::Tab => Some(Key::Tab),
+                NamedKey::Enter if ctrl => Some(Key::CtrlEnter),
                 NamedKey::Enter => Some(Key::Enter),
                 NamedKey::Escape => Some(Key::Esc),
                 NamedKey::Backspace => Some(Key::Backspace),
@@ -599,6 +600,8 @@ impl ApplicationHandler<UserEvent> for App {
                     ui.set_active(focused);
                     if focused {
                         ui.set_remote(platform::is_remote_session());
+                        // Files may have changed outside ffwd.
+                        ui.on_window_focus();
                     }
                 }
             }

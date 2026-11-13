@@ -19,6 +19,8 @@ mod sidebar;
 use sidebar::SideItem;
 #[path = "ui_agents.rs"]
 mod agents_view;
+#[path = "ui_changes.rs"]
+mod changes_view;
 #[path = "ui_hover.rs"]
 mod hover;
 pub use hover::Cursor;
@@ -112,6 +114,8 @@ pub enum Key {
     Delete,
     NextTab,
     PrevTab,
+    /// Ctrl+Enter (Cmd+Enter on macOS): commit.
+    CtrlEnter,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -336,6 +340,9 @@ pub struct RepoState {
     op: Option<Op>,
     /// After a reload, the commit to select again once it streams in.
     reselect: Option<Oid>,
+    /// The Local Changes view replaces history and details (FF-35).
+    pub changes_view: bool,
+    pub changes: changes_view::Changes,
 }
 
 /// One repository tab.
@@ -428,6 +435,9 @@ pub struct Ui {
     /// the last pointer position (ui_hover.rs).
     hot: Option<Hot>,
     pressed: Option<Hot>,
+    /// This click follows the last one at the same place (a double click).
+    double: bool,
+    last_click: Option<(std::time::Instant, i32, i32)>,
     cursor: Cursor,
     pointer_at: Option<(i32, i32)>,
     pub damage: Damage,
@@ -523,6 +533,8 @@ impl Ui {
             win_action: None,
             hot: None,
             pressed: None,
+            double: false,
+            last_click: None,
             cursor: Cursor::Default,
             pointer_at: None,
             damage: Damage { full: true, ..Default::default() },
@@ -614,6 +626,9 @@ impl Ui {
         }
         self.load_repo_settings();
         self.load_agent_runs();
+        if self.r.changes_view {
+            self.reload_changes();
+        }
         self.palette = None;
         self.title_dirty = true;
         self.damage.full = true;
@@ -718,7 +733,8 @@ impl Ui {
         tab.started = false;
         let name = std::mem::take(&mut self.r.repo_name);
         let (git, tz, notice) = (self.r.git.take(), self.r.tz, self.notice.take());
-        self.r = RepoState { repo_name: name, git, tz, reselect, ..Default::default() };
+        let (changes_view, changes) = (self.r.changes_view, std::mem::take(&mut self.r.changes));
+        self.r = RepoState { repo_name: name, git, tz, reselect, changes_view, changes, ..Default::default() };
         self.notice = notice;
         let _ = path;
         self.activate_current();
@@ -1049,6 +1065,10 @@ impl Ui {
             Msg::Repos(_) => {}
             Msg::Agent(e) => self.on_agent_event(e),
             Msg::RepoSettings(p, s) => self.on_repo_settings(p, s),
+            Msg::Changes(r) => self.on_changes(r),
+            Msg::ChangesDiff { seq, result } => self.on_changes_diff(seq, result),
+            Msg::ChangesOp { commit, result } => self.on_changes_op(commit, result),
+            Msg::LastMessage(m) => self.on_last_message(m),
         }
     }
 
@@ -1272,6 +1292,9 @@ impl Ui {
         if self.side_key(k) {
             return;
         }
+        if self.r.changes_view && self.focus != Focus::Side && self.focus != Focus::SideFilter && self.changes_key(k) {
+            return;
+        }
         let page = self.visible_rows().saturating_sub(1).max(1);
         match (self.focus, k) {
             (_, Key::Palette) => self.open_palette(),
@@ -1335,6 +1358,8 @@ impl Ui {
             self.agents_wheel(n);
         } else if self.lay.side.contains(x, y) {
             self.side_wheel(n);
+        } else if self.r.changes_view {
+            self.changes_wheel(x, y, n);
         } else if self.lay.list.contains(x, y) {
             self.set_top((self.r.top as i64 + n).max(0) as usize);
         } else if self.diff_rect().contains(x, y) {
@@ -1345,6 +1370,11 @@ impl Ui {
     }
 
     pub fn click(&mut self, x: i32, y: i32) {
+        let now = std::time::Instant::now();
+        self.double = self.last_click.is_some_and(|(t, px, py)| {
+            now.duration_since(t).as_millis() < 450 && (px - x).abs() < 5 && (py - y).abs() < 5
+        });
+        self.last_click = Some((now, x, y));
         self.press_at(x, y);
         if self.settings_view.is_some() {
             return self.settings_click(x, y);
@@ -1386,6 +1416,13 @@ impl Ui {
         }
         if let Some(&(_, a)) = self.top_buttons.iter().find(|(r, _)| r.contains(x, y)) {
             self.top_action(a);
+            return;
+        }
+        if self.r.changes_view && self.changes_click(x, y) {
+            if self.focus == Focus::Side || self.focus == Focus::SideFilter {
+                self.focus = Focus::List;
+                self.damage.rects.push(self.lay.side);
+            }
             return;
         }
         let b = self.lay.list_body;
@@ -1622,6 +1659,15 @@ impl Ui {
                 let action = p.items.get(p.sel).map(|i| i.action.clone());
                 self.close_palette();
                 match action {
+                    Some(PAction::Goto(_) | PAction::GotoRef(..)) if self.r.changes_view => {
+                        // A jump shows history again.
+                        self.leave_changes();
+                        if let Some(PAction::Goto(id) | PAction::GotoRef(id, ..)) = action
+                            && let Some(&row) = self.r.by_id.get(&id)
+                        {
+                            self.select(row as usize);
+                        }
+                    }
                     Some(PAction::Goto(id)) => match self.r.by_id.get(&id) {
                         Some(&row) => self.select(row as usize),
                         None => self.set_notice("That commit is not loaded yet.".into()),
@@ -1719,11 +1765,17 @@ impl Ui {
         if !clip.intersect(l.side).is_empty() {
             self.paint_side(cv);
         }
-        if !clip.intersect(l.list).is_empty() {
-            self.paint_list(cv);
-        }
-        if !clip.intersect(l.details).is_empty() {
-            self.paint_details(cv);
+        if self.r.changes_view {
+            if !clip.intersect(self.changes_layout().area).is_empty() {
+                self.paint_changes(cv);
+            }
+        } else {
+            if !clip.intersect(l.list).is_empty() {
+                self.paint_list(cv);
+            }
+            if !clip.intersect(l.details).is_empty() {
+                self.paint_details(cv);
+            }
         }
         if !clip.intersect(l.status).is_empty() {
             self.paint_status(cv);
@@ -1943,6 +1995,12 @@ impl Ui {
             // An agent runs (accent) or finished unseen (green, red).
             if let Some(c) = self.agent_badge(&self.tabs[i].path.clone()) {
                 cv.fill_circle(end + self.pf(7.0), base - self.pf(4.0), self.pf(3.0), c);
+            } else {
+                // Uncommitted changes (FF-35).
+                let st = if active { self.r.status } else { self.tabs[i].state.as_ref().and_then(|s| s.status) };
+                if st.is_some_and(|s| s.total() > 0) {
+                    cv.ring(end + self.pf(7.0), base - self.pf(4.0), self.pf(3.0), self.pf(1.4), MOD);
+                }
             }
             if active || hover {
                 let c = self.tab_close_rect(*t);
@@ -2036,6 +2094,24 @@ impl Ui {
         if h != self.cap_hover {
             self.cap_hover = h;
             self.damage.rects.push(self.lay.caption);
+        }
+    }
+
+    /// The window got the focus back: refresh what may have changed
+    /// outside ffwd (the working tree).
+    pub fn on_window_focus(&mut self) {
+        if self.tabs.is_empty() {
+            return;
+        }
+        if self.r.changes_view {
+            self.reload_changes();
+        } else if let (Some(g), Some(t)) = (self.git_for_tab(), self.tabs.get(self.cur_tab)) {
+            let sink = (self.sinks)(t.id);
+            crate::work::spawn("status", &sink, move |sink| {
+                if let Ok(s) = ffwd_core::refs::status(&g) {
+                    sink(Msg::Status(s));
+                }
+            });
         }
     }
 
@@ -2604,7 +2680,7 @@ impl Ui {
         if cv.clip().intersect(r).is_empty() || r.h <= 0 {
             return;
         }
-        let (ui, semi, mono) = (self.f.ui, self.f.semi, self.f.mono);
+        let (ui, semi) = (self.f.ui, self.f.semi);
         cv.fill(Rect::new(r.x + 1, r.y, r.w - 1, r.h), BG);
         let bar = Rect::new(r.x + 1, r.y, r.w - 1, self.px(32.0));
         cv.fill(bar, BG_BAR);
@@ -2634,20 +2710,41 @@ impl Ui {
         let hint = if diff.truncated { "first 20,000 lines" } else { "unified · first parent" };
         let hw = self.te.measure(ui, self.pf(11.0), hint);
         self.te.draw(cv, ui, self.pf(11.0), r.right() as f32 - hw - pad, base, hint, TEXT_4, hw + 2.0);
-        let lh = self.px(20.0);
         let body = Rect::new(r.x + 1, bar.bottom(), r.w - 1, r.bottom() - bar.bottom());
+        let top = self.r.diff_top;
+        self.paint_diff_body(cv, body, &diff, top, None, 0);
+        let _ = ui;
+    }
+
+    /// The lines of a diff in `body`, from line `top`. With `hunk_label`,
+    /// each hunk header gets a button; returns them as (hunk index, rect).
+    /// `hit_base` is where those buttons start in the caller's hit list.
+    pub(super) fn paint_diff_body(
+        &mut self,
+        cv: &mut Canvas,
+        body: Rect,
+        diff: &FileDiff,
+        top: usize,
+        hunk_label: Option<&str>,
+        hit_base: usize,
+    ) -> Vec<(usize, Rect)> {
+        let (ui, semi, mono) = (self.f.ui, self.f.semi, self.f.mono);
+        let mut buttons = Vec::new();
+        let lh = self.px(20.0);
+        // Hunks above the first painted line count too.
+        let mut hunk: i64 = diff.lines.iter().take(top).filter(|l| l.kind == LineKind::Hunk).count() as i64;
         if diff.binary {
             self.te.draw(
                 cv,
                 ui,
                 self.pf(12.5),
-                r.x as f32 + pad,
+                body.x as f32 + self.pf(16.0),
                 body.y as f32 + self.pf(26.0),
                 "Binary file: no text diff",
                 TEXT_3,
-                r.w as f32,
+                body.w as f32,
             );
-            return;
+            return buttons;
         }
         let num_w = self.pf(38.0);
         let gut = Rect::new(body.x, body.y, (num_w * 2.0 + self.pf(8.0)) as i32, body.h);
@@ -2655,7 +2752,7 @@ impl Ui {
         let fs = self.pf(12.0);
         let old_clip = cv.clip();
         let rows = (body.h / lh + 1) as usize;
-        for (k, line) in diff.lines.iter().skip(self.r.diff_top).take(rows).enumerate() {
+        for (k, line) in diff.lines.iter().enumerate().skip(top).take(rows).map(|(i, l)| (i - top, l)) {
             let y = body.y + k as i32 * lh;
             let row = Rect::new(body.x, y, body.w, lh);
             if old_clip.intersect(row).is_empty() {
@@ -2679,16 +2776,25 @@ impl Ui {
                 cv.fill(Rect::new(gut.x, y, gut.w, lh), gbg);
             }
             if line.kind == LineKind::Hunk {
-                self.te.draw(
-                    cv,
-                    mono,
-                    self.pf(11.5),
-                    gut.right() as f32 + self.pf(10.0),
-                    lb,
-                    &line.text,
-                    fg,
-                    (body.right() - gut.right()) as f32 - self.pf(20.0),
-                );
+                hunk += 1;
+                let mut text_w = (body.right() - gut.right()) as f32 - self.pf(20.0);
+                if let Some(label) = hunk_label {
+                    // A stage or unstage button at the hunk's right end.
+                    let w = self.te.measure(semi, self.pf(11.0), label) + self.pf(18.0);
+                    let b = Rect::new(
+                        body.right() - self.px(10.0) - w as i32,
+                        y + self.px(2.0),
+                        w as i32,
+                        lh - self.px(4.0),
+                    );
+                    let hot = Hot::Change(hit_base + buttons.len());
+                    let (bg, border) = self.control_colors(hot, BG_BAR, HUNK_BORDER);
+                    cv.round_border(b, self.pf(5.0), border, bg);
+                    self.te.draw(cv, semi, self.pf(11.0), b.x as f32 + self.pf(9.0), lb, label, HUNK_TEXT, w);
+                    buttons.push((hunk as usize - 1, b));
+                    text_w -= w + self.pf(12.0);
+                }
+                self.te.draw(cv, mono, self.pf(11.5), gut.right() as f32 + self.pf(10.0), lb, &line.text, fg, text_w);
                 continue;
             }
             let numc = match line.kind {
@@ -2713,7 +2819,8 @@ impl Ui {
             let text = line.text.replace('\t', "    ");
             self.te.draw(cv, mono, fs, tx + self.pf(14.0), lb, &text, fg, (body.right() as f32) - tx - self.pf(24.0));
         }
-        let _ = ui;
+        let _ = (ui, semi);
+        buttons
     }
 
     fn paint_status(&mut self, cv: &mut Canvas) {
@@ -2992,6 +3099,85 @@ mod tests {
         #[cfg(windows)]
         assert_eq!(repo_name(Path::new(r"E:\Development\ffwd")), "ffwd");
         assert_eq!(repo_name(Path::new("dev/ffwd")), "ffwd");
+    }
+
+    /// Local Changes end to end, as a user drives it: open the view,
+    /// Space stages the selected file, type a subject, Ctrl+Enter commits.
+    #[test]
+    fn local_changes_stage_and_commit_with_keys() {
+        use std::sync::mpsc;
+        let mut te = TextEngine::new();
+        let Some(f) = load_fonts(&mut te) else { return };
+        let dir = std::env::temp_dir().join(format!("ffwd-ui-changes-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = Git { root: dir.clone() };
+        for a in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.name", "ffwd test"],
+            &["config", "user.email", "test@example.invalid"],
+            &["config", "commit.gpgsign", "false"],
+        ] {
+            g.output(a).unwrap();
+        }
+        std::fs::write(
+            dir.join("a.txt"),
+            "a
+",
+        )
+        .unwrap();
+        g.output(&["add", "."]).unwrap();
+        g.output(&["commit", "-q", "-m", "first"]).unwrap();
+        std::fs::write(
+            dir.join("b.txt"),
+            "new file
+",
+        )
+        .unwrap();
+        let (tx, rx) = mpsc::channel::<(u64, Msg)>();
+        let tx = Arc::new(std::sync::Mutex::new(tx));
+        let sinks: SinkFactory = Arc::new(move |id| {
+            let tx = tx.clone();
+            Arc::new(move |m| {
+                if let Ok(t) = tx.lock() {
+                    let _ = t.send((id, m));
+                }
+            })
+        });
+        crate::work::start(dir.clone(), &sinks(1));
+        let empty = crate::settings::Settings::parse("");
+        let mut ui = Ui::new(te, f, empty.clone(), empty, Some((1, dir.clone())), sinks, 1280, 800, 1.0);
+        let pump = |ui: &mut Ui, done: &dyn Fn(&Ui) -> bool| {
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while !done(ui) {
+                let left = until.saturating_duration_since(std::time::Instant::now());
+                assert!(!left.is_zero(), "timed out");
+                if let Ok((id, m)) = rx.recv_timeout(left) {
+                    ui.on_tab_msg(id, m);
+                }
+            }
+        };
+        pump(&mut ui, &|u| u.r.git.is_some());
+        ui.enter_changes();
+        pump(&mut ui, &|u| u.r.changes.status.as_ref().is_some_and(|s| s.side(changes_view_side(true)).len() == 1));
+        ui.key(Key::Char(' '));
+        pump(&mut ui, &|u| {
+            u.r.changes.busy.is_none()
+                && u.r.changes.status.as_ref().is_some_and(|s| s.side(changes_view_side(false)).len() == 1)
+        });
+        for c in "Add b".chars() {
+            ui.key(Key::Char(c));
+        }
+        assert_eq!(ui.r.changes.subject.text(), "Add b", "typing in the list starts the subject");
+        ui.key(Key::CtrlEnter);
+        pump(&mut ui, &|u| u.r.changes.busy.is_none() && u.r.changes.subject.text().is_empty());
+        let log = String::from_utf8(g.output(&["log", "--format=%s"]).unwrap()).unwrap();
+        assert_eq!(log.lines().collect::<Vec<_>>(), vec!["Add b", "first"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn changes_view_side(unstaged: bool) -> ffwd_core::changes::Side {
+        if unstaged { ffwd_core::changes::Side::Unstaged } else { ffwd_core::changes::Side::Staged }
     }
 
     /// Damage-only painting must end where a full repaint would: after

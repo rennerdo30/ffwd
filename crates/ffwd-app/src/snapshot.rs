@@ -84,6 +84,21 @@ pub fn run(args: &Args, t0: Instant) -> i32 {
     if let Some(name) = &args.side {
         ui.snapshot_side(name);
     }
+    if args.changes {
+        // The view loads its state on workers; wait (bounded) for the
+        // list and the first diff.
+        ui.enter_changes();
+        let until = Instant::now() + Duration::from_secs(10);
+        let mut have_list = false;
+        while let Ok((id, m)) = rx.recv_timeout(until.saturating_duration_since(Instant::now())) {
+            have_list |= matches!(m, Msg::Changes(_));
+            let diff = matches!(m, Msg::ChangesDiff { .. });
+            ui.on_tab_msg(id, m);
+            if have_list && (diff || ui.r.changes.status.as_ref().is_some_and(|s| s.entries.is_empty())) {
+                break;
+            }
+        }
+    }
     if args.settings {
         ui.open_settings();
     }

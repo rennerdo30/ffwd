@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Local Changes** (FF-35):
+  - unstaged and staged lists, and the diff of the selected file;
+  - stage or unstage files (Space, double click, Stage all, Unstage all) and single hunks;
+  - commit with a subject and a description, and amend (`Ctrl+Enter`);
+  - a tab badge for uncommitted changes, and a refresh when the window gets the focus back.
+- **Fix:** the Settings backdrop no longer stays on screen after closing (FF-52).
+
 ## 0.2.0-beta.1
 
 The first beta. ffwd shows history fast and fetches, pulls and pushes; staging and committing come next.

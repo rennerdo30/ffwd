@@ -35,6 +35,20 @@ pub enum Msg {
     OpDone(ffwd_core::ops::Outcome),
     /// An agent run's progress (experimental agents).
     Agent(ffwd_agent::Event),
+    /// The working tree's changes (Local Changes view).
+    Changes(Result<ffwd_core::changes::WorkStatus, String>),
+    /// The diff of one changed file (`seq` drops stale answers).
+    ChangesDiff {
+        seq: u64,
+        result: Result<Box<FileDiff>, String>,
+    },
+    /// A stage, unstage or commit finished.
+    ChangesOp {
+        commit: bool,
+        result: Result<String, String>,
+    },
+    /// The last commit's message, for amend.
+    LastMessage(String),
     /// A repository's own settings file, read on a worker.
     RepoSettings(PathBuf, crate::settings::Settings),
 }
@@ -44,6 +58,62 @@ pub fn run_op(git: Git, op: ffwd_core::ops::Op, sink: &Sink) {
     spawn("op", sink, move |sink| {
         let out = ffwd_core::ops::run(&git, op, |line| sink(Msg::OpProgress(line)));
         sink(Msg::OpDone(out));
+    });
+}
+
+/// What a Local Changes operation does.
+pub enum ChangeOp {
+    Stage(Vec<String>),
+    Unstage(Vec<String>),
+    Hunk(Box<ffwd_core::changes::Entry>, ffwd_core::changes::Side, usize),
+    Commit(String, ffwd_core::changes::CommitOptions),
+}
+
+pub fn changes_load(git: Git, sink: &Sink) {
+    spawn("changes", sink, move |sink| {
+        sink(Msg::Changes(ffwd_core::changes::load(&git).map_err(|e| e.to_string())));
+        // The sidebar's counts follow.
+        if let Ok(s) = refs::status(&git) {
+            sink(Msg::Status(s));
+        }
+    });
+}
+
+pub fn changes_op(git: Git, op: ChangeOp, sink: &Sink) {
+    spawn("change-op", sink, move |sink| {
+        use ffwd_core::changes as c;
+        let (commit, result) = match &op {
+            ChangeOp::Stage(p) => (false, c::stage(&git, &refs(p)).map(|_| format!("Staged {}", count(p.len())))),
+            ChangeOp::Unstage(p) => (false, c::unstage(&git, &refs(p)).map(|_| format!("Unstaged {}", count(p.len())))),
+            ChangeOp::Hunk(e, side, h) => (
+                false,
+                c::toggle_hunk(&git, e, *side, *h).map(|_| {
+                    if *side == c::Side::Unstaged { "Staged the hunk".into() } else { "Unstaged the hunk".into() }
+                }),
+            ),
+            ChangeOp::Commit(m, o) => (true, c::commit(&git, m, o).map(|s| format!("Committed {s}"))),
+        };
+        sink(Msg::ChangesOp { commit, result });
+        sink(Msg::Changes(c::load(&git).map_err(|e| e.to_string())));
+        if let Ok(s) = refs::status(&git) {
+            sink(Msg::Status(s));
+        }
+    });
+}
+
+fn refs(v: &[String]) -> Vec<&str> {
+    v.iter().map(String::as_str).collect()
+}
+
+fn count(n: usize) -> String {
+    if n == 1 { "1 file".into() } else { format!("{n} files") }
+}
+
+pub fn last_message(git: Git, sink: &Sink) {
+    spawn("last-message", sink, move |sink| {
+        if let Ok(m) = ffwd_core::changes::last_message(&git) {
+            sink(Msg::LastMessage(m));
+        }
     });
 }
 
@@ -180,6 +250,12 @@ enum Req {
         file: usize,
         change: Box<diff::FileChange>,
     },
+    /// A changed file of the working tree or the index.
+    ChangeDiff {
+        seq: u64,
+        entry: Box<ffwd_core::changes::Entry>,
+        side: ffwd_core::changes::Side,
+    },
 }
 
 /// One long-lived worker for commit details and diffs. It only keeps the
@@ -221,6 +297,11 @@ impl DetailWorker {
                             diff::file_diff(&git, id, &parents, &change).map(Box::new).map_err(|e| e.to_string());
                         sink(Msg::Diff { seq, file, result });
                     }
+                    Req::ChangeDiff { seq, entry, side } => {
+                        let result =
+                            ffwd_core::changes::diff(&git, &entry, side).map(Box::new).map_err(|e| e.to_string());
+                        sink(Msg::ChangesDiff { seq, result });
+                    }
                 }
             }
         });
@@ -240,6 +321,17 @@ impl DetailWorker {
         let (m, cv) = &*self.slot;
         if let Ok(mut g) = m.lock() {
             g.1 = Some(Req::Diff { seq, id, parents, file, change: Box::new(change) });
+            cv.notify_one();
+        }
+    }
+}
+
+impl DetailWorker {
+    /// The diff of a changed file; replaces any waiting diff request.
+    pub fn change_diff(&self, seq: u64, entry: ffwd_core::changes::Entry, side: ffwd_core::changes::Side) {
+        let (m, cv) = &*self.slot;
+        if let Ok(mut g) = m.lock() {
+            g.1 = Some(Req::ChangeDiff { seq, entry: Box::new(entry), side });
             cv.notify_one();
         }
     }

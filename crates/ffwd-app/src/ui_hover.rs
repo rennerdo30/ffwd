@@ -21,6 +21,8 @@ pub enum Hot {
     SettingsPage(usize),
     /// An entry of the agents panel's hit list.
     Agent(usize),
+    /// An entry of the Local Changes view's hit list.
+    Change(usize),
 }
 
 /// The mouse cursor the window should show.
@@ -72,6 +74,9 @@ impl Ui {
         if let Some(&(_, a)) = self.top_buttons.iter().find(|(r, _)| r.contains(x, y)) {
             return Some(Hot::Top(a));
         }
+        if self.r.changes_view {
+            return self.change_hit_at(x, y).map(Hot::Change);
+        }
         if self.search_rect.contains(x, y) {
             return Some(Hot::Search);
         }
@@ -101,6 +106,7 @@ impl Ui {
             Hot::Palette(_) => self.palette_rect(10),
             Hot::Setting(..) | Hot::SettingsPage(_) => self.settings_rect(),
             Hot::Agent(_) => self.agents_rect(),
+            Hot::Change(i) => self.r.changes.hits.get(i).map_or(self.lay.list, |h| h.0.inset(-2, -2)),
         }
     }
 
@@ -139,6 +145,7 @@ impl Ui {
             Some(Hot::Search) => Cursor::Text,
             Some(Hot::Row(_) | Hot::File(_)) => Cursor::Default,
             Some(Hot::Agent(i)) if self.agent_hit_is_field(i) => Cursor::Text,
+            Some(Hot::Change(i)) if self.change_hit_is_text(i) => Cursor::Text,
             Some(Hot::Setting(row, _)) if self.setting_is_text(row) => Cursor::Text,
             Some(_) => Cursor::Pointer,
         };

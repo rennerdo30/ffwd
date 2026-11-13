@@ -302,11 +302,13 @@ impl Ui {
         self.side_select(&it.key);
         match it.kind {
             SideKind::Header | SideKind::Folder | SideKind::Remote => self.toggle_side(i),
-            SideKind::Changes => self
-                .set_notice("The Local Changes view (staging, commit) is the next piece being built (FF-14).".into()),
-            SideKind::All => {}
+            SideKind::Changes => self.enter_changes(),
+            SideKind::All => self.leave_changes(),
             _ => match it.target.and_then(|t| self.r.by_id.get(&t).copied()) {
-                Some(row) => self.select(row as usize),
+                Some(row) => {
+                    self.leave_changes();
+                    self.select(row as usize)
+                }
                 None if it.target.is_some() => {
                     self.set_notice(format!("{} points to a commit that is not loaded yet.", it.label))
                 }

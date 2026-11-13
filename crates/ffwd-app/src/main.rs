@@ -14,6 +14,7 @@ mod icon;
 mod platform;
 mod settings;
 mod snapshot;
+mod text_area;
 mod text_field;
 mod theme;
 mod ui;
@@ -52,6 +53,8 @@ pub struct Args {
     pub scope_demo: bool,
     /// Snapshot with the pointer resting here (hover states).
     pub hover: Option<(i32, i32)>,
+    /// Snapshot of the Local Changes view.
+    pub changes: bool,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -73,6 +76,7 @@ fn parse_args() -> Result<Args, String> {
         agents_demo: false,
         scope_demo: false,
         hover: None,
+        changes: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -106,6 +110,7 @@ fn parse_args() -> Result<Args, String> {
             "--settings-page" => a.settings_page = Some(val("--settings-page")?.parse().map_err(|_| "bad page")?),
             "--agents-demo" => a.agents_demo = true,
             "--settings-scope-demo" => a.scope_demo = true,
+            "--changes" => a.changes = true,
             "--hover" => {
                 let v = val("--hover")?;
                 let (x, y) = v.split_once(',').ok_or("--hover is X,Y")?;

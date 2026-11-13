@@ -51,6 +51,27 @@ The capture above is the real PoC UI. `ffwd --snapshot` rendered it offscreen fr
 - A filter field at the top narrows branches, remotes, tags and stashes (folders open while filtering). Typing while the sidebar has focus starts filtering.
 - Keyboard: `Tab` cycles sidebar → history → files → diff; in the sidebar `↑ ↓`, `←` closes or goes to the parent, `→` opens, `Enter` jumps.
 
+## Local Changes (FF-35)
+
+**Local Changes** in the sidebar replaces the history and details with the working tree. **All Commits**, or jumping to any ref, shows history again.
+
+- **Left column:**
+  - **Unstaged** (with **Stage all**) and **Staged** (with **Unstage all**): one row per file, with a status letter (A, M, D, R, U), its name and its folder.
+  - Below them, the commit box: a subject (its length turns amber past 50 characters and red past 72), a multi-line description, **Amend**, and the **Commit** button (`Ctrl+Enter`).
+- **Right:** the selected file's diff. Every hunk header has a **Stage hunk** or **Unstage hunk** button. An untracked file shows as all added and stages whole.
+- **Keys:**
+  - `↑ ↓` move through both lists as one.
+  - `Space` or `Enter` stages or unstages the selected file; a double click does the same.
+  - `→` goes into the diff; `Tab` moves through the lists, subject and description.
+  - Typing a letter in a list starts the subject.
+  - `Ctrl+Enter` commits from anywhere in the view.
+- **Amend** fills an empty message with the last commit's message.
+- **Hook failures** show their message above the Commit button, and the message stays.
+- **Fresh state:**
+  - the view reloads when the window gets the focus back, and after every operation;
+  - a tab shows an amber ring while its repository has uncommitted changes;
+  - every Git call runs on a worker.
+
 ## Settings
 
 The gear in the top bar (or `Ctrl+,`) opens Settings: details layout, automatic updates and channel, repository folders, AI endpoint and model, **Open settings.toml**, **Check for updates now**. Changes save at once; the file keeps your comments.
@@ -96,6 +117,8 @@ Like other clients: one tab per repository under the top bar.
 | `Ctrl+O` / `Ctrl+T` | Open a repository in a tab |
 | `Ctrl+,` | Settings |
 | `Ctrl+Shift+A` | Agents panel (experimental) |
+| `Space` / `Enter` (Local Changes) | Stage or unstage the selected file |
+| `Ctrl+Enter` | Commit (Local Changes) |
 | `Ctrl+A` `Ctrl+C` `Ctrl+V` `Ctrl+X` `Ctrl+Backspace` `← →` `Home End` | Text editing in the palette and settings fields |
 | `Ctrl+W` / `Ctrl+Shift+T` | Close the tab / reopen the last closed one |
 | `Ctrl+Tab` / `Ctrl+Shift+Tab` / `Ctrl+1…9` | Next, previous, n-th tab (9 = last) |
@@ -136,7 +159,7 @@ Planned M1 keys follow common Git-client conventions (for example `Ctrl+Shift+G`
 
 ## Next design steps
 
-1. The Local Changes view: staged and unstaged lists, line and hunk staging, and the commit box with an AI draft.
+1. Local Changes, next steps: line staging, discard with undo, `.gitignore`, and an AI draft of the commit message.
 2. Side-by-side diff with token highlights.
 3. Interactive rebase as an editable list in the history pane.
 4. A light theme, with theme files in the Kwil format.

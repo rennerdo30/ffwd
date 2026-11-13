@@ -52,22 +52,22 @@
 
 | Feature | ffwd | Notes |
 |---|---|---|
-| Staged and unstaged lists, or a combined list | M1 | FF-14 |
-| Stage by file, line, chunk; sub-chunk in entire-file mode | M1 | |
-| Stage and unstage by drag and drop; Stage All | M1 | |
+| Staged and unstaged lists, or a combined list | **Built** (two lists) | FF-35; combined list in M1 |
+| Stage by file, line, chunk; sub-chunk in entire-file mode | Partial | File and hunk are built; lines in M1 |
+| Stage and unstage by drag and drop; Stage All | Partial | Stage all, Unstage all, double click and Space are built |
 | Side-by-side view in local changes | M1 | |
 | Discard (file, lines), reset a file to a revision | M1 | Undoable (rule 8) |
 | Hide untracked (remembered), show ignored files | M1 | |
 | Add to `.gitignore` (file, folder, pattern), template picker | M1 | |
-| Commit, amend (shows the last commit's changes), commit and push, push after commit | M1 | |
-| Subject length reminder and limit, wrap at ruler, auto-growing description | M1 | |
+| Commit, amend (shows the last commit's changes), commit and push, push after commit | Partial | Commit and amend (fills the last message) are built |
+| Subject length reminder and limit, wrap at ruler, auto-growing description | Partial | The length reminder (50, 72) is built |
 | Spell check of the message | M2 | |
 | Recent messages, commit templates, `prepare-commit-msg` draft | M1 | |
 | `Co-authored-by` autocomplete, `--signoff` | M2 | |
 | GPG and SSH signing | M1 | Through `git`, so the user's config applies |
-| Skip hooks; show the hook's output; keep the message when a hook fails | M1 | FF-13 matrix |
+| Skip hooks; show the hook's output; keep the message when a hook fails | Partial | The hook message is shown and the message kept; skipping comes next |
 | Warning for large files not in LFS | M2 | |
-| Uncommitted changes shown as a tab badge | M1 | |
+| Uncommitted changes shown as a tab badge | **Built** | |
 | UI never freezes during a long commit | **Built** | Rule 1 |
 
 ## 4. Branches, tags and refs (FF-36)

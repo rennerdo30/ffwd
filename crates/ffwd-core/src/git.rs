@@ -93,6 +93,51 @@ impl Git {
         Ok(out)
     }
 
+    /// Runs git with `input` on standard input; exit codes in `ok` count
+    /// as success (`git diff --no-index` exits 1 when files differ).
+    /// Returns stdout, capped at `limit` bytes.
+    pub fn run_with(&self, args: &[&str], input: Option<&[u8]>, ok: &[i32], limit: usize) -> Result<Vec<u8>, GitError> {
+        let mut cmd = self.command(args);
+        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+        if input.is_some() {
+            cmd.stdin(Stdio::piped());
+        }
+        let mut child = cmd.spawn().map_err(GitError::Spawn)?;
+        let writer = match (child.stdin.take(), input) {
+            (Some(mut si), Some(data)) => {
+                let data = data.to_vec();
+                Some(std::thread::spawn(move || {
+                    use std::io::Write;
+                    let _ = si.write_all(&data);
+                }))
+            }
+            _ => None,
+        };
+        let err_reader = child.stderr.take().map(|se| {
+            std::thread::spawn(move || {
+                let mut err = Vec::new();
+                let _ = se.take(64 * 1024).read_to_end(&mut err);
+                err
+            })
+        });
+        let mut out = Vec::new();
+        if let Some(so) = child.stdout.take() {
+            let mut so = so;
+            let _ = (&mut so).take(limit as u64).read_to_end(&mut out);
+            let _ = std::io::copy(&mut so, &mut std::io::sink());
+        }
+        if let Some(w) = writer {
+            let _ = w.join();
+        }
+        let err = err_reader.and_then(|t| t.join().ok()).unwrap_or_default();
+        let status = child.wait().map_err(GitError::Spawn)?;
+        let code = status.code();
+        if status.success() || code.is_some_and(|c| ok.contains(&c)) {
+            return Ok(out);
+        }
+        Err(GitError::Failed { args: args.join(" "), code, stderr: String::from_utf8_lossy(&err).into_owned() })
+    }
+
     pub fn output(&self, args: &[&str]) -> Result<Vec<u8>, GitError> {
         self.output_limited(args, 256 * 1024 * 1024)
     }
