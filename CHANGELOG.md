@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.2.0-beta.2
+
+The second beta. ffwd now covers daily work end to end: staging and committing, branches and history operations, interactive rebase, conflicts, stashes, remotes, submodules, a find bar and a much richer diff viewer, and it starts faster.
+
 - **Local Changes** (FF-35):
   - unstaged and staged lists, and the diff of the selected file;
   - stage or unstage files (Space, double click, Stage all, Unstage all) and single hunks;
@@ -56,6 +60,18 @@
 - **Find bar** (`Ctrl+F`, FF-34): search messages, authors, SHAs, content (`-S`) and paths. Results stream in, non-matches are dimmed, matches are marked on the scroll track, and `↑`/`↓` jump between them.
 - **Fix:** the Settings backdrop no longer stays on screen after closing (FF-52).
 - **Fix:** the taskbar and Alt+Tab show the ffwd mark. The window now sets its big icon at the monitor's DPI (again on a scale change), and the Windows executable embeds the app icon, so Explorer, pinned buttons and shortcuts show it too.
+- **Faster start-up** (FF-8): the window and its colours appear before the fonts are ready, and a slow Windows frame call no longer redraws the hidden window. The first frame takes 21 to 30 ms on the owner PC (it was 35 to 39 ms).
+- **Find bar** (FF-34):
+  - content and path searches mark the files that matched in the selected commit, and open the first of them;
+  - the search covers the history the list shows: all branches, or the current one;
+  - `Ctrl+F` with the diff focused finds text in the diff; the query stays when you switch files.
+- **Diff viewer** (FF-41):
+  - each file's scroll position is remembered;
+  - copy or save one file of a commit as a patch;
+  - the bar's **…** menu shows whitespace characters and sets the tab width and the code text size;
+  - right-click a line (in a commit or in Local Changes) to open your editor at that line, or to copy it;
+  - JPEG images in the image diff.
+- **Fix:** opening find in the diff left the list's selection colour stale until the next repaint; the conflict view's "unchanged lines" label showed a box instead of "…".
 
 ## 0.2.0-beta.1
 

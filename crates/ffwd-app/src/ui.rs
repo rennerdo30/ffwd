@@ -6616,7 +6616,7 @@ mod tests {
         let empty = crate::settings::Settings::parse("");
         let mut ui = Ui::new(te, f, empty.clone(), empty, Some((1, dir.clone())), sinks, 1280, 800, 1.0);
         let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
-        while ui.r.diff.is_none() {
+        while ui.r.diff.is_none() || ui.r.git.is_none() {
             let left = until.saturating_duration_since(std::time::Instant::now());
             assert!(!left.is_zero(), "timed out waiting for the diff");
             if let Ok((id, m)) = rx.recv_timeout(left) {
@@ -6760,7 +6760,7 @@ mod tests {
         let empty = crate::settings::Settings::parse("");
         let mut ui = Ui::new(te, f, empty.clone(), empty, Some((1, dir.clone())), sinks, 1280, 800, 1.0);
         let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
-        while ui.r.diff.is_none() {
+        while ui.r.diff.is_none() || ui.r.git.is_none() {
             let left = until.saturating_duration_since(std::time::Instant::now());
             assert!(!left.is_zero(), "timed out waiting for the diff");
             if let Ok((id, m)) = rx.recv_timeout(left) {
