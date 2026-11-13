@@ -103,19 +103,27 @@ pub fn stream(
     interval: Duration,
     sink: impl FnMut(Vec<Commit>, bool),
 ) -> Result<usize, GitError> {
+    stream_scoped(git, false, first, interval, sink)
+}
+
+/// [`stream`], or with `head_only` only the history of HEAD (the current
+/// branch filter, FF-33).
+pub fn stream_scoped(
+    git: &Git,
+    head_only: bool,
+    first: usize,
+    interval: Duration,
+    sink: impl FnMut(Vec<Commit>, bool),
+) -> Result<usize, GitError> {
     // Branches, remotes, tags and HEAD. Not `--all`: tools add
     // private refs (for example refs/t3/*) that are not part of the history
     // the user works with.
-    let mut child = git.spawn(&[
-        "log",
-        "--branches",
-        "--remotes",
-        "--tags",
-        "HEAD",
-        "--topo-order",
-        "--no-show-signature",
-        LOG_FORMAT,
-    ])?;
+    let all: &[&str] = &["--branches", "--remotes", "--tags", "HEAD"];
+    let refs: &[&str] = if head_only { &["HEAD"] } else { all };
+    let mut args = vec!["log"];
+    args.extend_from_slice(refs);
+    args.extend_from_slice(&["--topo-order", "--no-show-signature", LOG_FORMAT]);
+    let mut child = git.spawn(&args)?;
     let Some(out) = child.stdout.take() else {
         return Ok(0);
     };

@@ -16,6 +16,8 @@
   - merge (four modes), rebase, cherry-pick, revert, reset (soft, mixed, hard), each with a backup ref where commits could be lost;
   - double-click checkout; `Ctrl+B` and `Ctrl+Shift+G`.
 - **Interactive rebase** (FF-37): a plan view to pick, reword, squash, fixup, drop and reorder commits (`Ctrl+Shift+R`); no editor ever opens, a backup ref keeps the old tip, and conflicts stop in Local Changes.
+- **History list** (FF-33): ↑/↓ marks for commits to push and to pull; the list title switches to the current branch only; "Open on <host>" for a commit.
+- **Fix:** a Local Changes diff could stay empty when history arrived at the same moment; its request now has its own place in the worker (FF-56).
 - **AI commit messages** (FF-50): **AI draft** in Local Changes, against any OpenAI-compatible endpoint (local servers such as Ollama first). It shows exactly what will be sent and where before anything leaves, never sends secret-looking files, streams the reply, and only fills the message box. Off until an endpoint is set.
 - **Repositories and tabs** (FF-44): clone with progress and cancel, create a new repository, and a tab menu (close others, open in the file manager or a terminal, copy path).
 - **Submodules** (FF-45, FF-54):

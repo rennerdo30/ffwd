@@ -17,8 +17,8 @@
 | Commit list with branch graph, ref labels, avatars | **Built** | Streamed; avatars are initials so far |
 | Labels in their graph colours, compact labels | Partial | Chips are coloured by kind |
 | Stashes shown in the commit list (can be hidden) | M1 | |
-| Highlight commits to push and to pull | M1 | |
-| Branch filter: active branch (`Ctrl+Shift+A`), several branches, auto-switch on checkout | M1 | |
+| Highlight commits to push and to pull | **Built** | ↑ before commits to push, ↓ before commits to pull (against the upstream) |
+| Branch filter: active branch (`Ctrl+Shift+A`), several branches, auto-switch on checkout | Partial | The list title switches to the current branch only (per tab; follows checkouts); several branches come later |
 | Hide branches, folders or remotes; filter folders and remotes | M2 | |
 | Collapse merges and branches in the graph (arrow keys, collapse all) | M2 | |
 | "First parent" view mode | M2 | The diff already offers first-parent |
@@ -32,7 +32,7 @@
 | Collapsible details (`Ctrl+Shift+D`), vertical layout, one-line list layout | Partial | Below/beside layout is built |
 | Compare two selected commits (swap order); compare a commit with local changes | M1 | |
 | Open a commit for review in its own window | M2 | |
-| Open a commit in the hosting site's web page | M1 | |
+| Open a commit in the hosting site's web page | **Built** | Commit menu: Open on <host>, Copy web link (GitHub, GitLab, Bitbucket, Azure DevOps, Gitea-style) |
 | Highlight one author with a colour; `.mailmap` | M2 | |
 | Horizontal scroll (Shift+wheel, touchpad) | M1 | |
 

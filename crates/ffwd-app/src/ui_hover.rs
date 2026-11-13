@@ -11,6 +11,8 @@ use super::*;
 pub enum Hot {
     Top(TopAction),
     Search,
+    /// The list title: all branches or only the current one.
+    Scope,
     /// A commit row (absolute index).
     Row(usize),
     /// A file of the selected commit.
@@ -109,6 +111,9 @@ impl Ui {
         if self.search_rect.contains(x, y) {
             return Some(Hot::Search);
         }
+        if self.r.search.is_none() && self.scope_rect.contains(x, y) {
+            return Some(Hot::Scope);
+        }
         if !self.r.changes_view && self.r.search.is_some() && self.lay.list_head.contains(x, y) {
             return self.search_hit_at(x, y).map(Hot::Find);
         }
@@ -138,6 +143,7 @@ impl Ui {
                 self.top_buttons.iter().find(|(_, b)| *b == a).map_or(self.lay.top, |(r, _)| r.inset(-2, -2))
             }
             Hot::Search => self.search_rect.inset(-2, -2),
+            Hot::Scope => self.scope_rect.inset(-2, -2),
             Hot::Row(r) => self.row_rect(r).unwrap_or_default(),
             Hot::File(k) => self.file_row_rect(k),
             Hot::Palette(_) => self.palette_rect(10),

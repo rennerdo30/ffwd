@@ -144,6 +144,12 @@ The capture above is the real PoC UI. `ffwd --snapshot` rendered it offscreen fr
 - **New repository:** "Create a new repository…" with a suggested folder. The folder is created when missing; an existing repository there is just opened.
 - **Tab menu** (right click a tab): Close, Close other tabs, Show in Explorer/Finder (or Open the folder), Open in terminal (Windows Terminal, else a console; Terminal on macOS; the desktop's terminal on Linux), Copy path. A middle click closes a tab.
 
+## History list (FF-33)
+
+- **To push and to pull:** an amber ↑ before commits your branch has and its upstream lacks, a blue ↓ before commits the upstream has and your branch lacks.
+- **Current branch only:** click the list title ("All commits · n") to show only HEAD's history ("Current branch · n", amber), and click again for all. The palette has the same toggle; each tab remembers its own.
+- **Web link:** the commit menu has "Open on <host>" and "Copy web link" when the remote is on GitHub, GitLab, Bitbucket, Azure DevOps or a Gitea-style host.
+
 ## Stashes (FF-38)
 
 - **Save:** `Ctrl+Shift+S` (or the palette's "Stash changes") opens a dialog with an optional message. Untracked files are included by default; `Tab` toggles that.

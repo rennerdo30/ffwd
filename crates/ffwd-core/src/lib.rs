@@ -21,6 +21,7 @@ pub mod remotes;
 pub mod search;
 pub mod stash;
 pub mod submodules;
+pub mod web;
 
 pub use git::{Git, GitError};
 pub use graph::{Graph, GraphRow, Seg};

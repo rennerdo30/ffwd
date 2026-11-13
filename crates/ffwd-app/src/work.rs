@@ -98,6 +98,8 @@ pub enum Msg {
     CloneProgress(String),
     /// A clone or a new repository is ready (its folder), or why not.
     RepoReady(Result<PathBuf, String>),
+    /// Commits to push (ahead) and to pull (behind) the upstream.
+    SyncMarks(Vec<ffwd_core::Oid>, Vec<ffwd_core::Oid>),
     /// A branch, tag or history operation ended.
     RefOp(Result<String, ffwd_core::refops::OpError>),
     /// What a discard removed (for Ctrl+Z).
@@ -475,6 +477,11 @@ pub fn spawn(name: &str, sink: &Sink, f: impl FnOnce(&Sink) + Send + 'static) {
 
 /// Opens the repository and starts the loaders. Returns immediately.
 pub fn start(path: PathBuf, sink: &Sink) {
+    start_scoped(path, false, sink)
+}
+
+/// [`start`]; `head_only` loads only the current branch's history.
+pub fn start_scoped(path: PathBuf, head_only: bool, sink: &Sink) {
     // All loaders start at once: git finds the repository from any folder
     // inside it, so nothing waits for discovery.
     let git = Git { root: path.clone() };
@@ -502,9 +509,19 @@ pub fn start(path: PathBuf, sink: &Sink) {
             sink(Msg::Status(s));
         }
     });
+    // Commits to push and to pull, for the marks in the list (FF-33).
+    let g = git.clone();
+    spawn("sync-marks", sink, move |sink| {
+        let ids = |range: &str| -> Vec<ffwd_core::Oid> {
+            g.output_limited(&["rev-list", "--max-count=2000", range], 1 << 20)
+                .map(|b| b.split(|&c| c == b'\n').filter_map(|l| ffwd_core::Oid::from_hex(l.trim_ascii())).collect())
+                .unwrap_or_default()
+        };
+        sink(Msg::SyncMarks(ids("@{u}..HEAD"), ids("HEAD..@{u}")));
+    });
     spawn("history", sink, move |sink| {
         let t = Instant::now();
-        let r = log::stream(&git, 200, Duration::from_millis(100), |batch, done| {
+        let r = log::stream_scoped(&git, head_only, 200, Duration::from_millis(100), |batch, done| {
             sink(Msg::Log { batch, done, elapsed_ms: t.elapsed().as_secs_f64() * 1000.0 });
         });
         if let Err(e) = r {
@@ -553,7 +570,10 @@ enum Req {
 /// One long-lived worker for commit details and diffs. It only keeps the
 /// newest request of each kind: holding an arrow key through history never
 /// queues up hundreds of git processes.
-type Slot = Arc<(Mutex<(Option<Req>, Option<Req>)>, Condvar)>;
+/// Waiting requests: (details, commit diff, Local Changes diff). The
+/// Local Changes diff has its own place, so a history selection (which
+/// replaces details and the commit diff) never drops it (FF-56).
+type Slot = Arc<(Mutex<(Option<Req>, Option<Req>, Option<Req>)>, Condvar)>;
 
 pub struct DetailWorker {
     slot: Slot,
@@ -561,7 +581,7 @@ pub struct DetailWorker {
 
 impl DetailWorker {
     pub fn new(git: Git, sink: &Sink) -> DetailWorker {
-        let slot: Slot = Arc::new((Mutex::new((None, None)), Condvar::new()));
+        let slot: Slot = Arc::new((Mutex::new((None, None, None)), Condvar::new()));
         let s = slot.clone();
         spawn("details", sink, move |sink| {
             loop {
@@ -569,7 +589,7 @@ impl DetailWorker {
                     let (m, cv) = &*s;
                     let Ok(mut g) = m.lock() else { return };
                     loop {
-                        if let Some(r) = g.0.take().or_else(|| g.1.take()) {
+                        if let Some(r) = g.0.take().or_else(|| g.1.take()).or_else(|| g.2.take()) {
                             break r;
                         }
                         g = match cv.wait(g) {
@@ -632,7 +652,7 @@ impl DetailWorker {
     pub fn change_diff(&self, seq: u64, entry: ffwd_core::changes::Entry, side: ffwd_core::changes::Side) {
         let (m, cv) = &*self.slot;
         if let Ok(mut g) = m.lock() {
-            g.1 = Some(Req::ChangeDiff { seq, entry: Box::new(entry), side });
+            g.2 = Some(Req::ChangeDiff { seq, entry: Box::new(entry), side });
             cv.notify_one();
         }
     }
@@ -644,7 +664,63 @@ impl Drop for DetailWorker {
         if let Ok(mut g) = m.lock() {
             g.0 = Some(Req::Stop);
             g.1 = None;
+            g.2 = None;
             cv.notify_one();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A history selection (details) right after a Local Changes diff
+    /// request must not drop the diff: both answers arrive (FF-56).
+    #[test]
+    fn a_history_selection_never_drops_a_local_changes_diff() {
+        let dir = std::env::temp_dir().join(format!("ffwd-work-slots-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = Git { root: dir.clone() };
+        for a in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.name", "ffwd test"],
+            &["config", "user.email", "test@example.invalid"],
+            &["config", "commit.gpgsign", "false"],
+        ] {
+            g.output(a).unwrap();
+        }
+        std::fs::write(dir.join("a.txt"), "a\n").unwrap();
+        g.output(&["add", "."]).unwrap();
+        g.output(&["commit", "-q", "-m", "first"]).unwrap();
+        std::fs::write(dir.join("a.txt"), "b\n").unwrap();
+        let head = Oid::from_hex(g.output(&["rev-parse", "HEAD"]).unwrap().trim_ascii()).unwrap();
+        let st = ffwd_core::changes::load(&g).unwrap();
+        let entry = st.side(ffwd_core::changes::Side::Unstaged)[0].clone();
+        let (tx, rx) = std::sync::mpsc::channel::<Msg>();
+        let tx = Mutex::new(tx);
+        let sink: Sink = Arc::new(move |m| {
+            if let Ok(t) = tx.lock() {
+                let _ = t.send(m);
+            }
+        });
+        let w = DetailWorker::new(g.clone(), &sink);
+        for round in 0..20u64 {
+            w.change_diff(round * 2, entry.clone(), ffwd_core::changes::Side::Unstaged);
+            w.details(round * 2 + 1, head);
+            let (mut diff, mut details) = (false, false);
+            let until = std::time::Instant::now() + Duration::from_secs(20);
+            while !(diff && details) {
+                let left = until.saturating_duration_since(std::time::Instant::now());
+                assert!(!left.is_zero(), "round {round}: diff {diff}, details {details}");
+                match rx.recv_timeout(left) {
+                    Ok(Msg::ChangesDiff { seq, .. }) if seq == round * 2 => diff = true,
+                    Ok(Msg::Details { seq, .. }) if seq == round * 2 + 1 => details = true,
+                    _ => {}
+                }
+            }
+        }
+        drop(w);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

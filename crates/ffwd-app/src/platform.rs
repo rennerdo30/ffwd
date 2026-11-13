@@ -210,3 +210,18 @@ pub fn open_terminal(dir: std::path::PathBuf) {
         }
     });
 }
+
+/// Opens an https URL in the default browser (as one argument, no shell).
+pub fn open_url(url: String) {
+    if !url.starts_with("https://") {
+        return;
+    }
+    std::thread::spawn(move || {
+        #[cfg(windows)]
+        let _ = std::process::Command::new("explorer.exe").arg(&url).spawn();
+        #[cfg(target_os = "macos")]
+        let _ = std::process::Command::new("open").arg(&url).spawn();
+        #[cfg(not(any(windows, target_os = "macos")))]
+        let _ = std::process::Command::new("xdg-open").arg(&url).spawn();
+    });
+}

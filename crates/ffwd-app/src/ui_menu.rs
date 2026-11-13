@@ -24,6 +24,8 @@ pub enum MenuAct {
     CloseOtherTabs(usize),
     OpenFolder(PathBuf),
     OpenTerminal(PathBuf),
+    /// Open a web page (the hosting site's page of a commit).
+    OpenUrl(String),
 }
 
 #[derive(Clone, Debug)]
@@ -173,6 +175,15 @@ impl Ui {
             v.push(item(format!("Interactive rebase {h} from {short}…"), MenuAct::RebaseFrom(sha.clone())));
         }
         v.push(sep());
+        // The hosting site's page of this commit (origin, else the first remote).
+        let remote = self.r.refs.remotes.iter().find(|r| &*r.name == "origin").or(self.r.refs.remotes.first());
+        if let Some(r) = remote
+            && let (Some(url), Some(host)) =
+                (ffwd_core::web::commit_url(&r.fetch_url, &sha), ffwd_core::web::host(&r.fetch_url))
+        {
+            v.push(item(format!("Open on {host}"), MenuAct::OpenUrl(url.clone())));
+            v.push(item("Copy web link", MenuAct::Copy(url)));
+        }
         v.push(item("Copy SHA", MenuAct::Copy(sha.clone())));
         v.push(item("Copy subject", MenuAct::Copy(c.subject.to_string())));
         v
@@ -411,6 +422,7 @@ impl Ui {
             Some(MenuAct::CloseOtherTabs(i)) => self.close_other_tabs(i),
             Some(MenuAct::OpenFolder(p)) => crate::platform::open_folder(p),
             Some(MenuAct::OpenTerminal(p)) => crate::platform::open_terminal(p),
+            Some(MenuAct::OpenUrl(u)) => crate::platform::open_url(u),
             Some(MenuAct::RebaseFrom(sha)) => self.open_rebase(sha),
             Some(MenuAct::OpenSubmodule(name)) => self.open_submodule(&name),
             Some(MenuAct::Ask(a)) => self.open_dialog(DialogKind::Ask(*a)),

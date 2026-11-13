@@ -289,6 +289,7 @@ const CMD_AI_COMMIT: &str = "AI: Draft a commit message";
 const CMD_CLONE: &str = "Clone repository…";
 const CMD_INIT: &str = "Create a new repository…";
 const CMD_CANCEL_CLONE: &str = "Cancel the running clone";
+const CMD_SCOPE: &str = "Show only the current branch (or all again)";
 const CMD_ADD_SUBMODULE: &str = "Add submodule…";
 const CMD_ACTIVITY: &str = "Activity log";
 const CMD_REBASE_I: &str = "Interactive rebase from here";
@@ -318,6 +319,7 @@ const WORKING: &[&str] = &[
     CMD_CLONE,
     CMD_INIT,
     CMD_CANCEL_CLONE,
+    CMD_SCOPE,
     CMD_ADD_SUBMODULE,
     CMD_ACTIVITY,
     CMD_REBASE_I,
@@ -359,6 +361,7 @@ const COMMANDS: &[(&str, &str)] = &[
     (CMD_CLONE, ""),
     (CMD_INIT, ""),
     (CMD_CANCEL_CLONE, ""),
+    (CMD_SCOPE, ""),
     (CMD_ADD_SUBMODULE, ""),
     (CMD_ACTIVITY, ""),
     (CMD_ADD_REMOTE, ""),
@@ -425,6 +428,9 @@ pub struct RepoState {
     pub rebase: Option<rebase_view::RebaseState>,
     /// The find bar over the commit list (FF-34).
     pub search: Option<search_view::Search>,
+    /// Commits to push and to pull (marked in the list).
+    pub ahead_ids: HashSet<Oid>,
+    pub behind_ids: HashSet<Oid>,
 }
 
 /// One repository tab.
@@ -442,6 +448,8 @@ pub struct Tab {
     /// Changed in the background (an agent finished or merged): reload
     /// when activated.
     stale: bool,
+    /// History of the current branch only (FF-33).
+    head_only: bool,
 }
 
 /// Creates the message sink for a tab id (the window wraps messages into
@@ -528,6 +536,8 @@ pub struct Ui {
     title_controls: Vec<(i32, i32)>,
     top_buttons: Vec<(Rect, TopAction)>,
     search_rect: Rect,
+    /// The list title, which switches all branches / current branch.
+    scope_rect: Rect,
     pub win_action: Option<WinAction>,
     /// Under the pointer, held by the mouse button, the cursor to show and
     /// the last pointer position (ui_hover.rs).
@@ -637,6 +647,7 @@ impl Ui {
             title_controls: Vec::new(),
             top_buttons: Vec::new(),
             search_rect: Rect::default(),
+            scope_rect: Rect::default(),
             win_action: None,
             hot: None,
             pressed: None,
@@ -659,6 +670,7 @@ impl Ui {
                 pending: Vec::new(),
                 started: false,
                 stale: false,
+                head_only: false,
             });
         }
         let mut active = saved_active.and_then(|a| ui.tabs.iter().position(|t| same_path(&t.path, &a))).unwrap_or(0);
@@ -678,6 +690,7 @@ impl Ui {
                         pending: Vec::new(),
                         started: true,
                         stale: false,
+                        head_only: false,
                     });
                     active = ui.tabs.len() - 1;
                 }
@@ -722,7 +735,8 @@ impl Ui {
         }
         let sink = (self.sinks)(id);
         if start {
-            crate::work::start(path.clone(), &sink);
+            let head_only = self.tabs.get(self.cur_tab).is_some_and(|t| t.head_only);
+            crate::work::start_scoped(path.clone(), head_only, &sink);
         }
         if self.r.worker.is_none() {
             // Git finds the repository from any folder inside it.
@@ -779,6 +793,7 @@ impl Ui {
             pending: Vec::new(),
             started: false,
             stale: false,
+            head_only: false,
         });
         self.remember_recent(&path);
         let i = self.tabs.len() - 1;
@@ -1134,6 +1149,8 @@ impl Ui {
                 self.r.status = Some(s);
                 self.rebuild_side();
                 self.damage.rects.push(self.lay.side);
+                // The tab shows a dot for uncommitted changes.
+                self.damage.rects.push(self.lay.tabs);
             }
             Msg::Log { batch, done, elapsed_ms } => {
                 let was_empty = self.r.commits.is_empty();
@@ -1247,6 +1264,11 @@ impl Ui {
             Msg::AiToken { seq, text } => self.on_ai_token(seq, text),
             Msg::AiDone { seq, result } => self.on_ai_done(seq, result),
             Msg::CloneProgress(_) | Msg::RepoReady(_) => {}
+            Msg::SyncMarks(ahead, behind) => {
+                self.r.ahead_ids = ahead.into_iter().collect();
+                self.r.behind_ids = behind.into_iter().collect();
+                self.damage.rects.push(self.lay.list);
+            }
             Msg::RebasePlan(r) => self.on_rebase_plan(r),
             Msg::FilesTree(r) => self.on_files_tree(r),
             Msg::FileContent { seq, result } => self.on_file_content(seq, result),
@@ -1700,6 +1722,14 @@ impl Ui {
             }
             return;
         }
+        if !self.r.changes_view
+            && !self.r.files_view
+            && !self.r.activity_view
+            && self.r.search.is_none()
+            && self.scope_rect.contains(x, y)
+        {
+            return self.toggle_scope();
+        }
         if !self.r.changes_view && self.r.search.is_some() && self.search_click(x, y) {
             return;
         }
@@ -1963,6 +1993,15 @@ impl Ui {
         }
     }
 
+    /// Shows only the current branch's history, or all again.
+    pub(super) fn toggle_scope(&mut self) {
+        let Some(t) = self.tabs.get_mut(self.cur_tab) else { return };
+        t.head_only = !t.head_only;
+        let on = t.head_only;
+        self.set_notice(if on { "Showing the current branch only".into() } else { "Showing all branches".into() });
+        self.reload_current();
+    }
+
     /// A command for the selected commit (palette or shortcut).
     fn selected_commit_command(&mut self, c: &str) {
         let Some(sha) = self.r.commits.get(self.r.sel).map(|c| c.id.to_string()) else {
@@ -2020,6 +2059,7 @@ impl Ui {
                 }
                 None => self.set_notice("No clone is running.".into()),
             },
+            CMD_SCOPE => self.toggle_scope(),
             CMD_ADD_SUBMODULE => self.open_dialog(DialogKind::Name {
                 act: NameAct::AddSubmoduleUrl,
                 field: TextField::default(),
@@ -2751,8 +2791,24 @@ impl Ui {
             } else {
                 format!("{}…", fmt::num(self.r.commits.len()))
             };
-            let title = format!("All commits  ·  {n}");
-            self.te.draw(cv, semi, self.pf(11.5), l.x as f32 + self.pf(14.0), base, &title, TEXT_3, self.pf(260.0));
+            // The title switches all branches / the current branch.
+            let head_only = self.tabs.get(self.cur_tab).is_some_and(|t| t.head_only);
+            let title = if head_only { format!("Current branch  ·  {n}") } else { format!("All commits  ·  {n}") };
+            let tw = self.te.measure(semi, self.pf(11.5), &title);
+            let tr = Rect::new(
+                l.x + self.px(6.0),
+                head.y + self.px(4.0),
+                (tw + self.pf(30.0)) as i32,
+                head.h - self.px(8.0),
+            );
+            if self.is_hot(Hot::Scope) {
+                cv.fill_round(tr, self.pf(6.0), BG_HOVER);
+            }
+            let tc = if head_only { ACCENT_FG } else { TEXT_3 };
+            let e = self.te.draw(cv, semi, self.pf(11.5), l.x as f32 + self.pf(14.0), base, &title, tc, self.pf(260.0));
+            let (cx, cy, s) = (e + self.pf(8.0), head.y as f32 + head.h as f32 / 2.0, self.pf(3.0));
+            cv.stroke(&[(cx - s, cy - s / 2.0), (cx, cy + s / 2.0), (cx + s, cy - s / 2.0)], self.pf(1.3), tc);
+            self.scope_rect = tr;
             for (x, t) in [(author_x, "Author"), (date_x, "Date"), (sha_x, "Commit")] {
                 self.te.draw(cv, semi, self.pf(11.5), x, base, t, TEXT_4, self.pf(100.0));
             }
@@ -2859,6 +2915,17 @@ impl Ui {
             cv.fill_round(chip, self.pf(5.0), cbg);
             self.te.draw(cv, semi, self.pf(11.0), x + self.pf(7.0), base - self.pf(0.5), &name, cfg, tw + 1.0);
             x += cw + self.pf(6.0);
+        }
+        // To push (↑) or to pull (↓).
+        let mark = if self.r.ahead_ids.contains(&c.id) {
+            Some(("↑", ACCENT_FG))
+        } else if self.r.behind_ids.contains(&c.id) {
+            Some(("↓", REMOTE_FG))
+        } else {
+            None
+        };
+        if let Some((m, color)) = mark {
+            x = self.te.draw(cv, semi, self.pf(12.5), x, base, m, color, self.pf(14.0)) + self.pf(5.0);
         }
         let merge = c.parents.len() > 1;
         let subj_color = if merge { TEXT_2 } else { TEXT };
@@ -4696,6 +4763,102 @@ mod tests {
         ui.menu_activate(k);
         assert_eq!(ui.tabs.len(), 1);
         assert!(same_path(&ui.tabs[0].path, &src));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// History (FF-33): commits to push and to pull are marked; the title
+    /// switches to the current branch only and back; the commit menu
+    /// links to the hosting site (listed, never opened in tests).
+    #[test]
+    fn history_marks_scope_and_web_link() {
+        use std::sync::mpsc;
+        let mut te = TextEngine::new();
+        let Some(f) = load_fonts(&mut te) else { return };
+        let base = std::env::temp_dir().join(format!("ffwd-ui-history-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("up")).unwrap();
+        let cfg = |g: &Git| {
+            for a in [
+                &["config", "user.name", "ffwd test"][..],
+                &["config", "user.email", "test@example.invalid"],
+                &["config", "commit.gpgsign", "false"],
+            ] {
+                g.output(a).unwrap();
+            }
+        };
+        let commit = |g: &Git, f: &str| {
+            std::fs::write(g.root.join(f), f).unwrap();
+            g.output(&["add", "."]).unwrap();
+            g.output(&["commit", "-q", "-m", f]).unwrap();
+        };
+        let up = Git { root: base.join("up") };
+        up.output(&["init", "-q", "-b", "main"]).unwrap();
+        cfg(&up);
+        commit(&up, "a");
+        Git { root: base.clone() }.output(&["clone", "-q", "up", "down"]).unwrap();
+        let g = Git { root: base.join("down") };
+        cfg(&g);
+        commit(&up, "theirs");
+        g.output(&["fetch", "-q"]).unwrap();
+        commit(&g, "mine");
+        // A side branch that the current-branch view leaves out.
+        g.output(&["branch", "side", "HEAD~1"]).unwrap();
+        g.output(&["switch", "-q", "side"]).unwrap();
+        commit(&g, "side work");
+        g.output(&["switch", "-q", "main"]).unwrap();
+        let (tx, rx) = mpsc::channel::<(u64, Msg)>();
+        let tx = Arc::new(std::sync::Mutex::new(tx));
+        let sinks: SinkFactory = Arc::new(move |id| {
+            let tx = tx.clone();
+            Arc::new(move |m| {
+                if let Ok(t) = tx.lock() {
+                    let _ = t.send((id, m));
+                }
+            })
+        });
+        crate::work::start(g.root.clone(), &sinks(1));
+        let empty = crate::settings::Settings::parse("");
+        let mut ui = Ui::new(te, f, empty.clone(), empty, Some((1, g.root.clone())), sinks, 1280, 800, 1.0);
+        let pump = |ui: &mut Ui, what: &str, done: &dyn Fn(&Ui) -> bool| {
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while !done(ui) {
+                let left = until.saturating_duration_since(std::time::Instant::now());
+                assert!(!left.is_zero(), "timed out waiting for {what}; notice: {:?}", ui.notice);
+                if let Ok((id, m)) = rx.recv_timeout(left) {
+                    ui.on_tab_msg(id, m);
+                }
+            }
+        };
+        let subjects = |u: &Ui, ids: &HashSet<Oid>| -> Vec<String> {
+            u.r.commits.iter().filter(|c| ids.contains(&c.id)).map(|c| c.subject.to_string()).collect()
+        };
+        pump(&mut ui, "history and marks", &|u| u.r.log_done && !u.r.ahead_ids.is_empty() && u.r.commits.len() == 4);
+        assert_eq!(subjects(&ui, &ui.r.ahead_ids), ["mine"]);
+        assert_eq!(subjects(&ui, &ui.r.behind_ids), ["theirs"]);
+        let mut screen = vec![0u32; 1280 * 800];
+        ui.paint(&mut Canvas::new(&mut screen, 1280, 800), true);
+        // The title toggles the current branch only: "side work" and the
+        // upstream's commit leave the list.
+        let t = ui.scope_rect;
+        ui.click(t.x + 4, t.y + 4);
+        pump(&mut ui, "the current branch", &|u| u.r.log_done && u.r.commits.len() == 2);
+        assert!(ui.r.commits.iter().all(|c| &*c.subject != "side work"));
+        ui.paint(&mut Canvas::new(&mut screen, 1280, 800), true);
+        ui.toggle_scope();
+        pump(&mut ui, "all again", &|u| u.r.log_done && u.r.commits.len() == 4);
+        // The commit menu links to the hosting site.
+        g.output(&["remote", "set-url", "origin", "git@github.com:someone/project.git"]).unwrap();
+        ui.reload_current();
+        pump(&mut ui, "the new remote", &|u| {
+            u.r.log_done && u.r.refs.remotes.first().is_some_and(|r| r.fetch_url.contains("github"))
+        });
+        let labels: Vec<String> = ui.commit_menu(0).iter().map(|i| i.label.clone()).collect();
+        assert!(labels.iter().any(|l| l == "Open on github.com"), "{labels:?}");
+        let link = ui.commit_menu(0).into_iter().find(|i| i.label == "Copy web link").and_then(|i| i.act);
+        let sha = ui.r.commits[0].id.to_string();
+        assert!(
+            matches!(link, Some(menu::MenuAct::Copy(u)) if u == format!("https://github.com/someone/project/commit/{sha}"))
+        );
         let _ = std::fs::remove_dir_all(&base);
     }
 
