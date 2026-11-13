@@ -405,7 +405,7 @@ impl Ui {
 
     pub(super) fn files_key(&mut self, k: Key) -> bool {
         let fit_tree = (self.files_layout().tree.h / self.px(26.0).max(1)).max(1) as usize;
-        let page = (self.files_layout().pane.h / self.px(20.0).max(1)).max(1) as usize;
+        let page = (self.files_layout().pane.h / self.code_lh().max(1)).max(1) as usize;
         let f = &mut self.r.files;
         match f.focus {
             FFocus::Filter => {
@@ -821,14 +821,14 @@ impl Ui {
             return;
         }
         let blame_data = if blame { self.r.files.blame.take() } else { None };
-        let lh = self.px(20.0);
+        let lh = self.code_lh();
         let fit = (r.h / lh) as usize + 1;
         let n = loaded.content.lines.len();
         let top = self.r.files.ctop.min(n.saturating_sub(1));
         self.r.files.ctop = top;
         let path = self.r.files.file.as_ref().map(|x| x.1.clone()).unwrap_or_default();
         let lang = highlight::lang_for(&path);
-        let num_w = self.pf(52.0);
+        let num_w = self.code_px(52.0);
         let blame_w = if blame { self.pf(300.0).min(r.w as f32 * 0.4) } else { 0.0 };
         let gut = Rect::new(r.x, r.y, (num_w + blame_w) as i32, r.h);
         cv.fill(gut, BG_SIDEBAR);
@@ -839,7 +839,7 @@ impl Ui {
             if clip.intersect(row).is_empty() {
                 continue;
             }
-            let lb = (y as f32 + lh as f32 / 2.0 + self.pf(4.0)).round();
+            let lb = (y as f32 + lh as f32 / 2.0 + self.code_px(4.0)).round();
             if let Some(b) = &blame_data
                 && let Some(&ci) = b.lines.get(k)
             {
@@ -873,7 +873,7 @@ impl Ui {
                 }
             }
             let s = (k + 1).to_string();
-            let w = self.te.measure(mono, self.pf(11.0), &s);
+            let w = self.te.measure(mono, self.code_px(11.0), &s);
             self.te.draw(
                 cv,
                 mono,

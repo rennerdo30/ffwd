@@ -173,6 +173,9 @@ pub fn run(args: &Args, t0: Instant) -> i32 {
         }
         ui.snapshot_rebase_demo();
     }
+    if let Some(s) = args.code_size {
+        ui.set_code_size(s);
+    }
     if args.diff_ws {
         ui.diff_show_ws = true;
     }

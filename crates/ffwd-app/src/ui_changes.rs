@@ -509,7 +509,7 @@ impl Ui {
         if !r.contains(x, y) || y < body_y {
             return None;
         }
-        let i = self.r.changes.diff_top + ((y - body_y) / self.px(20.0).max(1)) as usize;
+        let i = self.r.changes.diff_top + ((y - body_y) / self.code_lh().max(1)) as usize;
         (i < self.r.changes.diff.as_ref()?.lines.len()).then_some(i)
     }
 
@@ -535,7 +535,7 @@ impl Ui {
         let c = &mut self.r.changes;
         c.line = (c.line as i64 + d).clamp(0, n as i64 - 1) as usize;
         let body_h = self.changes_layout().diff.h - self.px(32.0);
-        let fit = (body_h / self.px(20.0).max(1)).max(1) as usize;
+        let fit = (body_h / self.code_lh().max(1)).max(1) as usize;
         let c = &mut self.r.changes;
         if c.line < c.diff_top {
             c.diff_top = c.line;
@@ -825,7 +825,7 @@ impl Ui {
                 self.r.changes.focus = CFocus::Diff;
                 let body_y = l.diff.y + self.px(32.0);
                 if y >= body_y {
-                    let i = self.r.changes.diff_top + ((y - body_y) / self.px(20.0).max(1)) as usize;
+                    let i = self.r.changes.diff_top + ((y - body_y) / self.code_lh().max(1)) as usize;
                     self.r.changes.line = i;
                     self.toggle_pick(i);
                 }
@@ -1268,7 +1268,7 @@ impl Ui {
         let top = self.r.changes.diff_top;
         let buttons = self.paint_diff_body(cv, body, &diff, top, Some(label), hits.len());
         // Picked lines and the line cursor, over the painted lines.
-        let lh = self.px(20.0);
+        let lh = self.code_lh();
         let focus = self.r.changes.focus == CFocus::Diff;
         let picked: Vec<usize> = self.r.changes.picked.iter().copied().collect();
         for i in picked.iter().copied().chain(focus.then_some(self.r.changes.line)) {

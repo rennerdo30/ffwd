@@ -78,6 +78,8 @@ pub struct Args {
     pub diff_split: bool,
     /// Snapshot: whitespace characters shown in the diff.
     pub diff_ws: bool,
+    /// Snapshot: the code text size in points.
+    pub code_size: Option<u8>,
     /// Snapshot with this file of the selected commit shown.
     pub file: Option<usize>,
 }
@@ -113,6 +115,7 @@ fn parse_args() -> Result<Args, String> {
         find: None,
         diff_split: false,
         diff_ws: false,
+        code_size: None,
         file: None,
     };
     let mut it = std::env::args().skip(1);
@@ -159,6 +162,7 @@ fn parse_args() -> Result<Args, String> {
             "--find" => a.find = Some(val("--find")?),
             "--diff-split" => a.diff_split = true,
             "--diff-ws" => a.diff_ws = true,
+            "--code-size" => a.code_size = Some(val("--code-size")?.parse().map_err(|_| "bad size")?),
             "--file" => a.file = Some(val("--file")?.parse().map_err(|_| "bad file index")?),
             "--hover" => {
                 let v = val("--hover")?;

@@ -157,7 +157,7 @@ impl Ui {
         } else {
             line
         };
-        let fit = ((self.diff_rect().h - self.px(32.0)).max(0) / self.px(20.0).max(1)) as usize;
+        let fit = ((self.diff_rect().h - self.px(32.0)).max(0) / self.code_lh().max(1)) as usize;
         if row < self.r.diff_top || row >= self.r.diff_top + fit.max(1) {
             self.r.diff_top = row.saturating_sub(fit / 3);
         }

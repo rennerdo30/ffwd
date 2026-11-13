@@ -568,6 +568,8 @@ pub struct Ui {
     /// Whitespace characters shown in diffs, and the tab width (FF-41).
     pub diff_show_ws: bool,
     pub diff_tab: usize,
+    /// Code text size in points (diffs, file viewer; FF-41).
+    pub code_pt: u8,
     diff_bar_hits: Vec<(Rect, diff_view::DiffBar)>,
     /// Line pairing and block-comment states of the shown diff.
     #[allow(clippy::type_complexity)]
@@ -708,6 +710,7 @@ impl Ui {
             diff_find: None,
             diff_show_ws: diff_view::view_from(&settings).0,
             diff_tab: diff_view::view_from(&settings).1 as usize,
+            code_pt: diff_view::code_size_from(&settings),
             diff_opts: diff_view::opts_from(&settings).1,
             diff_bar_hits: Vec::new(),
             pairs_cache: None,
@@ -3698,7 +3701,7 @@ impl Ui {
             return;
         }
         cv.fill(strip, BG_SIDEBAR);
-        let fit = (body.h / self.px(20.0).max(1)) as usize;
+        let fit = (body.h / self.code_lh().max(1)) as usize;
         if n > fit {
             let y0 = strip.y + (self.r.diff_top * strip.h as usize / n) as i32;
             let hh = ((fit * strip.h as usize / n) as i32).max(self.px(6.0));
@@ -3751,7 +3754,7 @@ impl Ui {
             return;
         }
         let row = ((y - s.y).max(0) as usize * n / s.h as usize).min(n - 1);
-        let fit = (s.h / self.px(20.0).max(1)) as usize;
+        let fit = (s.h / self.code_lh().max(1)) as usize;
         self.r.diff_top = row.saturating_sub(fit / 2);
         self.damage.rects.push(self.diff_rect());
     }
@@ -3770,7 +3773,7 @@ impl Ui {
     ) -> Vec<(usize, Rect)> {
         let (ui, semi, mono) = (self.f.ui, self.f.semi, self.f.mono);
         let mut buttons = Vec::new();
-        let lh = self.px(20.0);
+        let lh = self.code_lh();
         // Hunks above the first painted line count too.
         let mut hunk: i64 = diff.lines.iter().take(top).filter(|l| l.kind == LineKind::Hunk).count() as i64;
         if diff.binary {
@@ -3790,10 +3793,10 @@ impl Ui {
             );
             return buttons;
         }
-        let num_w = self.pf(38.0);
+        let num_w = self.code_px(38.0);
         let gut = Rect::new(body.x, body.y, (num_w * 2.0 + self.pf(8.0)) as i32, body.h);
         cv.fill(gut, BG_SIDEBAR);
-        let fs = self.pf(12.0);
+        let fs = self.code_fs();
         let old_clip = cv.clip();
         let rows = (body.h / lh + 1) as usize;
         let (pairs, blocks) = self.diff_meta(diff);
@@ -3804,7 +3807,7 @@ impl Ui {
             if old_clip.intersect(row).is_empty() {
                 continue;
             }
-            let lb = (y as f32 + lh as f32 / 2.0 + self.pf(4.0)).round();
+            let lb = (y as f32 + lh as f32 / 2.0 + self.code_px(4.0)).round();
             let (bgc, fg, mark) = match line.kind {
                 LineKind::Add => (ADD_BG, ADD_TEXT, "+"),
                 LineKind::Del => (DEL_BG, DEL_TEXT, "−"),
@@ -3840,7 +3843,16 @@ impl Ui {
                     buttons.push((hunk as usize - 1, b));
                     text_w -= w + self.pf(12.0);
                 }
-                self.te.draw(cv, mono, self.pf(11.5), gut.right() as f32 + self.pf(10.0), lb, &line.text, fg, text_w);
+                self.te.draw(
+                    cv,
+                    mono,
+                    self.code_px(11.5),
+                    gut.right() as f32 + self.pf(10.0),
+                    lb,
+                    &line.text,
+                    fg,
+                    text_w,
+                );
                 continue;
             }
             let numc = match line.kind {
@@ -3850,13 +3862,13 @@ impl Ui {
             };
             if line.old > 0 {
                 let s = line.old.to_string();
-                let w = self.te.measure(mono, self.pf(11.0), &s);
-                self.te.draw(cv, mono, self.pf(11.0), body.x as f32 + num_w - w, lb, &s, numc, num_w);
+                let w = self.te.measure(mono, self.code_px(11.0), &s);
+                self.te.draw(cv, mono, self.code_px(11.0), body.x as f32 + num_w - w, lb, &s, numc, num_w);
             }
             if line.new > 0 {
                 let s = line.new.to_string();
-                let w = self.te.measure(mono, self.pf(11.0), &s);
-                self.te.draw(cv, mono, self.pf(11.0), body.x as f32 + num_w * 2.0 - w, lb, &s, numc, num_w);
+                let w = self.te.measure(mono, self.code_px(11.0), &s);
+                self.te.draw(cv, mono, self.code_px(11.0), body.x as f32 + num_w * 2.0 - w, lb, &s, numc, num_w);
             }
             let tx = gut.right() as f32 + self.pf(8.0);
             if !mark.is_empty() {
@@ -6706,6 +6718,81 @@ mod tests {
         ui.close_menu();
         // The diff's bar is no line.
         assert!(ui.diff_line_menu(x, r.y + 4).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Code text size (FF-41): the view menu steps it larger and smaller,
+    /// it is saved, line height and the hit test follow it, and repaints
+    /// match full paints.
+    #[test]
+    fn code_text_size() {
+        use std::sync::mpsc;
+        let mut te = TextEngine::new();
+        let Some(f) = load_fonts(&mut te) else { return };
+        let dir = std::env::temp_dir().join(format!("ffwd-ui-codesize-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = Git { root: dir.clone() };
+        for a in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.name", "ffwd test"],
+            &["config", "user.email", "test@example.invalid"],
+            &["config", "commit.gpgsign", "false"],
+            &["config", "core.autocrlf", "false"],
+        ] {
+            g.output(a).unwrap();
+        }
+        let lines: Vec<String> = (1..=40).map(|i| format!("line {i}")).collect();
+        std::fs::write(dir.join("a.txt"), lines.join("\n") + "\n").unwrap();
+        g.output(&["add", "."]).unwrap();
+        g.output(&["commit", "-q", "-m", "first"]).unwrap();
+        let (tx, rx) = mpsc::channel::<(u64, Msg)>();
+        let tx = Arc::new(std::sync::Mutex::new(tx));
+        let sinks: SinkFactory = Arc::new(move |id| {
+            let tx = tx.clone();
+            Arc::new(move |m| {
+                if let Ok(t) = tx.lock() {
+                    let _ = t.send((id, m));
+                }
+            })
+        });
+        crate::work::start(dir.clone(), &sinks(1));
+        let empty = crate::settings::Settings::parse("");
+        let mut ui = Ui::new(te, f, empty.clone(), empty, Some((1, dir.clone())), sinks, 1280, 800, 1.0);
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while ui.r.diff.is_none() {
+            let left = until.saturating_duration_since(std::time::Instant::now());
+            assert!(!left.is_zero(), "timed out waiting for the diff");
+            if let Ok((id, m)) = rx.recv_timeout(left) {
+                ui.on_tab_msg(id, m);
+            }
+        }
+        let mut screen = vec![0u32; 1280 * 800];
+        ui.paint(&mut Canvas::new(&mut screen, 1280, 800), true);
+        assert_eq!((ui.code_pt, ui.code_lh()), (12, 20));
+        let pick = |ui: &mut Ui, prefix: &str| {
+            let items = ui.diff_view_menu();
+            let k = items.iter().position(|i| i.label.starts_with(prefix)).unwrap();
+            ui.open_menu(900, 60, items);
+            ui.menu_activate(k);
+        };
+        pick(&mut ui, "Larger text");
+        pick(&mut ui, "Larger text");
+        assert_eq!(ui.code_pt, 14);
+        assert_eq!(ui.settings.get("diff.font_size"), Some("14"));
+        assert_eq!(ui.code_lh(), 23, "lines grow with the text");
+        assert_partial_paint_is_full(&mut ui, &mut screen, "larger code text");
+        // The line menu finds the line under the pointer at the new height.
+        let r = ui.diff_rect();
+        let k = ui.r.diff.as_ref().unwrap().lines.iter().position(|l| &*l.text == "line 10").unwrap();
+        let y = r.y + ui.px(32.0) + k as i32 * ui.code_lh() + ui.code_lh() / 2;
+        assert_eq!(ui.diff_line_menu(r.x + r.w / 3, y).unwrap()[0].label, "Open in editor at line 10");
+        pick(&mut ui, "Default text size");
+        assert_eq!(ui.code_pt, 12);
+        pick(&mut ui, "Smaller text");
+        assert_eq!(ui.code_pt, 11);
+        assert_partial_paint_is_full(&mut ui, &mut screen, "smaller code text");
+        assert!(ui.diff_view_menu().iter().any(|i| i.label.starts_with("Larger text (12 pt)")));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

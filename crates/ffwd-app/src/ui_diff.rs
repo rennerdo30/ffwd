@@ -21,6 +21,14 @@ pub enum DiffBar {
 /// The tab widths the view menu offers.
 pub const TAB_WIDTHS: [u8; 3] = [2, 4, 8];
 
+/// Code text sizes the view menu steps through (points; 12 is the default).
+pub const CODE_SIZES: [u8; 6] = [10, 11, 12, 13, 14, 16];
+
+/// The code text size from settings (`diff.font_size`).
+pub fn code_size_from(settings: &crate::settings::Settings) -> u8 {
+    settings.get("diff.font_size").and_then(|t| t.parse::<u8>().ok()).filter(|t| CODE_SIZES.contains(t)).unwrap_or(12)
+}
+
 /// Whether whitespace characters are shown, and the tab width.
 pub fn view_from(settings: &crate::settings::Settings) -> (bool, u8) {
     let ws = settings.get("diff.show_whitespace") == Some("true");
@@ -89,7 +97,7 @@ impl Ui {
         marks: &[(usize, usize, u32)],
     ) {
         let mono = self.f.mono;
-        let fs = self.pf(12.0);
+        let fs = self.code_fs();
         for &(a, b, c) in marks {
             if b <= a || b > text.len() || !text.is_char_boundary(a) || !text.is_char_boundary(b) {
                 continue;
@@ -160,12 +168,12 @@ impl Ui {
 
     pub(super) fn paint_diff_split(&mut self, cv: &mut Canvas, body: Rect, diff: &FileDiff, top: usize) {
         let mono = self.f.mono;
-        let lh = self.px(20.0);
+        let lh = self.code_lh();
         let (pairs, blocks) = self.diff_meta(diff);
         let rows = Self::split_rows(diff, &pairs);
         let lang = highlight::lang_for(&diff.path);
         let half = body.w / 2;
-        let num_w = self.pf(40.0);
+        let num_w = self.code_px(40.0);
         let clip = cv.clip();
         let fit = (body.h / lh + 1) as usize;
         // Divider between the sides.
@@ -176,13 +184,22 @@ impl Ui {
             if clip.intersect(row).is_empty() {
                 continue;
             }
-            let lb = (y as f32 + lh as f32 / 2.0 + self.pf(4.0)).round();
+            let lb = (y as f32 + lh as f32 / 2.0 + self.code_px(4.0)).round();
             if let Some(i) = l
                 && diff.lines[i].kind == LineKind::Hunk
             {
                 cv.fill(row, HUNK_BG);
                 let t = diff.lines[i].text.clone();
-                self.te.draw(cv, mono, self.pf(11.5), body.x as f32 + self.pf(10.0), lb, &t, HUNK_TEXT, body.w as f32);
+                self.te.draw(
+                    cv,
+                    mono,
+                    self.code_px(11.5),
+                    body.x as f32 + self.pf(10.0),
+                    lb,
+                    &t,
+                    HUNK_TEXT,
+                    body.w as f32,
+                );
                 continue;
             }
             for (side, li) in [(0, l), (1, r)] {
@@ -204,13 +221,13 @@ impl Ui {
                 let n = if side == 0 { line.old } else { line.new };
                 if n > 0 {
                     let s = n.to_string();
-                    let w = self.te.measure(mono, self.pf(11.0), &s);
+                    let w = self.te.measure(mono, self.code_px(11.0), &s);
                     let nc = match line.kind {
                         LineKind::Add => ADD_GUTTER,
                         LineKind::Del => DEL_GUTTER,
                         _ => TEXT_4,
                     };
-                    self.te.draw(cv, mono, self.pf(11.0), x0 as f32 + num_w - w - self.pf(6.0), lb, &s, nc, num_w);
+                    self.te.draw(cv, mono, self.code_px(11.0), x0 as f32 + num_w - w - self.pf(6.0), lb, &s, nc, num_w);
                 }
                 let text = super::diff_find::shown_text(&line.text, self.diff_tab).into_owned();
                 let mut marks: Vec<_> =
@@ -355,6 +372,33 @@ impl Ui {
         true
     }
 
+    /// Code text size in pixels (diffs and the file viewer).
+    pub(super) fn code_fs(&self) -> f32 {
+        self.pf(self.code_pt as f32)
+    }
+
+    /// A length that scales with the code text (12 pt is 1:1).
+    pub(super) fn code_px(&self, v: f32) -> f32 {
+        self.pf(v * self.code_pt as f32 / 12.0)
+    }
+
+    /// The height of a line of code.
+    pub(super) fn code_lh(&self) -> i32 {
+        self.px((20.0 * self.code_pt as f32 / 12.0).round())
+    }
+
+    /// Sets the code text size (FF-41): one of [`CODE_SIZES`].
+    pub fn set_code_size(&mut self, pt: u8) {
+        if !CODE_SIZES.contains(&pt) || pt == self.code_pt {
+            return;
+        }
+        self.code_pt = pt;
+        self.settings.set_string("diff.font_size", &pt.to_string());
+        // Rows change height in every code pane (the same line stays at
+        // the top): one full repaint.
+        self.damage.full = true;
+    }
+
     /// Shows or hides whitespace characters, or sets the tab width.
     pub(super) fn set_diff_view(&mut self, show_ws: Option<bool>, tab: Option<u8>) {
         if let Some(on) = show_ws {
@@ -377,7 +421,7 @@ impl Ui {
             return;
         }
         let mono = self.f.mono;
-        let fs = self.pf(12.0);
+        let fs = self.code_fs();
         let sp = self.te.measure(mono, fs, " ");
         let tab = self.diff_tab.max(1);
         let end = x + maxw;
@@ -416,6 +460,17 @@ impl Ui {
         v.push(MenuItem { label: String::new(), act: None, danger: false });
         for t in TAB_WIDTHS {
             v.push(item(mark(self.diff_tab == t as usize, &format!("Tab width {t}")), MenuAct::DiffTab(t)));
+        }
+        v.push(MenuItem { label: String::new(), act: None, danger: false });
+        let at = CODE_SIZES.iter().position(|&s| s == self.code_pt).unwrap_or(2);
+        if let Some(&s) = CODE_SIZES.get(at + 1) {
+            v.push(item(format!("Larger text ({s} pt)"), MenuAct::CodeSize(s)));
+        }
+        if let Some(&s) = at.checked_sub(1).and_then(|i| CODE_SIZES.get(i)) {
+            v.push(item(format!("Smaller text ({s} pt)"), MenuAct::CodeSize(s)));
+        }
+        if self.code_pt != 12 {
+            v.push(item("Default text size (12 pt)".to_string(), MenuAct::CodeSize(12)));
         }
         v
     }

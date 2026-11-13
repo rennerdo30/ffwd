@@ -29,6 +29,8 @@ pub enum MenuAct {
     /// Diff view (FF-41): whitespace characters on or off, tab width.
     DiffShowWs(bool),
     DiffTab(u8),
+    /// Code text size in points.
+    CodeSize(u8),
     /// A tab's colour (FF-44).
     TabColor(usize, Option<u8>),
     /// Sort the sidebar's branches by most recent commit (else by name).
@@ -532,6 +534,7 @@ impl Ui {
             Some(MenuAct::OpenUrl(u)) => crate::platform::open_url(u),
             Some(MenuAct::DiffShowWs(on)) => self.set_diff_view(Some(on), None),
             Some(MenuAct::DiffTab(t)) => self.set_diff_view(None, Some(t)),
+            Some(MenuAct::CodeSize(s)) => self.set_code_size(s),
             Some(MenuAct::TabColor(i, c)) => self.set_tab_color(i, c),
             Some(MenuAct::BranchOrder(recent)) => {
                 self.settings.set_string("sidebar.branch_order", if recent { "recent" } else { "name" });
@@ -1274,7 +1277,7 @@ impl Ui {
         if !r.contains(x, y) || y < body_y || self.diff_strip.contains(x, y) {
             return None;
         }
-        let row = self.r.diff_top + ((y - body_y) / self.px(20.0).max(1)) as usize;
+        let row = self.r.diff_top + ((y - body_y) / self.code_lh().max(1)) as usize;
         if !self.diff_split {
             return (row < d.lines.len()).then_some(row);
         }
