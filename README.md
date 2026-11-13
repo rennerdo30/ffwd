@@ -28,11 +28,16 @@ Desktop Git clients are often slow. They render late, stutter on big repositorie
 
 ## Try the proof of concept
 
-You need Rust (the toolchain installs itself from `rust-toolchain.toml`) and Git.
+You need Rust (the toolchain installs itself from `rust-toolchain.toml`) and Git. On Windows, double-click or run the scripts:
 
-```sh
-cargo run --release -- path/to/a/repo
-```
+| Script | What it does |
+|---|---|
+| `scripts\run.bat [repo] [--release] [--pull] [--trace]` | Build and open ffwd on a repository (this one by default) |
+| `scripts\snapshot.bat [repo] [--select N] [--focus diff] [--palette Q]` | Render the UI offscreen to `artifacts\snapshot.png` and open it |
+| `scripts\bench-startup.bat [repo] [runs]` | Measure startup in a hidden window, one JSON line per run |
+| `scripts\check.bat` | The CI checks: format, clippy, tests |
+
+On macOS and Linux: `scripts/run.sh` and `scripts/check.sh`, or `cargo run --release -- path/to/a/repo`.
 
 | Key | Action |
 |---|---|

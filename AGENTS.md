@@ -4,7 +4,7 @@ Read `E:/Development/AGENTS.md` and `E:/Development/general-agent-rules.md` firs
 
 - **Product:** ffwd (say "fast-forward"), a desktop Git client in Rust for Windows, macOS and Linux. It covers everything a complete desktop Git client does, plus AI features against an endpoint the user configures, with local AI preferred. **P0 is speed.** Existing clients render late, crash and feel slow (owner, 2026-11-13). Scope and budgets: `docs/SPEC.md`.
 - **Quality bar:** it must feel better than every other Git client, not just match them (owner, 2026-11-13).
-- **Pair Desk:** project `ffwd`. It doesn't exist yet: the owner creates it. Until then, the main session keeps state in its own thread, never in committed files.
+- **Pair Desk:** project `ffwd` (ids `FF-n`; owner, 2026-11-13). Handoff, backlog, plans and evidence live there, never in committed files.
 - **Identity:** commit only as `rennerdo30 <9086097+rennerdo30@users.noreply.github.com>`.
 - **Repository:** public at `https://github.com/rennerdo30/ffwd` (owner, 2026-11-13). Every release needs the owner's yes. Push with explicit refs only: `git push origin HEAD:refs/heads/<branch>`.
 - **Public from day one:** no secrets, no owner-PC config in committed files (`.cargo/config.toml` is local), no third-party code or assets, and other products' names only as factual mentions (for example the feature inventory).
@@ -76,3 +76,4 @@ These hold for every change. A change that breaks one of them is a defect, even 
 - `docs/BUILD.md`: build settings, sccache, linker, measured build times.
 - `docs/decisions/`: architecture decision records.
 - `assets/logo/`: the SVG logo and its derived files.
+- `scripts/`: owner test scripts, batch files on Windows (owner, 2026-11-13): `run.bat`, `snapshot.bat`, `bench-startup.bat`, `check.bat` (`.sh` twins for macOS/Linux). Agents set `FFWD_NO_OPEN=1` for `snapshot.bat` so no viewer opens on the owner's screen; never run `run.bat` (visible window).
