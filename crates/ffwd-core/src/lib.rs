@@ -15,6 +15,7 @@ pub mod log;
 pub mod ops;
 pub mod refops;
 pub mod refs;
+pub mod remotes;
 pub mod search;
 pub mod stash;
 

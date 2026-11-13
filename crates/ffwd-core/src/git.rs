@@ -42,6 +42,47 @@ impl Git {
         Ok(Git { root: PathBuf::from(top) })
     }
 
+    /// Starts git so that [`Killable::kill`] ends it together with every
+    /// helper it starts (ssh, `git-remote-*`), even orphaned ones.
+    pub fn spawn_killable(&self, args: &[&str]) -> Result<(Child, Killable), GitError> {
+        let mut cmd = self.command(args);
+        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            cmd.process_group(0);
+        }
+        let child = cmd.spawn().map_err(GitError::Spawn)?;
+        let k = Killable::new(&child);
+        Ok((child, k))
+    }
+
+    /// Ends the process `pid` that ffwd started, with its children on
+    /// Windows (git starts helpers such as `git-remote-https`).
+    pub fn kill_tree(pid: u32) {
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            let _ = Command::new("taskkill")
+                .args(["/PID", &pid.to_string(), "/T", "/F"])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .creation_flags(CREATE_NO_WINDOW)
+                .status();
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = Command::new("kill")
+                .args(["-TERM", &pid.to_string()])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
+    }
+
     pub fn command(&self, args: &[&str]) -> Command {
         let mut cmd = Command::new("git");
         // Stable, machine-readable output whatever the user's config says.
@@ -146,4 +187,75 @@ impl Git {
 /// Lossy UTF-8 into a boxed str: repository text is never trusted to be valid.
 pub fn text(b: &[u8]) -> Box<str> {
     String::from_utf8_lossy(b).into()
+}
+
+/// Ends a git process ffwd started with everything it started: a job
+/// object on Windows, the process group elsewhere.
+pub struct Killable {
+    pid: u32,
+    /// The job handle (0 when none could be made; then a tree kill).
+    #[cfg(windows)]
+    job: isize,
+}
+
+impl Killable {
+    fn new(child: &Child) -> Killable {
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawHandle;
+            use windows_sys::Win32::Foundation::CloseHandle;
+            use windows_sys::Win32::System::JobObjects::{AssignProcessToJobObject, CreateJobObjectW};
+            // SAFETY: plain Win32 calls on a handle we own and the child's
+            // live process handle; failures fall back to a tree kill.
+            let job = unsafe {
+                let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+                if !job.is_null() && AssignProcessToJobObject(job, child.as_raw_handle()) == 0 {
+                    CloseHandle(job);
+                    std::ptr::null_mut()
+                } else {
+                    job
+                }
+            };
+            Killable { pid: child.id(), job: job as isize }
+        }
+        #[cfg(not(windows))]
+        Killable { pid: child.id() }
+    }
+
+    pub fn kill(&self) {
+        #[cfg(windows)]
+        {
+            if self.job != 0 {
+                // SAFETY: the handle is ours and still open (closed on drop).
+                unsafe {
+                    windows_sys::Win32::System::JobObjects::TerminateJobObject(self.job as _, 1);
+                }
+                return;
+            }
+            Git::kill_tree(self.pid);
+        }
+        #[cfg(not(windows))]
+        {
+            // The whole process group (git was started as its leader).
+            let _ = Command::new("kill")
+                .args(["-TERM", "--", &format!("-{}", self.pid)])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for Killable {
+    fn drop(&mut self) {
+        if self.job != 0 {
+            // SAFETY: closing our own handle once; the processes keep running
+            // (no kill-on-close), only an explicit kill ends them.
+            unsafe {
+                windows_sys::Win32::Foundation::CloseHandle(self.job as _);
+            }
+        }
+    }
 }

@@ -31,6 +31,8 @@ pub struct Refs {
     pub refs: Vec<Ref>,
     pub stashes: Vec<(Box<str>, Box<str>)>,
     pub worktrees: Vec<Box<str>>,
+    /// The configured remotes with their URLs.
+    pub remotes: Vec<crate::remotes::Remote>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -98,6 +100,7 @@ pub fn load(git: &Git) -> Result<Refs, GitError> {
             }
         }
     }
+    refs.remotes = crate::remotes::list(git);
     if let Ok(w) = git.output_limited(&["worktree", "list", "--porcelain"], 1 << 20) {
         for line in w.split(|&b| b == b'\n') {
             if let Some(p) = line.strip_prefix(b"worktree ") {

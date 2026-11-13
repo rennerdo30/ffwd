@@ -169,8 +169,14 @@ impl Ui {
             }
         }
         let remotes: Vec<&Ref> = refs.iter().filter(|r| r.kind == RefKind::Remote && matches(&r.name)).collect();
-        if !remotes.is_empty() && header(&mut v, "Remotes", "h:remotes", String::new()) {
+        // Configured remotes show even before their first fetch; the header
+        // always shows (its menu adds a remote).
+        let configured = &self.r.refs.remotes;
+        if (!filtering || !remotes.is_empty()) && header(&mut v, "Remotes", "h:remotes", fmt::num(configured.len())) {
             let mut names: Vec<&str> = remotes.iter().filter_map(|r| r.name.split('/').next()).collect();
+            if !filtering {
+                names.extend(configured.iter().map(|r| &*r.name));
+            }
             names.sort_unstable();
             names.dedup();
             for n in names {

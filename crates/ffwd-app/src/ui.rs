@@ -277,6 +277,17 @@ const CMD_TAG: &str = "Create tag here";
 const CMD_PICK: &str = "Cherry-pick this commit";
 const CMD_REVERT: &str = "Revert this commit";
 const CMD_STASH: &str = "Stash changes";
+const CMD_ADD_REMOTE: &str = "Add remote…";
+const CMD_CANCEL_OP: &str = "Cancel the running fetch, pull or push";
+
+/// The toolbar action of a fetch, pull or push button.
+fn op_action(op: Op) -> TopAction {
+    match op.button() {
+        Op::Fetch => TopAction::Fetch,
+        Op::Push => TopAction::Push,
+        _ => TopAction::Pull,
+    }
+}
 
 /// Commands that work today; the rest of COMMANDS are listed so the
 /// palette shows the plan, and say so when chosen.
@@ -288,6 +299,8 @@ const WORKING: &[&str] = &[
     CMD_PICK,
     CMD_REVERT,
     CMD_STASH,
+    CMD_ADD_REMOTE,
+    CMD_CANCEL_OP,
     CMD_SETTINGS,
     CMD_AGENTS,
     CMD_FETCH,
@@ -320,6 +333,8 @@ const COMMANDS: &[(&str, &str)] = &[
     (CMD_REVERT, ""),
     ("Interactive rebase from here", "Ctrl Shift R"),
     (CMD_STASH, "Ctrl Shift S"),
+    (CMD_ADD_REMOTE, ""),
+    (CMD_CANCEL_OP, ""),
     ("Open file history", ""),
     ("Blame file", ""),
     ("AI: Explain this commit", "Ctrl I"),
@@ -366,6 +381,8 @@ pub struct RepoState {
     worker: Option<DetailWorker>,
     /// A fetch, pull or push running for this repository.
     op: Option<Op>,
+    /// Set to cancel the running fetch, pull or push.
+    op_cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
     /// After a reload, the commit to select again once it streams in.
     reselect: Option<Oid>,
     /// The Local Changes view replaces history and details (FF-35).
@@ -894,9 +911,13 @@ impl Ui {
 
     // ------------------------------------------------------ top bar actions
 
-    fn start_op(&mut self, op: Op) {
+    pub(super) fn start_op(&mut self, op: Op) {
         if let Some(running) = self.r.op {
-            self.set_notice(format!("{} is still running.", running.name()));
+            // The running operation's own button cancels it.
+            if running.button() == op.button() {
+                return self.cancel_op();
+            }
+            self.set_notice(format!("{} is still running (click its button to cancel).", running.name()));
             return;
         }
         let Some((id, path)) = self.tabs.get(self.cur_tab).map(|t| (t.id, t.path.clone())) else {
@@ -905,9 +926,19 @@ impl Ui {
         };
         let git = self.r.git.clone().unwrap_or(Git { root: path });
         self.r.op = Some(op);
-        self.set_notice(format!("{}…", op.verb()));
+        let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        self.r.op_cancel = Some(cancel.clone());
+        self.set_notice(format!("{}… (click {} again to cancel)", op.verb(), op.button().name()));
         self.damage.rects.push(self.lay.top);
-        crate::work::run_op(git, op, &(self.sinks)(id));
+        crate::work::run_op(git, op, cancel, &(self.sinks)(id));
+    }
+
+    /// Ends the running fetch, pull or push (git and its helpers).
+    pub(super) fn cancel_op(&mut self) {
+        if let (Some(op), Some(c)) = (self.r.op, &self.r.op_cancel) {
+            c.store(true, std::sync::atomic::Ordering::Relaxed);
+            self.set_notice(format!("Cancelling the {}…", op.name().to_lowercase()));
+        }
     }
 
     fn top_action(&mut self, a: TopAction) {
@@ -1121,8 +1152,19 @@ impl Ui {
             }
             Msg::OpDone(out) => {
                 self.r.op = None;
+                self.r.op_cancel = None;
                 self.set_notice(format!("{} ({:.1} s)", out.summary, out.ms / 1000.0));
                 self.damage.rects.push(self.lay.top);
+                if out.op == Op::Pull && !out.ok && ffwd_core::ops::diverged(&out.output) {
+                    self.open_dialog(DialogKind::Ask(menu::Ask {
+                        title: "Both sides have new commits".into(),
+                        text: "Your branch and its upstream have each moved on, and your Git settings do not say how to combine them. Merge makes a merge commit; rebase replays your commits on top of the upstream. Git stops on conflicts either way.".into(),
+                        choices: vec![
+                            ("Merge".into(), crate::work::RefOp::Sync(Op::PullMerge), false),
+                            ("Rebase".into(), crate::work::RefOp::Sync(Op::PullRebase), false),
+                        ],
+                    }));
+                }
                 // Refs, status and history changed: load them again.
                 if out.ok {
                     self.reload_current();
@@ -1797,6 +1839,13 @@ impl Ui {
             CMD_SEARCH => self.open_search(),
             CMD_BRANCH | CMD_TAG | CMD_PICK | CMD_REVERT => self.selected_commit_command(c),
             CMD_STASH => self.open_stash_dialog(),
+            CMD_ADD_REMOTE => self.open_dialog(DialogKind::Name {
+                act: NameAct::AddRemoteUrl,
+                field: TextField::default(),
+                checkout: false,
+            }),
+            CMD_CANCEL_OP if self.r.op.is_some() => self.cancel_op(),
+            CMD_CANCEL_OP => self.set_notice("Nothing is running.".into()),
             LAYOUT_BELOW => self.set_layout(DetailsLayout::Below),
             LAYOUT_BESIDE => self.set_layout(DetailsLayout::Beside),
             c if c.starts_with("AI:") || c.starts_with("Settings: AI") => self.set_notice(
@@ -2106,9 +2155,15 @@ impl Ui {
         buttons.push((gear, TopAction::Settings));
         let right = gear.x;
         let mut bx = right as f32 - self.pf(8.0);
-        let busy = self.r.op;
-        let label =
-            |op: Op, idle: &'static str| if busy == Some(op) { format!("{}…", op.verb()) } else { idle.to_string() };
+        let running = self.r.op;
+        let busy = running.map(Op::button);
+        let hot = self.hot;
+        let label = |op: Op, idle: &'static str| match busy {
+            // Hovering the running operation's button offers to cancel it.
+            Some(b) if b == op && hot == Some(Hot::Top(op_action(op))) => "Cancel".to_string(),
+            Some(b) if b == op => format!("{}…", running.unwrap_or(op).verb()),
+            _ => idle.to_string(),
+        };
         let (row_y, row_h) = ((cy - self.pf(14.0)) as i32, self.px(28.0));
         let row = move |l: f32, r: f32| Rect::new(l as i32, row_y, (r - l) as i32, row_h);
         let ai = self.button(cv, bx, cy, "AI", None, true, TopAction::Ai);
@@ -3814,6 +3869,143 @@ mod tests {
         pump(&mut ui, "the drop", &|u| u.dialog.is_none() && u.r.refs.stashes.is_empty());
         assert!(ui.notice.as_deref().is_some_and(|n| n.contains("git stash store")), "{:?}", ui.notice);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Remotes from the keyboard (FF-39): add one (URL, then a suggested
+    /// name, then it is fetched), rename it, test it, remove it (asks
+    /// first); a pull with diverged branches asks merge or rebase; the busy
+    /// Fetch button cancels a fetch that hangs.
+    #[test]
+    fn remotes_add_rename_remove_pull_question_and_cancel() {
+        use std::sync::mpsc;
+        let mut te = TextEngine::new();
+        let Some(f) = load_fonts(&mut te) else { return };
+        let base = std::env::temp_dir().join(format!("ffwd-ui-remotes-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("up")).unwrap();
+        let init = |g: &Git| {
+            for a in [
+                &["config", "user.name", "ffwd test"][..],
+                &["config", "user.email", "test@example.invalid"],
+                &["config", "commit.gpgsign", "false"],
+            ] {
+                g.output(a).unwrap();
+            }
+        };
+        let commit = |g: &Git, file: &str| {
+            std::fs::write(g.root.join(file), file).unwrap();
+            g.output(&["add", "."]).unwrap();
+            g.output(&["commit", "-q", "-m", file]).unwrap();
+        };
+        let up = Git { root: base.join("up") };
+        up.output(&["init", "-q", "-b", "main"]).unwrap();
+        init(&up);
+        commit(&up, "a.txt");
+        Git { root: base.clone() }.output(&["clone", "-q", "up", "down"]).unwrap();
+        let g = Git { root: base.join("down") };
+        init(&g);
+        let (tx, rx) = mpsc::channel::<(u64, Msg)>();
+        let tx = Arc::new(std::sync::Mutex::new(tx));
+        let sinks: SinkFactory = Arc::new(move |id| {
+            let tx = tx.clone();
+            Arc::new(move |m| {
+                if let Ok(t) = tx.lock() {
+                    let _ = t.send((id, m));
+                }
+            })
+        });
+        crate::work::start(g.root.clone(), &sinks(1));
+        let empty = crate::settings::Settings::parse("");
+        let mut ui = Ui::new(te, f, empty.clone(), empty, Some((1, g.root.clone())), sinks, 1280, 800, 1.0);
+        let pump = |ui: &mut Ui, what: &str, done: &dyn Fn(&Ui) -> bool| {
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(40);
+            while !done(ui) {
+                let left = until.saturating_duration_since(std::time::Instant::now());
+                assert!(!left.is_zero(), "timed out waiting for {what}; notice: {:?}", ui.notice);
+                if let Ok((id, m)) = rx.recv_timeout(left) {
+                    ui.on_tab_msg(id, m);
+                }
+            }
+        };
+        let pick = |ui: &mut Ui, label: &str| {
+            for _ in 0..40 {
+                ui.key(Key::Down);
+                let m = ui.menu.as_ref().unwrap();
+                if m.sel.is_some_and(|s| m.items[s].label.starts_with(label)) {
+                    ui.key(Key::Enter);
+                    return;
+                }
+            }
+            panic!("no menu item {label}");
+        };
+        let typ = |ui: &mut Ui, t: &str| {
+            ui.key(Key::Ctrl('a'));
+            for c in t.chars() {
+                ui.key(Key::Char(c));
+            }
+        };
+        let names = |u: &Ui| u.r.refs.remotes.iter().map(|r| r.name.to_string()).collect::<Vec<_>>();
+        pump(&mut ui, "history and refs", &|u| u.r.log_done && names(u) == ["origin"]);
+        // Add: URL, then the suggested name (the folder: origin is taken).
+        let items = ui.ref_menu("h:remotes");
+        ui.open_menu(100, 100, items);
+        pick(&mut ui, "Add remote");
+        typ(&mut ui, &base.join("up").to_string_lossy().replace('\\', "/"));
+        ui.key(Key::Enter);
+        let suggested = match &ui.dialog.as_ref().unwrap().kind {
+            DialogKind::Name { act: NameAct::AddRemoteName { .. }, field, .. } => field.text().to_string(),
+            _ => panic!("the name step follows the URL"),
+        };
+        assert_eq!(suggested, "up");
+        ui.key(Key::Enter);
+        pump(&mut ui, "the new remote", &|u| u.dialog.is_none() && names(u).contains(&"up".to_string()));
+        assert!(g.output(&["rev-parse", "--verify", "refs/remotes/up/main"]).is_ok(), "added remotes are fetched");
+        // Rename, then test the connection.
+        let items = ui.ref_menu("r:up/");
+        ui.open_menu(100, 100, items);
+        pick(&mut ui, "Rename");
+        typ(&mut ui, "mirror");
+        ui.key(Key::Enter);
+        pump(&mut ui, "the rename", &|u| u.dialog.is_none() && names(u).contains(&"mirror".to_string()));
+        let items = ui.ref_menu("r:mirror/");
+        ui.open_menu(100, 100, items);
+        pick(&mut ui, "Test connection");
+        pump(&mut ui, "the test", &|u| u.notice.as_deref().is_some_and(|n| n.contains("answers")));
+        // Remove asks first and names the way back.
+        let items = ui.ref_menu("r:mirror/");
+        ui.open_menu(100, 100, items);
+        pick(&mut ui, "Remove mirror");
+        assert!(ui.dialog.as_ref().is_some_and(|d| matches!(d.kind, DialogKind::Ask(_))));
+        ui.key(Key::Enter);
+        pump(&mut ui, "the removal", &|u| u.dialog.is_none() && names(u) == ["origin"]);
+        assert!(ui.notice.as_deref().is_some_and(|n| n.contains("git remote add mirror")), "{:?}", ui.notice);
+        // Diverged pull: unless the user's global config decides, ffwd asks.
+        commit(&up, "up.txt");
+        commit(&g, "down.txt");
+        ui.start_op(Op::Pull);
+        pump(&mut ui, "the pull", &|u| u.r.op.is_none());
+        if let Some(DialogKind::Ask(a)) = ui.dialog.as_ref().map(|d| &d.kind) {
+            assert!(a.title.contains("new commits"));
+            ui.key(Key::Right); // Rebase
+            ui.key(Key::Enter);
+            pump(&mut ui, "the rebase pull", &|u| {
+                u.r.op.is_none() && u.notice.as_deref().is_some_and(|n| n.contains("rebased"))
+            });
+            let log = String::from_utf8(g.output(&["log", "--format=%s"]).unwrap()).unwrap();
+            assert!(log.starts_with("down.txt\nup.txt\n"), "{log}");
+        }
+        // Cancel: a fetch from a remote that never answers; Fetch again cancels.
+        let wait = if cfg!(windows) { "ping -n 30 127.0.0.1" } else { "sleep 30" };
+        g.output(&["remote", "add", "slow", &format!("ext::{wait}")]).unwrap();
+        g.output(&["config", "protocol.ext.allow", "always"]).unwrap();
+        let t = std::time::Instant::now();
+        ui.start_op(Op::Fetch);
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        ui.start_op(Op::Fetch);
+        pump(&mut ui, "the cancel", &|u| u.r.op.is_none());
+        assert!(ui.notice.as_deref().is_some_and(|n| n.contains("Fetch cancelled")), "{:?}", ui.notice);
+        assert!(t.elapsed() < std::time::Duration::from_secs(15), "cancel took {:?}", t.elapsed());
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     /// The find bar from the keyboard: message search selects the match,

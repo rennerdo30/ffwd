@@ -86,9 +86,9 @@ pub enum Msg {
 }
 
 /// Runs a fetch, pull or push on a worker, reporting progress and the outcome.
-pub fn run_op(git: Git, op: ffwd_core::ops::Op, sink: &Sink) {
+pub fn run_op(git: Git, op: ffwd_core::ops::Op, cancel: std::sync::Arc<std::sync::atomic::AtomicBool>, sink: &Sink) {
     spawn("op", sink, move |sink| {
-        let out = ffwd_core::ops::run(&git, op, |line| sink(Msg::OpProgress(line)));
+        let out = ffwd_core::ops::run(&git, op, cancel, |line| sink(Msg::OpProgress(line)));
         sink(Msg::OpDone(out));
     });
 }
@@ -118,6 +118,16 @@ pub enum RefOp {
     StashDrop(String),
     /// name, new message
     StashRename(String, String),
+    /// name, URL
+    RemoteAdd(String, String),
+    RemoteSetUrl(String, String),
+    /// old, new
+    RemoteRename(String, String),
+    RemoteRemove(String),
+    RemoteFetch(String),
+    RemoteTest(String),
+    /// A fetch, pull or push chosen in a dialog (the UI starts it itself).
+    Sync(ffwd_core::ops::Op),
 }
 
 impl RefOp {
@@ -138,6 +148,13 @@ impl RefOp {
             RefOp::StashApply(..) => "Applying the stash",
             RefOp::StashDrop(_) => "Dropping the stash",
             RefOp::StashRename(..) => "Renaming the stash",
+            RefOp::RemoteAdd(..) => "Adding the remote",
+            RefOp::RemoteSetUrl(..) => "Changing the URL",
+            RefOp::RemoteRename(..) => "Renaming the remote",
+            RefOp::RemoteRemove(_) => "Removing the remote",
+            RefOp::RemoteFetch(_) => "Fetching",
+            RefOp::RemoteTest(_) => "Testing the connection",
+            RefOp::Sync(op) => op.verb(),
         }
     }
 }
@@ -162,6 +179,15 @@ pub fn refop(git: Git, op: RefOp, sink: &Sink) {
             RefOp::StashApply(n, pop) => ffwd_core::stash::apply(&git, n, *pop),
             RefOp::StashDrop(n) => ffwd_core::stash::drop(&git, n),
             RefOp::StashRename(n, m) => ffwd_core::stash::rename(&git, n, m),
+            RefOp::RemoteAdd(n, u) => ffwd_core::remotes::add(&git, n, u),
+            RefOp::RemoteSetUrl(n, u) => ffwd_core::remotes::set_url(&git, n, u),
+            RefOp::RemoteRename(o, n) => ffwd_core::remotes::rename(&git, o, n),
+            RefOp::RemoteRemove(n) => ffwd_core::remotes::remove(&git, n),
+            RefOp::RemoteFetch(n) => ffwd_core::remotes::fetch(&git, n),
+            RefOp::RemoteTest(n) => {
+                ffwd_core::remotes::test(&git, n, std::time::Duration::from_secs(30), Default::default())
+            }
+            RefOp::Sync(_) => Err(r::OpError::Failed("internal: a sync runs through start_op".into())),
         };
         sink(Msg::RefOp(res));
         sink(Msg::InProgress(r::in_progress(&git)));

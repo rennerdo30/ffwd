@@ -15,6 +15,10 @@
   - check out (also remote branches, with tracking, and detached), create, rename and delete branches and tags;
   - merge (four modes), rebase, cherry-pick, revert, reset (soft, mixed, hard), each with a backup ref where commits could be lost;
   - double-click checkout; `Ctrl+B` and `Ctrl+Shift+G`.
+- **Remotes and sync** (FF-39):
+  - add (with a suggested name and a first fetch), edit the URL, rename, remove (asks first), fetch one, test the connection;
+  - cancel a running fetch, pull or push from its button;
+  - a diverged pull asks merge or rebase.
 - **Stashes** (FF-38): stash with a message (`Ctrl+Shift+S`, untracked files optional), and apply, pop, rename and drop from the sidebar. A drop asks first and keeps a backup; a conflicting pop keeps the stash.
 - **Files view** (FF-51, FF-43):
   - the repository's folder tree with change marks and a type-to-filter search;

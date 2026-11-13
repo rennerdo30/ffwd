@@ -121,14 +121,14 @@
 | Feature | ffwd | Notes |
 |---|---|---|
 | Fetch, pull, push with progress | **Built** | |
-| Cancel a running operation | M1 | |
+| Cancel a running operation | **Built** | The busy button (or the palette) cancels; git and every helper it started end (job object on Windows) |
 | Automatic fetch; prune on fetch | M1 | Fetch already prunes |
 | Ahead and behind badges on the toolbar | **Built** | |
 | Push several branches or tags; push to a branch of another name | M1 | |
 | Set an upstream on the first push | **Built** | |
-| Multiple remotes; add, edit, remove; test the connection | M1 | |
+| Multiple remotes; add, edit, remove; test the connection | **Built** | Add (URL, then a suggested name, then a fetch), edit URL, rename, remove (asks, names the way back), fetch one, test |
 | Filter branches in the Push, Pull and Track dropdowns | M1 | |
-| Pull: choose merge or rebase when diverged | M1 | FF-22 proposal |
+| Pull: choose merge or rebase when diverged | **Built** | Asked only when Git's settings do not decide |
 
 ## 8. Hosting services (FF-40)
 

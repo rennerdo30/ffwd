@@ -78,6 +78,19 @@ The capture above is the real PoC UI. `ffwd --snapshot` rendered it offscreen fr
   - a tab shows an amber ring while its repository has uncommitted changes;
   - every Git call runs on a worker.
 
+## Remotes and sync (FF-39)
+
+- **Remote menu** (right click on a remote in the sidebar): Fetch, Test connection, Edit URL…, Rename…, Remove…, Add remote…, Copy URL.
+- **Remotes header menu:** Add remote…, Fetch all remotes. The header always shows; configured remotes show before their first fetch.
+- **Add remote:** two steps.
+  1. The URL or path.
+  2. The name: `origin` when free, else the owner for hosted URLs or the folder name for local paths.
+  ffwd then fetches it.
+- **Remove** asks first. Only ffwd's remote-tracking branches go; the server is untouched, and the notice names `git remote add …` to bring it back.
+- **Test connection** runs `git ls-remote --heads` with a 30 s limit and reports how many branches answered.
+- **Cancel:** while a fetch, pull or push runs, its button reads "Fetching…" and shows **Cancel** on hover; clicking it (or the palette command) ends git and every helper it started.
+- **Diverged pull:** when both sides have new commits and Git's settings don't decide, a dialog offers **Merge** or **Rebase**.
+
 ## Stashes (FF-38)
 
 - **Save:** `Ctrl+Shift+S` (or the palette's "Stash changes") opens a dialog with an optional message. Untracked files are included by default; `Tab` toggles that.

@@ -49,6 +49,18 @@ pub enum NameAct {
         name: String,
         old: String,
     },
+    /// Add a remote: first its URL, then its name.
+    AddRemoteUrl,
+    AddRemoteName {
+        url: String,
+    },
+    RemoteUrl {
+        name: String,
+        old: String,
+    },
+    RenameRemote {
+        old: String,
+    },
 }
 
 /// A choice dialog: a title, what will happen, and buttons.
@@ -184,6 +196,33 @@ impl Ui {
                 MenuAct::Name(NameAct::CreateBranch { at: name.into() }),
             ));
             v.push(item("Copy name", MenuAct::Copy(name.into())));
+        } else if let Some(name) = key.strip_prefix("r:").and_then(|n| n.strip_suffix('/')) {
+            let url = self.r.refs.remotes.iter().find(|r| &*r.name == name).map(|r| r.fetch_url.to_string());
+            v.push(item(format!("Fetch {name}"), MenuAct::Run(RefOp::RemoteFetch(name.into()))));
+            v.push(item("Test connection", MenuAct::Run(RefOp::RemoteTest(name.into()))));
+            v.push(sep());
+            if let Some(u) = &url {
+                v.push(item("Edit URL…", MenuAct::Name(NameAct::RemoteUrl { name: name.into(), old: u.clone() })));
+            }
+            v.push(item("Rename…", MenuAct::Name(NameAct::RenameRemote { old: name.into() })));
+            v.push(danger(
+                format!("Remove {name}…"),
+                MenuAct::Ask(Box::new(Ask {
+                    title: format!("Remove the remote {name}?"),
+                    text: format!(
+                        "ffwd forgets {name} and its remote-tracking branches ({name}/…). Nothing on the server changes, and ffwd names the command that adds it back."
+                    ),
+                    choices: vec![(format!("Remove {name}"), RefOp::RemoteRemove(name.into()), true)],
+                })),
+            ));
+            v.push(sep());
+            v.push(item("Add remote…", MenuAct::Name(NameAct::AddRemoteUrl)));
+            if let Some(u) = url {
+                v.push(item("Copy URL", MenuAct::Copy(u)));
+            }
+        } else if key == "h:remotes" {
+            v.push(item("Add remote…", MenuAct::Name(NameAct::AddRemoteUrl)));
+            v.push(item("Fetch all remotes", MenuAct::Run(RefOp::Sync(ffwd_core::ops::Op::Fetch))));
         } else if let Some(name) = key.strip_prefix("s:") {
             let msg = self.r.refs.stashes.iter().find(|s| &*s.0 == name).map_or(String::new(), |s| s.1.to_string());
             v.push(item(format!("Apply {name}"), MenuAct::Run(RefOp::StashApply(name.into(), false))));
@@ -323,7 +362,10 @@ impl Ui {
             Some(MenuAct::Ask(a)) => self.open_dialog(DialogKind::Ask(*a)),
             Some(MenuAct::Name(n)) => {
                 let field = match &n {
-                    NameAct::Rename { old } | NameAct::StashRename { old, .. } => TextField::new(old),
+                    NameAct::Rename { old }
+                    | NameAct::StashRename { old, .. }
+                    | NameAct::RemoteUrl { old, .. }
+                    | NameAct::RenameRemote { old } => TextField::new(old),
                     _ => TextField::default(),
                 };
                 let checkout = matches!(n, NameAct::CreateBranch { .. } | NameAct::StashSave);
@@ -385,7 +427,7 @@ impl Ui {
         let w = self.px(560.0).min(self.w as i32 - self.px(40.0));
         let h = match self.dialog.as_ref().map(|d| &d.kind) {
             // The stash dialog has a line of text above its field.
-            Some(DialogKind::Name { act: NameAct::StashSave, .. }) => self.px(250.0),
+            Some(DialogKind::Name { act: NameAct::StashSave | NameAct::AddRemoteUrl, .. }) => self.px(250.0),
             Some(DialogKind::Name { .. }) => self.px(210.0),
             _ => self.px(230.0),
         };
@@ -395,6 +437,23 @@ impl Ui {
     fn dialog_confirm(&mut self, choice: usize) {
         let Some(d) = &mut self.dialog else { return };
         if d.busy {
+            return;
+        }
+        // Adding a remote asks for the URL first, then a name it suggests.
+        if let DialogKind::Name { act: NameAct::AddRemoteUrl, field, .. } = &d.kind {
+            let url = field.text().trim().to_string();
+            if url.is_empty() {
+                d.error = Some("Type the URL or path first.".into());
+                let r = self.dialog_rect();
+                self.damage.rects.push(r);
+                return;
+            }
+            let name = ffwd_core::remotes::suggest_name(&url, &self.r.refs.remotes);
+            self.open_dialog(DialogKind::Name {
+                act: NameAct::AddRemoteName { url },
+                field: TextField::new(&name),
+                checkout: false,
+            });
             return;
         }
         let op = match &d.kind {
@@ -414,6 +473,10 @@ impl Ui {
                             ffwd_core::stash::SaveOptions { untracked: *checkout, keep_index: false },
                         ),
                         NameAct::StashRename { name, .. } => RefOp::StashRename(name.clone(), n),
+                        NameAct::AddRemoteUrl => unreachable!("handled above"),
+                        NameAct::AddRemoteName { url } => RefOp::RemoteAdd(n, url.clone()),
+                        NameAct::RemoteUrl { name, .. } => RefOp::RemoteSetUrl(name.clone(), n),
+                        NameAct::RenameRemote { old } => RefOp::RemoteRename(old.clone(), n),
                     })
                 }
             }
@@ -494,6 +557,10 @@ impl Ui {
     }
 
     pub(super) fn run_refop(&mut self, op: RefOp) {
+        if let RefOp::Sync(o) = op {
+            self.close_dialog();
+            return self.start_op(o);
+        }
         let (Some(g), Some(t)) = (self.git_for_tab(), self.tabs.get(self.cur_tab)) else { return };
         let sink = (self.sinks)(t.id);
         self.set_notice(format!("{}…", op.verb()));
@@ -640,6 +707,14 @@ impl Ui {
                         .to_string(),
                 ),
                 NameAct::StashRename { name, .. } => (format!("Rename {name}"), String::new()),
+                NameAct::AddRemoteUrl => (
+                    "Add a remote".to_string(),
+                    "The URL or path of the repository (https, ssh or a folder). ffwd fetches it once it is added."
+                        .to_string(),
+                ),
+                NameAct::AddRemoteName { url } => (format!("Name the remote for {url}"), String::new()),
+                NameAct::RemoteUrl { name, .. } => (format!("URL of {name}"), String::new()),
+                NameAct::RenameRemote { old } => (format!("Rename the remote {old}"), String::new()),
             },
         };
         self.te.draw(cv, semi, self.pf(15.5), x0, r.y as f32 + self.pf(36.0), &title, TEXT, inner);
@@ -664,6 +739,8 @@ impl Ui {
                     NameAct::CreateTag { .. } => "v1.2.0",
                     NameAct::StashSave => "Message (optional)",
                     NameAct::StashRename { .. } => "Stash message",
+                    NameAct::AddRemoteUrl | NameAct::RemoteUrl { .. } => "https://github.com/owner/repo.git",
+                    NameAct::AddRemoteName { .. } | NameAct::RenameRemote { .. } => "origin",
                     _ => "feature/my-change",
                 };
                 self.te.draw(cv, ui, self.pf(13.0), tx, fb, ph, TEXT_4, inner);
@@ -715,6 +792,10 @@ impl Ui {
                     NameAct::CreateTag { .. } => "Create tag".into(),
                     NameAct::Rename { .. } | NameAct::StashRename { .. } => "Rename".into(),
                     NameAct::StashSave => "Stash".into(),
+                    NameAct::AddRemoteUrl => "Next".into(),
+                    NameAct::AddRemoteName { .. } => "Add and fetch".into(),
+                    NameAct::RemoteUrl { .. } => "Save URL".into(),
+                    NameAct::RenameRemote { .. } => "Rename".into(),
                 },
                 false,
             )],
