@@ -760,8 +760,13 @@ impl Ui {
             DialogKind::Ask(a) => a.choices.get(choice).map(|c| c.1.clone()),
             DialogKind::Name { act, field, checkout } => {
                 let n = field.text().trim().to_string();
+                let ref_name =
+                    matches!(act, NameAct::CreateBranch { .. } | NameAct::CreateTag { .. } | NameAct::Rename { .. });
                 if n.is_empty() && !matches!(act, NameAct::StashSave) {
                     d.error = Some("Type a name first.".into());
+                    None
+                } else if let Some(e) = ref_name.then(|| ffwd_core::refs::check_ref_name(&n).err()).flatten() {
+                    d.error = Some(e);
                     None
                 } else {
                     Some(match act {
@@ -818,8 +823,12 @@ impl Ui {
             (DialogKind::Name { checkout, act: NameAct::CreateBranch { .. } | NameAct::StashSave, .. }, Key::Tab) => {
                 *checkout = !*checkout
             }
-            (DialogKind::Name { field, .. }, k) => {
+            (DialogKind::Name { field, act, .. }, k) => {
+                let ref_name =
+                    matches!(act, NameAct::CreateBranch { .. } | NameAct::CreateTag { .. } | NameAct::Rename { .. });
                 match k {
+                    // Branch and tag names can't hold spaces: type "-" (FF-36).
+                    Key::Char(' ') if ref_name => field.insert("-"),
                     Key::Char(c) => field.insert(c.encode_utf8(&mut [0; 4])),
                     Key::Backspace => field.backspace(),
                     Key::CtrlBackspace => field.delete_word(),
@@ -831,12 +840,21 @@ impl Ui {
                     Key::Ctrl('a') => field.select_all(),
                     Key::Ctrl('v') => {
                         if let Some(t) = crate::platform::clipboard() {
-                            field.insert(t.lines().next().unwrap_or(""));
+                            let line = t.lines().next().unwrap_or("");
+                            if ref_name {
+                                let dashed: Vec<&str> = line.split_whitespace().collect();
+                                field.insert(&dashed.join("-"));
+                            } else {
+                                field.insert(line);
+                            }
                         }
                     }
                     _ => {}
                 }
-                d.error = None;
+                // Branch and tag names say what's wrong while typing.
+                let text = field.text().trim().to_string();
+                d.error =
+                    (ref_name && !text.is_empty()).then(|| ffwd_core::refs::check_ref_name(&text).err()).flatten();
             }
             _ => {}
         }

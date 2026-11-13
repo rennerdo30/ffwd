@@ -7291,6 +7291,76 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Branch names (FF-36): a space types "-", an invalid name says why
+    /// while typing and Enter refuses it; a valid one creates the branch.
+    #[test]
+    fn branch_names_are_checked_while_typing() {
+        use std::sync::mpsc;
+        let mut te = TextEngine::new();
+        let Some(f) = load_fonts(&mut te) else { return };
+        let dir = std::env::temp_dir().join(format!("ffwd-ui-brname-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = Git { root: dir.clone() };
+        for a in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.name", "ffwd test"],
+            &["config", "user.email", "test@example.invalid"],
+            &["config", "commit.gpgsign", "false"],
+            &["commit", "-q", "--allow-empty", "-m", "first"],
+        ] {
+            g.output(a).unwrap();
+        }
+        let (tx, rx) = mpsc::channel::<(u64, Msg)>();
+        let tx = Arc::new(std::sync::Mutex::new(tx));
+        let sinks: SinkFactory = Arc::new(move |id| {
+            let tx = tx.clone();
+            Arc::new(move |m| {
+                if let Ok(t) = tx.lock() {
+                    let _ = t.send((id, m));
+                }
+            })
+        });
+        crate::work::start(dir.clone(), &sinks(1));
+        let empty = crate::settings::Settings::parse("");
+        let mut ui = Ui::new(te, f, empty.clone(), empty, Some((1, dir.clone())), sinks, 1280, 800, 1.0);
+        let pump = |ui: &mut Ui, what: &str, done: &dyn Fn(&Ui) -> bool| {
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while !done(ui) {
+                let left = until.saturating_duration_since(std::time::Instant::now());
+                assert!(!left.is_zero(), "timed out waiting for {what}");
+                if let Ok((id, m)) = rx.recv_timeout(left) {
+                    ui.on_tab_msg(id, m);
+                }
+            }
+        };
+        pump(&mut ui, "history", &|u| u.r.log_done && u.r.git.is_some() && !u.r.commits.is_empty());
+        ui.key(Key::Ctrl('b'));
+        let field = |ui: &Ui| match &ui.dialog.as_ref().unwrap().kind {
+            menu::DialogKind::Name { field, .. } => field.text().to_string(),
+            _ => panic!("a name dialog"),
+        };
+        let error = |ui: &Ui| ui.dialog.as_ref().and_then(|d| d.error.clone());
+        for c in "my feature".chars() {
+            ui.key(Key::Char(c));
+        }
+        assert_eq!(field(&ui), "my-feature", "a space types -");
+        assert_eq!(error(&ui), None);
+        for c in "..x".chars() {
+            ui.key(Key::Char(c));
+        }
+        assert_eq!(error(&ui).as_deref(), Some("A name can't contain \"..\"."));
+        ui.key(Key::Enter);
+        assert!(ui.dialog.as_ref().is_some_and(|d| !d.busy), "Enter refuses an invalid name");
+        for _ in 0..3 {
+            ui.key(Key::Backspace);
+        }
+        assert_eq!(error(&ui), None);
+        ui.key(Key::Enter);
+        pump(&mut ui, "the new branch", &|u| u.r.refs.refs.iter().any(|r| &*r.name == "my-feature"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Find in the diff (FF-34): `Ctrl+F` with the diff focused searches
     /// the shown diff (case-insensitive), Enter steps through the matches
     /// and scrolls to them, the query stays for the next file, and Esc

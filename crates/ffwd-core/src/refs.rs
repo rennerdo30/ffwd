@@ -163,8 +163,83 @@ pub fn status(git: &Git) -> Result<StatusSummary, GitError> {
     Ok(s)
 }
 
+/// Checks a branch or tag name against git's rules (`git
+/// check-ref-format --branch`), saying what is wrong in words.
+pub fn check_ref_name(name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("Type a name first.".into());
+    }
+    if name == "@" {
+        return Err("\"@\" alone is not a valid name.".into());
+    }
+    if name.starts_with('-') {
+        return Err("A name can't start with \"-\".".into());
+    }
+    if let Some(c) = name.chars().find(|c| c.is_control() || " ~^:?*[\\".contains(*c)) {
+        let shown = if c == ' ' { "a space".to_string() } else { format!("\"{c}\"") };
+        return Err(format!("A name can't contain {shown}."));
+    }
+    if name.contains("..") {
+        return Err("A name can't contain \"..\".".into());
+    }
+    if name.contains("@{") {
+        return Err("A name can't contain \"@{\".".into());
+    }
+    if name.starts_with('/') || name.ends_with('/') || name.contains("//") {
+        return Err("Folders in a name need text on both sides of \"/\".".into());
+    }
+    if name.ends_with('.') {
+        return Err("A name can't end with \".\".".into());
+    }
+    for part in name.split('/') {
+        if part.starts_with('.') {
+            return Err("No part of a name can start with \".\".".into());
+        }
+        if part.ends_with(".lock") {
+            return Err("No part of a name can end with \".lock\".".into());
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn ref_names_follow_git_rules() {
+        use super::check_ref_name;
+        for ok in ["main", "feat/login", "release-1.2", "fix_bug", "a/b/c", "über"] {
+            assert!(check_ref_name(ok).is_ok(), "{ok}");
+        }
+        for bad in [
+            "",
+            "@",
+            "-x",
+            "a b",
+            "a~b",
+            "a^b",
+            "a:b",
+            "a?b",
+            "a*b",
+            "a[b",
+            "a\\b",
+            "a..b",
+            "a@{b",
+            "/a",
+            "a/",
+            "a//b",
+            "a.",
+            ".a",
+            "a/.b",
+            "a.lock",
+            "a/b.lock",
+            "tab\there",
+        ] {
+            assert!(check_ref_name(bad).is_err(), "{bad:?} should be refused");
+        }
+        assert_eq!(check_ref_name("my branch").unwrap_err(), "A name can't contain a space.");
+    }
+
     #[test]
     fn track_parsing() {
         assert_eq!(super::parse_track("ahead 3, behind 12"), (3, 12));
