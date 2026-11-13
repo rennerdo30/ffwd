@@ -38,6 +38,8 @@ pub enum CHit {
 
 pub struct Changes {
     pub status: Option<WorkStatus>,
+    /// Files per side (unstaged, staged), counted once per status.
+    counts: [usize; 2],
     pub side: Side,
     pub sel: usize,
     tops: [usize; 2],
@@ -77,6 +79,7 @@ impl Default for Changes {
         Changes {
             ai: None,
             status: None,
+            counts: [0, 0],
             side: Side::Unstaged,
             sel: 0,
             tops: [0, 0],
@@ -126,13 +129,19 @@ impl Ui {
             Rect::new(side.right(), self.lay.list.y, self.w as i32 - side.right(), self.lay.status.y - self.lay.list.y);
         let lw = ((area.w as f32 * 0.38) as i32).clamp(self.px(320.0), self.px(560.0)).min(area.w / 2);
         let left = Rect::new(area.x, area.y, lw, area.h);
-        let ch = self.px(196.0).min(left.h / 2);
+        let ch = self.px(172.0).min(left.h / 2);
         let commit = Rect::new(left.x, left.bottom() - ch, left.w, ch);
         let head = self.px(32.0);
         let bh = if self.r.changes.in_progress.is_some() { self.px(36.0) } else { 0 };
         let banner = Rect::new(left.x, left.y, left.w, bh);
         let lists_h = (commit.y - left.y - bh - 2 * head).max(0);
-        let uh = lists_h * 55 / 100;
+        // Each list gets a share by how many files it shows, at least
+        // about three rows; an empty list doesn't hold half the column.
+        let rh = self.change_row_h();
+        let need = |n: usize| (n.max(1) as i32 * rh + self.px(12.0)) as i64;
+        let (n0, n1) = (need(self.side_len(Side::Unstaged)), need(self.side_len(Side::Staged)));
+        let min = self.px(96.0).min(lists_h / 2);
+        let uh = ((lists_h as i64 * n0 / (n0 + n1).max(1)) as i32).clamp(min, (lists_h - min).max(min));
         let h0 = Rect::new(left.x, left.y + bh, left.w, head);
         let l0 = Rect::new(left.x, h0.bottom(), left.w, uh);
         let h1 = Rect::new(left.x, l0.bottom(), left.w, head);
@@ -189,12 +198,24 @@ impl Ui {
         }
     }
 
+    /// How many files a side has (cached; no walk over the status).
+    pub(super) fn side_len(&self, side: Side) -> usize {
+        if self.r.changes.status.is_none() { 0 } else { self.r.changes.counts[side_ix(side)] }
+    }
+
+    /// Rows `top..top + n` of a side, cloned (only what is shown).
+    fn side_rows(&self, side: Side, top: usize, n: usize) -> Vec<Entry> {
+        self.r.changes.status.as_ref().map_or_else(Vec::new, |s| {
+            s.entries.iter().filter(|e| in_side(e, side)).skip(top).take(n).cloned().collect()
+        })
+    }
+
     fn side_list(&self, side: Side) -> Vec<Entry> {
         self.r.changes.status.as_ref().map_or_else(Vec::new, |s| s.side(side).into_iter().cloned().collect())
     }
 
     pub(super) fn selected_entry(&self) -> Option<Entry> {
-        self.side_list(self.r.changes.side).get(self.r.changes.sel).cloned()
+        self.side_rows(self.r.changes.side, self.r.changes.sel, 1).pop()
     }
 
     fn request_change_diff(&mut self) {
@@ -231,6 +252,7 @@ impl Ui {
         match r {
             Ok(st) => {
                 let c = &mut self.r.changes;
+                c.counts = [Side::Unstaged, Side::Staged].map(|s| st.entries.iter().filter(|e| in_side(e, s)).count());
                 c.status = Some(st);
                 // Keep the selected file when it is still on the same side,
                 // else follow it to the other side, else clamp.
@@ -241,7 +263,7 @@ impl Ui {
                 if let Some(i) = find(c.side, c) {
                     c.sel = i;
                 } else {
-                    let n = self.side_list(self.r.changes.side).len();
+                    let n = self.side_len(self.r.changes.side);
                     let c = &mut self.r.changes;
                     if n == 0 {
                         let other = if c.side == Side::Unstaged { Side::Staged } else { Side::Unstaged };
@@ -386,7 +408,7 @@ impl Ui {
 
     pub(super) fn commit_changes(&mut self) {
         let c = &self.r.changes;
-        let staged = self.side_list(Side::Staged).len();
+        let staged = self.side_len(Side::Staged);
         if staged == 0 && !c.amend {
             return self.set_notice("Nothing is staged: stage files first (Space), or tick Amend.".into());
         }
@@ -585,7 +607,7 @@ impl Ui {
     }
 
     pub(super) fn select_change(&mut self, side: Side, i: usize) {
-        let n = self.side_list(side).len();
+        let n = self.side_len(side);
         if n == 0 {
             return;
         }
@@ -718,11 +740,11 @@ impl Ui {
             CFocus::Unstaged | CFocus::Staged => {
                 let side = self.r.changes.side;
                 let sel = self.r.changes.sel;
-                let n = self.side_list(side).len();
+                let n = self.side_len(side);
                 match k {
                     Key::Up | Key::Char('k') => {
                         if sel == 0 && side == Side::Staged {
-                            let m = self.side_list(Side::Unstaged).len();
+                            let m = self.side_len(Side::Unstaged);
                             if m > 0 {
                                 self.select_change(Side::Unstaged, m - 1);
                             }
@@ -731,7 +753,7 @@ impl Ui {
                         }
                     }
                     Key::Down | Key::Char('j') => {
-                        if sel + 1 >= n && side == Side::Unstaged && !self.side_list(Side::Staged).is_empty() {
+                        if sel + 1 >= n && side == Side::Unstaged && self.side_len(Side::Staged) > 0 {
                             self.select_change(Side::Staged, 0);
                         } else {
                             self.select_change(side, sel + 1);
@@ -745,7 +767,7 @@ impl Ui {
                     Key::Right => self.r.changes.focus = CFocus::Diff,
                     Key::Tab => {
                         let other = if side == Side::Unstaged { Side::Staged } else { Side::Unstaged };
-                        if side == Side::Unstaged && !self.side_list(other).is_empty() {
+                        if side == Side::Unstaged && self.side_len(other) > 0 {
                             self.select_change(other, 0);
                         } else {
                             self.r.changes.focus = CFocus::Subject;
@@ -798,7 +820,7 @@ impl Ui {
         for side in [Side::Unstaged, Side::Staged] {
             let i = side_ix(side);
             if l.lists[i].contains(x, y) {
-                let len = self.side_list(side).len();
+                let len = self.side_len(side);
                 let fit = (l.lists[i].h / self.change_row_h().max(1)).max(1) as usize;
                 let t = &mut self.r.changes.tops[i];
                 *t = (*t as i64 + n).clamp(0, len.saturating_sub(fit) as i64) as usize;
@@ -886,14 +908,14 @@ impl Ui {
         for side in [Side::Unstaged, Side::Staged] {
             let i = side_ix(side);
             let (head, list) = (l.heads[i], l.lists[i]);
-            let entries = self.side_list(side);
+            let n_side = self.side_len(side);
             cv.fill(head, BG_BAR);
             cv.fill(Rect::new(head.x, head.bottom() - 1, head.w, 1), BORDER_SOFT);
             let base = (head.y as f32 + head.h as f32 / 2.0 + self.pf(4.5)).round();
             let title = if side == Side::Unstaged { "Unstaged" } else { "Staged" };
             let e =
                 self.te.draw(cv, semi, self.pf(12.5), head.x as f32 + self.pf(14.0), base, title, TEXT, self.pf(120.0));
-            let count = if loading { "…".to_string() } else { entries.len().to_string() };
+            let count = if loading { "…".to_string() } else { n_side.to_string() };
             self.te.draw(cv, ui, self.pf(12.0), e + self.pf(8.0), base, &count, TEXT_3, self.pf(80.0));
             // Stage all / Unstage all.
             let (label, hit) =
@@ -905,7 +927,7 @@ impl Ui {
                 bw as i32,
                 head.h - self.px(8.0),
             );
-            if !entries.is_empty() {
+            if n_side > 0 {
                 let (bg, border) = self.control_colors(Hot::Change(hits.len()), BG_BAR, BORDER);
                 cv.round_border(b, self.pf(6.0), border, bg);
                 self.te.draw(
@@ -922,7 +944,7 @@ impl Ui {
             }
             // Rows.
             cv.fill(list, BG);
-            if entries.is_empty() && !loading {
+            if n_side == 0 && !loading {
                 let t = if side == Side::Unstaged {
                     "No changes in the working tree"
                 } else {
@@ -940,9 +962,10 @@ impl Ui {
                 );
             }
             let fit = (list.h / rh.max(1)).max(0) as usize;
-            let top = self.r.changes.tops[i].min(entries.len().saturating_sub(fit.max(1)));
+            let top = self.r.changes.tops[i].min(n_side.saturating_sub(fit.max(1)));
             let old = cv.set_clip(cv.clip().intersect(list));
-            for (k, en) in entries.iter().enumerate().skip(top).take(fit + 1) {
+            let shown = self.side_rows(side, top, fit + 1);
+            for (k, en) in shown.iter().enumerate().map(|(j, e)| (j + top, e)) {
                 let ry = list.y + (k - top) as i32 * rh;
                 let row = Rect::new(list.x + self.px(6.0), ry, list.w - self.px(12.0), rh);
                 let selected = self.r.changes.side == side && self.r.changes.sel == k;
@@ -1148,7 +1171,7 @@ impl Ui {
         );
         hits.push((air, CHit::Ai));
         let ab = air;
-        let staged = self.side_list(Side::Staged).len();
+        let staged = self.side_len(Side::Staged);
         let label = match self.r.changes.busy {
             Some(v) => format!("{v}…"),
             None if amend => "Amend commit".to_string(),
@@ -1350,4 +1373,9 @@ impl Ui {
             hits.push((rect, CHit::Hunk(h)));
         }
     }
+}
+
+/// Whether `e` shows in `side`'s list.
+fn in_side(e: &Entry, side: Side) -> bool {
+    if side == Side::Staged { e.in_staged() } else { e.in_unstaged() }
 }

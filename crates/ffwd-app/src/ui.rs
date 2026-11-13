@@ -1239,7 +1239,7 @@ impl Ui {
         };
         let head_h = self.px(30.0);
         let row_h = self.px(30.0).max(12);
-        let sb_w = self.px(8.0);
+        let sb_w = self.px(12.0);
         let list = Rect::new(list_x, top_h, list_w, list_h);
         self.lay = Layout {
             top: Rect::new(0, 0, wi, bar_h),
@@ -3292,7 +3292,7 @@ impl Ui {
             if n > vis {
                 let th = ((sb.h as f32 * vis as f32 / n as f32) as i32).max(self.px(24.0));
                 let ty = sb.y + ((sb.h - th) as f32 * self.r.top as f32 / (n - vis) as f32) as i32;
-                cv.fill_round(Rect::new(sb.x + self.px(2.0), ty, sb.w - self.px(4.0), th), self.pf(3.0), BORDER_HOVER);
+                cv.fill_round(Rect::new(sb.x + self.px(3.0), ty, sb.w - self.px(6.0), th), self.pf(3.0), BORDER_HOVER);
             }
             self.paint_search_marks(cv, sb);
             // Selection marker on the scroll track.
@@ -3779,7 +3779,7 @@ impl Ui {
     /// changes are (green added, red removed, amber both) and a band for
     /// what is in view. One pass over the rows into pixel buckets.
     fn paint_diff_strip(&mut self, cv: &mut Canvas, body: Rect) {
-        let w = self.px(8.0);
+        let w = self.px(10.0);
         let strip = Rect::new(body.right() - w, body.y, w, body.h);
         self.diff_strip = strip;
         let n = self.diff_row_count();
@@ -4184,6 +4184,30 @@ impl Ui {
         }
         cv.set_clip(old);
     }
+}
+
+/// `text` shortened in the middle ("worktree-agent-a0…9f2b") so it fits
+/// `maxw`; unchanged when it fits.
+pub(super) fn fit_middle(te: &mut TextEngine, font: FontId, size: f32, text: &str, maxw: f32) -> String {
+    if maxw <= 0.0 || te.measure(font, size, text) <= maxw {
+        return text.to_string();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    // The most characters kept (split 60/40, front first) that still fit.
+    let (mut lo, mut hi) = (0usize, chars.len());
+    let cut = |k: usize| -> String {
+        let front = (k * 3).div_ceil(5);
+        let back = k - front;
+        let mut s: String = chars[..front].iter().collect();
+        s.push('…');
+        s.extend(&chars[chars.len() - back..]);
+        s
+    };
+    while lo < hi {
+        let mid = (lo + hi).div_ceil(2);
+        if te.measure(font, size, &cut(mid)) <= maxw { lo = mid } else { hi = mid - 1 }
+    }
+    cut(lo)
 }
 
 pub fn tint(c: u32) -> u32 {
@@ -7010,6 +7034,21 @@ mod tests {
         pump(&mut ui, "the undo", &|u| u.notice.as_deref() == Some("Restored the discarded changes"));
         assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "local edit\n");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Middle truncation (FF-57): a name that fits stays; a long one keeps
+    /// its start and its distinct end and fits the width.
+    #[test]
+    fn names_shorten_in_the_middle() {
+        let mut te = TextEngine::new();
+        let Some(f) = load_fonts(&mut te) else { return };
+        let name = "worktree-agent-a0e6ecbab37660e9f2b";
+        assert_eq!(fit_middle(&mut te, f.ui, 13.0, "main", 200.0), "main");
+        let w = te.measure(f.ui, 13.0, name) * 0.6;
+        let s = fit_middle(&mut te, f.ui, 13.0, name, w);
+        assert!(s.contains('…') && s.starts_with("worktree") && s.ends_with("f2b"), "{s}");
+        assert!(te.measure(f.ui, 13.0, &s) <= w);
+        assert_eq!(fit_middle(&mut te, f.ui, 13.0, name, 1.0), "…");
     }
 
     /// Find in the diff (FF-34): `Ctrl+F` with the diff focused searches

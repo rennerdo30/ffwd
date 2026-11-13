@@ -691,16 +691,11 @@ impl Ui {
             let lx = ix + self.pf(14.0);
             let badge_w =
                 if it.badge.is_empty() { 0.0 } else { self.te.measure(semi, self.pf(11.0), &it.badge) + self.pf(14.0) };
-            self.te.draw(
-                cv,
-                font,
-                self.pf(13.0),
-                lx,
-                base,
-                &it.label,
-                text,
-                row.right() as f32 - lx - badge_w - self.pf(6.0),
-            );
+            // Long names keep both ends (they often differ only at the end).
+            let lw = row.right() as f32 - lx - badge_w - self.pf(6.0);
+            let fs = self.pf(13.0);
+            let label = super::fit_middle(&mut self.te, font, fs, &it.label, lw);
+            self.te.draw(cv, font, self.pf(13.0), lx, base, &label, text, lw + 2.0);
             if !it.badge.is_empty() {
                 let bw = badge_w - self.pf(14.0);
                 let bx = row.right() as f32 - bw - self.pf(10.0);
