@@ -392,8 +392,15 @@ impl Ui {
         let (ui, semi) = (self.f.ui, self.f.semi);
         cv.fill(r, TAG_BG);
         cv.fill(Rect::new(r.x, r.bottom() - 1, r.w, 1), BORDER);
-        let conflicts = self.r.changes.status.as_ref().map_or(0, |s| s.entries.iter().filter(|e| e.conflicted).count());
-        let base = (r.y as f32 + r.h as f32 / 2.0 + self.pf(4.5)).round();
+        let conflicts = self.r.changes.conflicts;
+        // Two rows: the state on top, the buttons below, right-aligned.
+        let two = r.h > self.px(50.0);
+        let (row1, row2) = if two {
+            (Rect::new(r.x, r.y, r.w, self.px(30.0)), Rect::new(r.x, r.y + self.px(28.0), r.w, r.h - self.px(28.0)))
+        } else {
+            (r, r)
+        };
+        let base = (row1.y as f32 + row1.h as f32 / 2.0 + self.pf(4.5)).round();
         let mut x = r.right() - self.px(10.0);
         let buttons = [
             ("Abort…", KHit::Abort, true),
@@ -407,7 +414,7 @@ impl Ui {
                 continue;
             }
             let w = (self.te.measure(semi, self.pf(11.5), label) + self.pf(22.0)) as i32;
-            let b = Rect::new(x - w, r.y + self.px(5.0), w, r.h - self.px(10.0));
+            let b = Rect::new(x - w, row2.y + self.px(5.0), w, row2.h - self.px(10.0));
             let hot = self.is_hot(Hot::Change(hits.len()));
             // Continue is the primary action, Abort the dangerous one; the
             // all-files choices are plain buttons (they ask first anyway).
@@ -438,7 +445,7 @@ impl Ui {
         }
         // The state, in the space the buttons leave (never under them).
         let tx = r.x as f32 + self.pf(14.0);
-        let room = x as f32 - self.pf(12.0) - tx;
+        let room = if two { r.w as f32 - self.pf(28.0) } else { x as f32 - self.pf(12.0) - tx };
         let k = title_case(kind);
         let long = if conflicts > 0 {
             format!("{k} stopped · {conflicts} conflicted file{}", if conflicts == 1 { "" } else { "s" })

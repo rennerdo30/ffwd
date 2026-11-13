@@ -40,6 +40,8 @@ pub struct Changes {
     pub status: Option<WorkStatus>,
     /// Files per side (unstaged, staged), counted once per status.
     counts: [usize; 2],
+    /// Conflicted files, counted once per status.
+    pub conflicts: usize,
     pub side: Side,
     pub sel: usize,
     tops: [usize; 2],
@@ -80,6 +82,7 @@ impl Default for Changes {
             ai: None,
             status: None,
             counts: [0, 0],
+            conflicts: 0,
             side: Side::Unstaged,
             sel: 0,
             tops: [0, 0],
@@ -132,7 +135,14 @@ impl Ui {
         let ch = self.px(172.0).min(left.h / 2);
         let commit = Rect::new(left.x, left.bottom() - ch, left.w, ch);
         let head = self.px(32.0);
-        let bh = if self.r.changes.in_progress.is_some() { self.px(36.0) } else { 0 };
+        // The stopped-operation banner: two rows (state, then buttons)
+        // when the column is too narrow for both in one (FF-57).
+        let two_rows = lw < self.px(if self.r.changes.conflicts > 1 { 590.0 } else { 400.0 });
+        let bh = match (self.r.changes.in_progress.is_some(), two_rows) {
+            (false, _) => 0,
+            (true, false) => self.px(36.0),
+            (true, true) => self.px(66.0),
+        };
         let banner = Rect::new(left.x, left.y, left.w, bh);
         let lists_h = (commit.y - left.y - bh - 2 * head).max(0);
         // Each list gets a share by how many files it shows, at least
@@ -253,6 +263,7 @@ impl Ui {
             Ok(st) => {
                 let c = &mut self.r.changes;
                 c.counts = [Side::Unstaged, Side::Staged].map(|s| st.entries.iter().filter(|e| in_side(e, s)).count());
+                c.conflicts = st.entries.iter().filter(|e| e.conflicted).count();
                 c.status = Some(st);
                 // Keep the selected file when it is still on the same side,
                 // else follow it to the other side, else clamp.
