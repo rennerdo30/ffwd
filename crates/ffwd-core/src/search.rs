@@ -35,10 +35,46 @@ impl Field {
     }
 }
 
-/// The `git log` arguments for a search.
+/// One matching commit. For content and path searches, `files` holds the
+/// files that matched (git's `-S` and pathspec filter the list), at most
+/// [`FILES_PER_COMMIT`] of them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Match {
+    pub id: Oid,
+    pub files: Vec<String>,
+}
+
+/// Matching files kept per commit, and over a whole search, so a broad
+/// path search over a huge history stays bounded in memory.
+pub const FILES_PER_COMMIT: usize = 1000;
+pub const FILES_TOTAL: usize = 200_000;
+
+impl Field {
+    /// Content and path matches name the files that matched.
+    pub fn lists_files(self) -> bool {
+        matches!(self, Field::Content | Field::Path)
+    }
+}
+
+/// The `git log` arguments for a search. Commit lines start with a NUL
+/// byte; for content and path searches the matching file names follow.
 pub fn args(field: Field, query: &str) -> Vec<String> {
-    let mut a: Vec<String> =
-        ["log", "--branches", "--remotes", "--tags", "HEAD", "--topo-order", "--format=%H"].map(String::from).to_vec();
+    let mut a: Vec<String> = [
+        "-c",
+        "core.quotePath=false",
+        "log",
+        "--branches",
+        "--remotes",
+        "--tags",
+        "HEAD",
+        "--topo-order",
+        "--format=%x00%H",
+    ]
+    .map(String::from)
+    .to_vec();
+    if field.lists_files() {
+        a.push("--name-only".into());
+    }
     match field {
         Field::Message => a.extend(["-i".into(), "--fixed-strings".into(), format!("--grep={query}")]),
         Field::Author => a.extend(["-i".into(), "--fixed-strings".into(), format!("--author={query}")]),
@@ -52,7 +88,7 @@ pub fn args(field: Field, query: &str) -> Vec<String> {
     a
 }
 
-/// Runs a search, calling `batch` with matching commit ids (at most every
+/// Runs a search, calling `batch` with matching commits (at most every
 /// 100 ms, and once at the end with `done = true`). Stops early when `cur`
 /// no longer equals `seq`. Returns the number of matches.
 pub fn stream(
@@ -61,7 +97,7 @@ pub fn stream(
     query: &str,
     seq: u64,
     cur: &Arc<AtomicU64>,
-    mut batch: impl FnMut(Vec<Oid>, bool),
+    mut batch: impl FnMut(Vec<Match>, bool),
 ) -> usize {
     let a = args(field, query);
     let refs: Vec<&str> = a.iter().map(String::as_str).collect();
@@ -70,7 +106,10 @@ pub fn stream(
         return 0;
     };
     let mut total = 0;
-    let mut buf = Vec::new();
+    let mut kept = 0usize;
+    // The last match stays open until the next commit line: its files follow it.
+    let mut buf: Vec<Match> = Vec::new();
+    let mut open: Option<Match> = None;
     let mut last = Instant::now();
     if let Some(out) = child.stdout.take() {
         for line in BufReader::with_capacity(64 * 1024, out).split(b'\n') {
@@ -80,9 +119,20 @@ pub fn stream(
                 return total;
             }
             let Ok(line) = line else { break };
-            if let Some(id) = Oid::from_hex(line.trim_ascii()) {
-                buf.push(id);
-                total += 1;
+            if let Some(hex) = line.strip_prefix(b"\0") {
+                if let Some(id) = Oid::from_hex(hex.trim_ascii()) {
+                    buf.extend(open.replace(Match { id, files: Vec::new() }));
+                    total += 1;
+                }
+            } else if let Some(m) = &mut open
+                && !line.is_empty()
+                && m.files.len() < FILES_PER_COMMIT
+                && kept < FILES_TOTAL
+                && line.len() <= 4096
+            {
+                // Names with control characters stay quoted, as git prints them.
+                m.files.push(String::from_utf8_lossy(&line).into_owned());
+                kept += 1;
             }
             if last.elapsed() >= Duration::from_millis(100) && !buf.is_empty() {
                 batch(std::mem::take(&mut buf), false);
@@ -91,6 +141,7 @@ pub fn stream(
         }
     }
     let _ = child.wait();
+    buf.extend(open);
     batch(buf, true);
     total
 }
@@ -127,7 +178,7 @@ mod tests {
             let mut v = Vec::new();
             let mut done = false;
             stream(&g, f, q, 1, &cur, |b, d| {
-                v.extend(b);
+                v.extend(b.into_iter().map(|m| m.id));
                 done |= d;
             });
             assert!(done);
@@ -139,6 +190,23 @@ mod tests {
         assert_eq!(run(Field::Content, "draw_panel"), vec![b]);
         assert_eq!(run(Field::Path, "PANEL"), vec![b], "any part of the path, case-insensitive");
         assert_eq!(run(Field::Path, "ui"), vec![b], "a folder matches too");
+        // Content and path matches name the files that matched, and only those.
+        let files = |f: Field, q: &str| {
+            let mut v = Vec::new();
+            stream(&g, f, q, 1, &cur, |b, _| v.extend(b));
+            v.into_iter().map(|m| (m.id, m.files)).collect::<Vec<_>>()
+        };
+        let d = commit("src/ui/other.rs", "fn draw_panel_again() {}\n", "Both");
+        std::fs::write(dir.join("README.md"), "draw_panel in the docs\n").unwrap();
+        g.output(&["commit", "-q", "-am", "Docs"]).unwrap();
+        let e = Oid::from_hex(g.output(&["rev-parse", "HEAD"]).unwrap().trim_ascii()).unwrap();
+        let one = |p: &str| vec![p.to_string()];
+        assert_eq!(
+            files(Field::Content, "draw_panel"),
+            vec![(e, one("README.md")), (d, one("src/ui/other.rs")), (b, one("src/ui/panel.rs"))]
+        );
+        assert_eq!(files(Field::Path, "panel.rs"), vec![(b, one("src/ui/panel.rs"))]);
+        assert!(files(Field::Message, "Both").iter().all(|(_, f)| f.is_empty()), "message matches list no files");
         // A superseded search stops and reports nothing more.
         let stale = Arc::new(AtomicU64::new(2));
         let mut got = 0;

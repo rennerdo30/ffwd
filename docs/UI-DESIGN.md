@@ -252,6 +252,7 @@ The capture above is the real PoC UI. `ffwd --snapshot` rendered it offscreen fr
 - **Results:** they stream in from a worker, and a newer search stops the older one at once.
   - Commits that don't match are dimmed; matches are marked in amber on the scroll track.
   - The first match is selected, and the bar counts "n of m".
+  - **Matching files:** for content and path searches, the selected commit's file list marks the files that matched with an accent bar, its header adds "· n MATCHES", and the first matching file opens instead of the first file. Git's own `-S` and pathspec filtering decides which files matched; at most 1,000 files per commit and 200,000 per search are kept.
 - **Keys:** `Enter`/`↓` go to the next match, `↑` to the previous; `Esc` closes the bar. Clicking the list gives it the keyboard back; `Ctrl+F` returns to the bar.
 - **Recent queries:** Enter and Esc remember the query (the last 10, kept in the session). In the empty field `↑` walks back through them and `↓` forward; past the newest the field is empty again.
 

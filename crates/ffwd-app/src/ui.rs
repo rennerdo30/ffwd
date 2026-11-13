@@ -1315,8 +1315,7 @@ impl Ui {
                     self.r.cache.insert(id, d.clone());
                     if seq == self.r.seq {
                         self.r.details = Some(d);
-                        self.r.sel_file = 0;
-                        self.r.file_top = 0;
+                        self.show_first_file();
                         self.request_diff();
                         self.damage.rects.push(self.lay.details);
                     }
@@ -1532,11 +1531,20 @@ impl Ui {
         // header paints from the list data and the rest fills in.
         self.r.details = self.r.cache.get(&id).cloned();
         if self.r.details.is_some() {
+            self.show_first_file();
             self.request_diff();
         } else {
             self.request_details();
         }
         self.damage.rects.extend([self.lay.details, self.lay.status]);
+    }
+
+    /// Selects the commit's first file, or the first that matched the
+    /// search (FF-34), and scrolls the file list to it.
+    fn show_first_file(&mut self) {
+        let i = self.first_file();
+        self.r.sel_file = i;
+        self.r.file_top = (i + 1).saturating_sub(self.file_rows_visible().max(1));
     }
 
     fn request_details(&mut self) {
@@ -3449,7 +3457,7 @@ impl Ui {
                     ADD,
                     maxw,
                 );
-                self.te.draw(
+                let e = self.te.draw(
                     cv,
                     semi,
                     self.pf(11.5),
@@ -3459,6 +3467,22 @@ impl Ui {
                     DEL,
                     maxw,
                 );
+                // Files that matched a content or path search (FF-34): git
+                // lists exactly those, so only visible rows are checked.
+                let matched: Vec<String> = self.match_files(det.id).map(<[String]>::to_vec).unwrap_or_default();
+                let nm = matched.len();
+                if nm > 0 {
+                    self.te.draw(
+                        cv,
+                        semi,
+                        self.pf(11.5),
+                        e + self.pf(10.0),
+                        fbase,
+                        &format!("· {} MATCH{}", fmt::num(nm), if nm == 1 { "" } else { "ES" }),
+                        ACCENT,
+                        maxw,
+                    );
+                }
                 let fr = self.files_rect();
                 let rh = self.px(26.0);
                 for (k, f) in det.files.iter().enumerate().skip(self.r.file_top).take(self.file_rows_visible()) {
@@ -3468,6 +3492,10 @@ impl Ui {
                         cv.fill_round(row, self.pf(6.0), if focus_files { BG_SELECT } else { BG_SELECT_DIM });
                     } else if self.is_hot(Hot::File(k)) {
                         cv.fill_round(row, self.pf(6.0), BG_HOVER);
+                    }
+                    if nm > 0 && matched.iter().any(|p| *p == *f.path) {
+                        let m = self.px(5.0);
+                        cv.fill(Rect::new(d.x + self.px(3.0), ry + m, self.px(3.0).max(2), rh - 2 * m), ACCENT);
                     }
                     let cy = ry as f32 + rh as f32 / 2.0;
                     let base = (cy + self.pf(4.5)).round();
@@ -6209,6 +6237,88 @@ mod tests {
         // An empty name goes back to the folder's.
         ui2.rename_tab(0, "  ");
         assert_eq!(ui2.tabs[0].title(), ui2.tabs[0].name);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Matching files (FF-34): a content search marks the files that
+    /// matched in the selected commit and opens the first of them; closing
+    /// the search drops the marks; repaints match full paints.
+    #[test]
+    fn find_marks_the_matching_files() {
+        use std::sync::mpsc;
+        let mut te = TextEngine::new();
+        let Some(f) = load_fonts(&mut te) else { return };
+        let dir = std::env::temp_dir().join(format!("ffwd-ui-findfiles-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = Git { root: dir.clone() };
+        for a in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.name", "ffwd test"],
+            &["config", "user.email", "test@example.invalid"],
+            &["config", "commit.gpgsign", "false"],
+            &["config", "core.autocrlf", "false"],
+        ] {
+            g.output(a).unwrap();
+        }
+        for (files, msg) in [
+            (&[("a.txt", "x\n"), ("b.txt", "x\n"), ("c.txt", "x\n")][..], "Start"),
+            (&[("a.txt", "y\n"), ("b.txt", "y\n"), ("c.txt", "the needle\n")][..], "Hide the needle"),
+            (&[("a.txt", "z\n")][..], "Later"),
+        ] {
+            for (file, text) in files {
+                std::fs::write(dir.join(file), text).unwrap();
+            }
+            g.output(&["add", "."]).unwrap();
+            g.output(&["commit", "-q", "-m", msg]).unwrap();
+        }
+        let (tx, rx) = mpsc::channel::<(u64, Msg)>();
+        let tx = Arc::new(std::sync::Mutex::new(tx));
+        let sinks: SinkFactory = Arc::new(move |id| {
+            let tx = tx.clone();
+            Arc::new(move |m| {
+                if let Ok(t) = tx.lock() {
+                    let _ = t.send((id, m));
+                }
+            })
+        });
+        crate::work::start(dir.clone(), &sinks(1));
+        let empty = crate::settings::Settings::parse("");
+        let mut ui = Ui::new(te, f, empty.clone(), empty, Some((1, dir.clone())), sinks, 1280, 800, 1.0);
+        let pump = |ui: &mut Ui, what: &str, done: &dyn Fn(&Ui) -> bool| {
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while !done(ui) {
+                let left = until.saturating_duration_since(std::time::Instant::now());
+                assert!(!left.is_zero(), "timed out waiting for {what}");
+                if let Ok((id, m)) = rx.recv_timeout(left) {
+                    ui.on_tab_msg(id, m);
+                }
+            }
+        };
+        pump(&mut ui, "history", &|u| u.r.log_done && u.r.commits.len() == 3 && u.r.diff.is_some());
+        let mut screen = vec![0u32; 1280 * 800];
+        ui.paint(&mut Canvas::new(&mut screen, 1280, 800), true);
+        // Message → Author → SHA → Content, then Enter.
+        ui.key(Key::Ctrl('f'));
+        for _ in 0..3 {
+            ui.key(Key::Tab);
+        }
+        for c in "needle".chars() {
+            ui.key(Key::Char(c));
+        }
+        ui.key(Key::Enter);
+        let shown = |u: &Ui| {
+            u.r.details.as_ref().is_some_and(|d| d.message.starts_with("Hide the needle"))
+                && u.r.diff.as_ref().is_some_and(|d| &*d.path == "c.txt")
+        };
+        pump(&mut ui, "the match and its file", &|u| u.r.search.as_ref().is_some_and(|s| s.done) && shown(u));
+        let id = ui.r.details.as_ref().unwrap().id;
+        assert_eq!(ui.match_files(id), Some(&["c.txt".to_string()][..]), "only the file with the text matched");
+        assert_eq!(ui.r.sel_file, 2, "the matching file is selected, not the first");
+        assert_partial_paint_is_full(&mut ui, &mut screen, "matching files");
+        ui.key(Key::Esc);
+        assert_eq!(ui.match_files(id), None);
+        assert_partial_paint_is_full(&mut ui, &mut screen, "search closed");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

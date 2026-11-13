@@ -41,7 +41,7 @@
 | Feature | ffwd | Notes |
 |---|---|---|
 | Commit search by message, author, SHA | **Built** | Find bar (`Ctrl+F`) |
-| Search by diff content and by file path, with matching files listed | Partial | Content and path search are built; the list of matching files comes later |
+| Search by diff content and by file path, with matching files listed | **Built** | The selected match's file list marks the files that matched and opens the first of them |
 | Search the current branch or the whole repository | M1 | |
 | Recent search queries | **Built** | The last 10 queries (session state); `↑`/`↓` in the empty find field walk them |
 | Remove matches with Delete (a to-do list) | M2 | |

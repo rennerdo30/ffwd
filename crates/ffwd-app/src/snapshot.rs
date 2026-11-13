@@ -188,15 +188,30 @@ pub fn run(args: &Args, t0: Instant) -> i32 {
         }
     }
     if let Some(q) = &args.find {
+        // `content:` and `path:` pick that field (the chips after Message,
+        // Author and SHA) and start with Enter.
+        let (tabs, q) = match (q.strip_prefix("content:"), q.strip_prefix("path:")) {
+            (Some(q), _) => (3, q),
+            (_, Some(q)) => (4, q),
+            _ => (0, q.as_str()),
+        };
         ui.key(Key::Ctrl('f'));
+        for _ in 0..tabs {
+            ui.key(Key::Tab);
+        }
         for c in q.chars() {
             ui.key(Key::Char(c));
         }
+        if tabs > 0 {
+            ui.key(Key::Enter);
+        }
         let until = Instant::now() + Duration::from_secs(10);
+        let mut searched = false;
         while let Ok((id, m)) = rx.recv_timeout(until.saturating_duration_since(Instant::now())) {
-            let done = matches!(m, Msg::SearchBatch { done: true, .. });
+            searched |= matches!(m, Msg::SearchBatch { done: true, .. });
             ui.on_tab_msg(id, m);
-            if done {
+            // Then the selected match's details and diff.
+            if searched && ui.r.diff.is_some() {
                 break;
             }
         }

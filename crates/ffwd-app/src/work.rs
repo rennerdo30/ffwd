@@ -50,7 +50,7 @@ pub enum Msg {
     /// Search results (`seq` drops stale searches).
     SearchBatch {
         seq: u64,
-        ids: Vec<Oid>,
+        ids: Vec<ffwd_core::search::Match>,
         done: bool,
     },
     /// A merge, rebase, cherry-pick or revert is stopped (or none is).

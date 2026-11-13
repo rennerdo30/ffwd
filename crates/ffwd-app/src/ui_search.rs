@@ -5,7 +5,7 @@
 
 use super::*;
 use ffwd_core::search::Field;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// The search modes, in the order of the chips.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -46,6 +46,8 @@ pub struct Search {
     pub input: TextField,
     mode: usize,
     pub matches: HashSet<Oid>,
+    /// Content and path searches: the files that matched, per commit.
+    pub files: HashMap<Oid, Vec<String>>,
     /// Matching rows of the loaded history, ascending.
     pub rows: Vec<usize>,
     pub done: bool,
@@ -82,6 +84,7 @@ impl Ui {
                     input: TextField::default(),
                     mode: 0,
                     matches: HashSet::new(),
+                    files: HashMap::new(),
                     rows: Vec::new(),
                     done: true,
                     pending: false,
@@ -98,7 +101,7 @@ impl Ui {
     pub(super) fn close_search(&mut self) {
         if self.r.search.take().is_some() {
             self.search_seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            self.damage.rects.push(self.lay.list);
+            self.damage.rects.extend([self.lay.list, self.lay.details]);
         }
     }
 
@@ -106,13 +109,14 @@ impl Ui {
         let seq = self.search_seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
         let Some(s) = &mut self.r.search else { return };
         s.matches.clear();
+        s.files.clear();
         s.rows.clear();
         s.pending = false;
         s.seq = seq;
         let q = s.input.text().trim().to_string();
         let mode = MODES[s.mode];
         s.done = q.is_empty() || mode == Mode::Sha;
-        self.damage.rects.push(self.lay.list);
+        self.damage.rects.extend([self.lay.list, self.lay.details]);
         if q.is_empty() {
             return;
         }
@@ -147,18 +151,29 @@ impl Ui {
         }
     }
 
-    pub(super) fn on_search_batch(&mut self, seq: u64, ids: Vec<Oid>, done: bool) {
+    pub(super) fn on_search_batch(&mut self, seq: u64, ids: Vec<ffwd_core::search::Match>, done: bool) {
         let Some(s) = &mut self.r.search else { return };
         if s.seq != seq {
             return;
         }
         let first = s.rows.is_empty();
-        for id in ids {
+        let shown = self.r.details.as_ref().map(|d| d.id);
+        let mut touches_shown = false;
+        for m in ids {
+            let id = m.id;
+            if !m.files.is_empty() {
+                touches_shown |= shown == Some(id);
+                s.files.insert(id, m.files);
+            }
             if s.matches.insert(id)
                 && let Some(&row) = self.r.by_id.get(&id)
             {
                 s.rows.push(row as usize);
             }
+        }
+        if touches_shown {
+            // The shown commit's matching files are marked now.
+            self.damage.rects.push(self.lay.details);
         }
         s.rows.sort_unstable();
         s.done = done;
@@ -167,6 +182,20 @@ impl Ui {
         }
         self.damage_visible_rows();
         self.damage.rects.extend([self.lay.scrollbar, self.lay.list_head]);
+    }
+
+    /// The files of `id` that matched a content or path search.
+    pub(super) fn match_files(&self, id: Oid) -> Option<&[String]> {
+        self.r.search.as_ref().filter(|s| !s.pending)?.files.get(&id).map(Vec::as_slice)
+    }
+
+    /// The file to show first in the selected commit: the first one that
+    /// matched the search, else the first file.
+    pub(super) fn first_file(&self) -> usize {
+        let Some(d) = &self.r.details else { return 0 };
+        let Some(m) = self.match_files(d.id) else { return 0 };
+        let m: HashSet<&str> = m.iter().map(String::as_str).collect();
+        d.files.iter().position(|f| m.contains(&*f.path)).unwrap_or(0)
     }
 
     /// New history rows arrived: matches among them become rows.
@@ -314,9 +343,10 @@ impl Ui {
                 // Waits for Enter; old results go.
                 s.pending = true;
                 s.matches.clear();
+                s.files.clear();
                 s.rows.clear();
                 self.search_seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                self.damage.rects.push(self.lay.list);
+                self.damage.rects.extend([self.lay.list, self.lay.details]);
             } else {
                 self.restart_search();
             }
