@@ -27,7 +27,7 @@
 | Icon when a commit has a description | Partial | "…" after the subject |
 | Simplified graph tooltip on merge nodes; highlight the node under the mouse | M2 | |
 | Commit-link hover shows commit details | M2 | |
-| Double-click a label to check it out | M1 | |
+| Double-click a label to check it out | **Built** | Row or sidebar |
 | Space: commit details popup or large side-by-side view | M1 | |
 | Collapsible details (`Ctrl+Shift+D`), vertical layout, one-line list layout | Partial | Below/beside layout is built |
 | Compare two selected commits (swap order); compare a commit with local changes | M1 | |
@@ -74,9 +74,9 @@
 
 | Feature | ffwd | Notes |
 |---|---|---|
-| Create, rename, delete branches (several at once); create from any commit | M1 | |
-| Quick checkout (`Ctrl+B`), checkout a revision (detached) | M1 | |
-| Checkout a remote branch: offer to fast-forward, merge, rebase or reset | M1 | |
+| Create, rename, delete branches (several at once); create from any commit | **Built** | One at a time; several at once comes later |
+| Quick checkout (`Ctrl+B`), checkout a revision (detached) | Partial | Detached checkout and double-click checkout are built; `Ctrl+B` creates a branch |
+| Checkout a remote branch: offer to fast-forward, merge, rebase or reset | Partial | It creates or reuses the local tracking branch |
 | Branch folders, autocomplete, move branches to a folder | Partial | Folders are shown |
 | Space becomes `-` or `_` in branch names; name validation | M1 | |
 | Sort references (alphabetical, recently used) | M2 | |
@@ -84,7 +84,7 @@
 | Change the tracking branch; track a remote branch (stash and re-apply) | M1 | |
 | Fast-forward a branch without checking it out; several at once | M2 | |
 | Select stale local branches | M2 | |
-| Tags: create (`Ctrl+Shift+G`), delete, push one or many | M1 | |
+| Tags: create (`Ctrl+Shift+G`), delete, push one or many | Partial | Create and delete are built; push comes with FF-39 |
 | Delete remote branches; create and delete remote repositories | M1 | |
 | Remember which sidebar items are expanded, per repository | **Built** | |
 
@@ -92,15 +92,15 @@
 
 | Feature | ffwd | Notes |
 |---|---|---|
-| Merge (fast-forward, `--no-commit`, squash) | M1 | |
-| Rebase | M1 | |
+| Merge (fast-forward, `--no-commit`, squash) | **Built** | Default, fast-forward only, no fast-forward, squash |
+| Rebase | **Built** | Backup ref first |
 | Merge or rebase by drag and drop on the sidebar | M2 | |
 | Conflict prediction before merge, cherry-pick, revert, apply patch | M2 | `git merge-tree` on a worker |
 | Interactive rebase: dialog, quick actions, multi-select, amend during rebase, `--update-refs` | M2 | |
 | Reorder and squash by drag and drop in the commit list | M2 | |
 | Squash, drop, cherry-pick several commits | M2 | |
-| Cherry-pick and revert, merge commits too | M1 | |
-| Reset soft, mixed, hard | M1 | Backup ref before a hard reset |
+| Cherry-pick and revert, merge commits too | Partial | Single commits are built; merge commits come later |
+| Reset soft, mixed, hard | **Built** | Backup ref before every reset |
 | Revert one file's bad merge resolution | M2 | |
 | "Lean branching" (a branch model) | Skip | Opinionated; Git-flow comes first |
 | Git-flow (option to not merge a release into develop) | M3 | |

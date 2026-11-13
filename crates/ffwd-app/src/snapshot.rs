@@ -102,6 +102,12 @@ pub fn run(args: &Args, t0: Instant) -> i32 {
     if args.settings {
         ui.open_settings();
     }
+    if args.menu {
+        ui.snapshot_menu();
+    }
+    if args.prompt {
+        ui.snapshot_prompt();
+    }
     if let Some(p) = args.settings_page {
         ui.open_settings_page(p);
     }

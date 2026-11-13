@@ -47,6 +47,8 @@ pub enum Msg {
         commit: bool,
         result: Result<String, String>,
     },
+    /// A branch, tag or history operation ended.
+    RefOp(Result<String, ffwd_core::refops::OpError>),
     /// What a discard removed (for Ctrl+Z).
     Discarded(ffwd_core::changes::Backup),
     /// The last commit's message, for amend.
@@ -60,6 +62,61 @@ pub fn run_op(git: Git, op: ffwd_core::ops::Op, sink: &Sink) {
     spawn("op", sink, move |sink| {
         let out = ffwd_core::ops::run(&git, op, |line| sink(Msg::OpProgress(line)));
         sink(Msg::OpDone(out));
+    });
+}
+
+/// A branch, tag or history operation (ffwd-core refops.rs).
+#[derive(Clone, Debug)]
+pub enum RefOp {
+    Checkout(String),
+    /// name, start point, check it out
+    CreateBranch(String, String, bool),
+    Rename(String, String),
+    /// name, force
+    DeleteBranch(String, bool),
+    CreateTag(String, String),
+    DeleteTag(String),
+    Merge(String, ffwd_core::refops::MergeMode),
+    Rebase(String),
+    CherryPick(String),
+    Revert(String),
+    Reset(String, ffwd_core::refops::ResetMode),
+}
+
+impl RefOp {
+    pub fn verb(&self) -> &'static str {
+        match self {
+            RefOp::Checkout(_) => "Checking out",
+            RefOp::CreateBranch(..) => "Creating the branch",
+            RefOp::Rename(..) => "Renaming",
+            RefOp::DeleteBranch(..) | RefOp::DeleteTag(_) => "Deleting",
+            RefOp::CreateTag(..) => "Tagging",
+            RefOp::Merge(..) => "Merging",
+            RefOp::Rebase(_) => "Rebasing",
+            RefOp::CherryPick(_) => "Cherry-picking",
+            RefOp::Revert(_) => "Reverting",
+            RefOp::Reset(..) => "Resetting",
+        }
+    }
+}
+
+pub fn refop(git: Git, op: RefOp, sink: &Sink) {
+    spawn("refop", sink, move |sink| {
+        use ffwd_core::refops as r;
+        let res = match &op {
+            RefOp::Checkout(t) => r::checkout(&git, t),
+            RefOp::CreateBranch(n, at, sw) => r::create_branch(&git, n, at, *sw),
+            RefOp::Rename(o, n) => r::rename_branch(&git, o, n),
+            RefOp::DeleteBranch(n, f) => r::delete_branch(&git, n, *f),
+            RefOp::CreateTag(n, at) => r::create_tag(&git, n, at, None),
+            RefOp::DeleteTag(n) => r::delete_tag(&git, n),
+            RefOp::Merge(w, m) => r::merge(&git, w, *m),
+            RefOp::Rebase(o) => r::rebase(&git, o),
+            RefOp::CherryPick(c) => r::cherry_pick(&git, c),
+            RefOp::Revert(c) => r::revert(&git, c),
+            RefOp::Reset(to, m) => r::reset(&git, to, *m),
+        };
+        sink(Msg::RefOp(res));
     });
 }
 

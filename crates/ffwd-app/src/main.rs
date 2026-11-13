@@ -55,6 +55,10 @@ pub struct Args {
     pub hover: Option<(i32, i32)>,
     /// Snapshot of the Local Changes view.
     pub changes: bool,
+    /// Snapshot with the selected commit's context menu open.
+    pub menu: bool,
+    /// Snapshot with the "create branch" prompt open.
+    pub prompt: bool,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -77,6 +81,8 @@ fn parse_args() -> Result<Args, String> {
         scope_demo: false,
         hover: None,
         changes: false,
+        menu: false,
+        prompt: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -111,6 +117,8 @@ fn parse_args() -> Result<Args, String> {
             "--agents-demo" => a.agents_demo = true,
             "--settings-scope-demo" => a.scope_demo = true,
             "--changes" => a.changes = true,
+            "--menu" => a.menu = true,
+            "--prompt" => a.prompt = true,
             "--hover" => {
                 let v = val("--hover")?;
                 let (x, y) = v.split_once(',').ok_or("--hover is X,Y")?;

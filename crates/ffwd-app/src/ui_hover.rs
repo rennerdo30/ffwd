@@ -23,6 +23,10 @@ pub enum Hot {
     Agent(usize),
     /// An entry of the Local Changes view's hit list.
     Change(usize),
+    /// A context menu item.
+    Menu(usize),
+    /// A dialog element.
+    Dialog(usize),
 }
 
 /// The mouse cursor the window should show.
@@ -56,6 +60,12 @@ impl Ui {
 
     /// The element under (x, y), topmost layer first.
     pub(super) fn hot_at(&self, x: i32, y: i32) -> Option<Hot> {
+        if self.dialog.is_some() {
+            return self.dialog_hit_at(x, y).map(Hot::Dialog);
+        }
+        if self.menu.is_some() {
+            return self.menu_hit_at(x, y).map(Hot::Menu);
+        }
         if let Some(i) = self.agent_hit_at(x, y) {
             return Some(Hot::Agent(i));
         }
@@ -106,6 +116,8 @@ impl Ui {
             Hot::Palette(_) => self.palette_rect(10),
             Hot::Setting(..) | Hot::SettingsPage(_) => self.settings_rect(),
             Hot::Agent(_) => self.agents_rect(),
+            Hot::Menu(_) => self.menu_rect(),
+            Hot::Dialog(_) => self.dialog_rect(),
             Hot::Change(i) => self.r.changes.hits.get(i).map_or(self.lay.list, |h| h.0.inset(-2, -2)),
         }
     }

@@ -78,6 +78,27 @@ The capture above is the real PoC UI. `ffwd --snapshot` rendered it offscreen fr
   - a tab shows an amber ring while its repository has uncommitted changes;
   - every Git call runs on a worker.
 
+## Branches, tags and history operations (FF-36, FF-37)
+
+- **Commit menu:** right-click a commit, or press `Ctrl+.`, for:
+  - check out its branches, or the commit itself (detached);
+  - create a branch or tag here;
+  - merge it or rebase onto it;
+  - cherry-pick, revert;
+  - reset the current branch to it;
+  - copy the SHA or subject.
+- **Ref menu:** right-click a branch, remote branch or tag in the sidebar to check it out (a remote branch gets a local tracking branch), merge it, rebase onto it, create a branch from it, rename or delete it, or copy its name.
+- **Double click** a branch in the sidebar, or a commit row carrying a branch, to check it out.
+- **Shortcuts:** `Ctrl+B` creates a branch at the selected commit; `Ctrl+Shift+G` creates a tag.
+- **Name prompt:** errors (an invalid or existing name) show in place.
+- **Choice dialog:** says what an operation does before it runs:
+  - merge: default, fast-forward only, always a merge commit, or squash;
+  - rebase: the old tip is kept as `refs/ffwd/backup/…`;
+  - reset: soft, mixed or hard, with a backup first;
+  - delete: with the restore command.
+  - Deleting an unmerged branch asks a second time, naming its tip. `Enter` runs the highlighted button; `Esc` cancels.
+- **Conflicts** stop the operation and say how to abort it. The conflict view comes with FF-42.
+
 ## Settings
 
 The gear in the top bar (or `Ctrl+,`) opens Settings: details layout, automatic updates and channel, repository folders, AI endpoint and model, **Open settings.toml**, **Check for updates now**. Changes save at once; the file keeps your comments.
@@ -125,6 +146,8 @@ Like other clients: one tab per repository under the top bar.
 | `Ctrl+Shift+A` | Agents panel (experimental) |
 | `Space` / `Enter` (Local Changes) | Stage or unstage the selected file |
 | `Ctrl+Enter` | Commit (Local Changes) |
+| `Ctrl+.` / right click | Actions for the selected commit or ref |
+| `Ctrl+B` / `Ctrl+Shift+G` | Create a branch / tag at the selected commit |
 | `Ctrl+A` `Ctrl+C` `Ctrl+V` `Ctrl+X` `Ctrl+Backspace` `← →` `Home End` | Text editing in the palette and settings fields |
 | `Ctrl+W` / `Ctrl+Shift+T` | Close the tab / reopen the last closed one |
 | `Ctrl+Tab` / `Ctrl+Shift+Tab` / `Ctrl+1…9` | Next, previous, n-th tab (9 = last) |

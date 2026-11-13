@@ -1,0 +1,758 @@
+//! Context menus (right click, `Ctrl+.`) for commits and refs, and the two
+//! small dialogs they open: a name prompt (create branch, create tag,
+//! rename) and a choice dialog that says exactly what an operation does
+//! before it runs (merge modes, rebase, reset, delete). The operations run
+//! on workers (work.rs, ffwd-core refops.rs).
+
+use super::*;
+use crate::work::RefOp;
+use ffwd_core::refops::{MergeMode, OpError, ResetMode};
+
+#[derive(Clone, Debug)]
+pub enum MenuAct {
+    Run(RefOp),
+    /// Ask first (a choice dialog).
+    Ask(Box<Ask>),
+    Name(NameAct),
+    Copy(String),
+}
+
+#[derive(Clone, Debug)]
+pub struct MenuItem {
+    pub label: String,
+    /// `None` is a separator.
+    pub act: Option<MenuAct>,
+    pub danger: bool,
+}
+
+pub struct Menu {
+    pub x: i32,
+    pub y: i32,
+    pub items: Vec<MenuItem>,
+    pub sel: Option<usize>,
+}
+
+#[derive(Clone, Debug)]
+pub enum NameAct {
+    CreateBranch { at: String },
+    CreateTag { at: String },
+    Rename { old: String },
+}
+
+/// A choice dialog: a title, what will happen, and buttons.
+#[derive(Clone, Debug)]
+pub struct Ask {
+    pub title: String,
+    pub text: String,
+    /// (label, operation, dangerous); the first is the default.
+    pub choices: Vec<(String, RefOp, bool)>,
+}
+
+pub enum DialogKind {
+    Name { act: NameAct, field: TextField, checkout: bool },
+    Ask(Ask),
+}
+
+pub struct Dialog {
+    pub kind: DialogKind,
+    pub sel: usize,
+    pub error: Option<String>,
+    pub busy: bool,
+    pub hits: Vec<(Rect, DHit)>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DHit {
+    Field,
+    Toggle,
+    Choice(usize),
+    Cancel,
+}
+
+fn item(label: impl Into<String>, act: MenuAct) -> MenuItem {
+    MenuItem { label: label.into(), act: Some(act), danger: false }
+}
+
+fn danger(label: impl Into<String>, act: MenuAct) -> MenuItem {
+    MenuItem { label: label.into(), act: Some(act), danger: true }
+}
+
+fn sep() -> MenuItem {
+    MenuItem { label: String::new(), act: None, danger: false }
+}
+
+impl Ui {
+    fn head_name(&self) -> Option<String> {
+        self.r.refs.head_branch.as_deref().map(str::to_string)
+    }
+
+    /// The menu for the commit at `row`.
+    pub(super) fn commit_menu(&self, row: usize) -> Vec<MenuItem> {
+        let Some(c) = self.r.commits.get(row) else { return Vec::new() };
+        let sha = c.id.to_string();
+        let short = sha[..sha.len().min(8)].to_string();
+        let head = self.head_name();
+        let locals: Vec<String> = self
+            .r
+            .refs
+            .refs
+            .iter()
+            .filter(|r| r.kind == RefKind::Local && r.target == c.id && !r.is_head)
+            .map(|r| r.name.to_string())
+            .collect();
+        let mut v = Vec::new();
+        for b in &locals {
+            v.push(item(format!("Checkout {b}"), MenuAct::Run(RefOp::Checkout(b.clone()))));
+        }
+        v.push(item(format!("Checkout {short} (detached)"), MenuAct::Run(RefOp::Checkout(sha.clone()))));
+        v.push(sep());
+        v.push(item("Create branch here…", MenuAct::Name(NameAct::CreateBranch { at: sha.clone() })));
+        v.push(item("Create tag here…", MenuAct::Name(NameAct::CreateTag { at: sha.clone() })));
+        if let Some(h) = &head {
+            let what = locals.first().cloned().unwrap_or_else(|| short.clone());
+            let target = locals.first().cloned().unwrap_or_else(|| sha.clone());
+            v.push(sep());
+            v.push(item(format!("Merge {what} into {h}…"), MenuAct::Ask(Box::new(self.merge_ask(&target, &what, h)))));
+            v.push(item(
+                format!("Rebase {h} onto {what}…"),
+                MenuAct::Ask(Box::new(self.rebase_ask(&target, &what, h))),
+            ));
+            v.push(item(format!("Cherry-pick {short} into {h}"), MenuAct::Run(RefOp::CherryPick(sha.clone()))));
+            v.push(item(format!("Revert {short}"), MenuAct::Run(RefOp::Revert(sha.clone()))));
+            v.push(sep());
+            v.push(item(format!("Reset {h} to {short}…"), MenuAct::Ask(Box::new(self.reset_ask(&sha, &short, h)))));
+        }
+        v.push(sep());
+        v.push(item("Copy SHA", MenuAct::Copy(sha.clone())));
+        v.push(item("Copy subject", MenuAct::Copy(c.subject.to_string())));
+        v
+    }
+
+    /// The menu for a sidebar ref (`b:name`, `r:remote/name`, `t:name`).
+    pub(super) fn ref_menu(&self, key: &str) -> Vec<MenuItem> {
+        let head = self.head_name();
+        let mut v = Vec::new();
+        let merge_rebase = |v: &mut Vec<MenuItem>, name: &str| {
+            if let Some(h) = &head
+                && h != name
+            {
+                v.push(item(format!("Merge {name} into {h}…"), MenuAct::Ask(Box::new(self.merge_ask(name, name, h)))));
+                v.push(item(
+                    format!("Rebase {h} onto {name}…"),
+                    MenuAct::Ask(Box::new(self.rebase_ask(name, name, h))),
+                ));
+            }
+        };
+        if let Some(name) = key.strip_prefix("b:") {
+            let is_head = head.as_deref() == Some(name);
+            if !is_head {
+                v.push(item(format!("Checkout {name}"), MenuAct::Run(RefOp::Checkout(name.into()))));
+            }
+            merge_rebase(&mut v, name);
+            v.push(sep());
+            v.push(item(
+                format!("Create branch from {name}…"),
+                MenuAct::Name(NameAct::CreateBranch { at: name.into() }),
+            ));
+            v.push(item("Rename…", MenuAct::Name(NameAct::Rename { old: name.into() })));
+            if !is_head {
+                v.push(danger(format!("Delete {name}…"), MenuAct::Ask(Box::new(self.delete_ask(name)))));
+            }
+            v.push(sep());
+            v.push(item("Copy name", MenuAct::Copy(name.into())));
+        } else if let Some(name) = key.strip_prefix("r:").filter(|n| !n.ends_with('/')) {
+            v.push(item(
+                format!("Checkout {name} (local tracking branch)"),
+                MenuAct::Run(RefOp::Checkout(name.into())),
+            ));
+            merge_rebase(&mut v, name);
+            v.push(sep());
+            v.push(item(
+                format!("Create branch from {name}…"),
+                MenuAct::Name(NameAct::CreateBranch { at: name.into() }),
+            ));
+            v.push(item("Copy name", MenuAct::Copy(name.into())));
+        } else if let Some(name) = key.strip_prefix("t:") {
+            v.push(item(format!("Checkout {name} (detached)"), MenuAct::Run(RefOp::Checkout(name.into()))));
+            merge_rebase(&mut v, name);
+            v.push(sep());
+            v.push(item(
+                format!("Create branch from {name}…"),
+                MenuAct::Name(NameAct::CreateBranch { at: name.into() }),
+            ));
+            v.push(danger(
+                format!("Delete tag {name}…"),
+                MenuAct::Ask(Box::new(Ask {
+                    title: format!("Delete tag {name}?"),
+                    text: "The tag is removed from this repository only; a pushed tag stays on the remote. ffwd names the command that restores it.".into(),
+                    choices: vec![(format!("Delete {name}"), RefOp::DeleteTag(name.into()), true)],
+                })),
+            ));
+            v.push(item("Copy name", MenuAct::Copy(name.into())));
+        }
+        v
+    }
+
+    fn merge_ask(&self, target: &str, what: &str, head: &str) -> Ask {
+        Ask {
+            title: format!("Merge {what} into {head}"),
+            text: format!(
+                "Fast-forward when {head} has no commits of its own, otherwise a merge commit. If conflicts appear the merge stops, and git merge --abort undoes it."
+            ),
+            choices: vec![
+                ("Merge".into(), RefOp::Merge(target.into(), MergeMode::Default), false),
+                ("Fast-forward only".into(), RefOp::Merge(target.into(), MergeMode::FastForwardOnly), false),
+                ("Always a merge commit".into(), RefOp::Merge(target.into(), MergeMode::NoFastForward), false),
+                ("Squash".into(), RefOp::Merge(target.into(), MergeMode::Squash), false),
+            ],
+        }
+    }
+
+    fn rebase_ask(&self, target: &str, what: &str, head: &str) -> Ask {
+        Ask {
+            title: format!("Rebase {head} onto {what}?"),
+            text: format!(
+                "{head}'s own commits are rewritten on top of {what}. The old tip is kept as a backup ref (refs/ffwd/backup/…). Don't rebase commits others already pulled."
+            ),
+            choices: vec![(format!("Rebase {head}"), RefOp::Rebase(target.into()), false)],
+        }
+    }
+
+    fn reset_ask(&self, sha: &str, short: &str, head: &str) -> Ask {
+        Ask {
+            title: format!("Reset {head} to {short}?"),
+            text: "Soft keeps every change staged. Mixed keeps them as unstaged changes. Hard throws away staged and unstaged changes too. The current tip is kept as a backup ref first, so the commits can be restored.".into(),
+            choices: vec![
+                ("Mixed".into(), RefOp::Reset(sha.into(), ResetMode::Mixed), false),
+                ("Soft".into(), RefOp::Reset(sha.into(), ResetMode::Soft), false),
+                ("Hard (lose local changes)".into(), RefOp::Reset(sha.into(), ResetMode::Hard), true),
+            ],
+        }
+    }
+
+    fn delete_ask(&self, name: &str) -> Ask {
+        Ask {
+            title: format!("Delete branch {name}?"),
+            text: "Only the local branch is deleted; its commits stay reachable from other branches. ffwd names the command that restores it.".into(),
+            choices: vec![(format!("Delete {name}"), RefOp::DeleteBranch(name.into(), false), true)],
+        }
+    }
+
+    pub(super) fn open_menu(&mut self, x: i32, y: i32, items: Vec<MenuItem>) {
+        if items.is_empty() {
+            return;
+        }
+        self.palette = None;
+        self.menu = Some(Menu { x, y, items, sel: None });
+        let r = self.menu_rect();
+        self.damage.rects.push(r);
+    }
+
+    pub(super) fn close_menu(&mut self) {
+        if self.menu.is_some() {
+            let r = self.menu_rect();
+            self.menu = None;
+            self.damage.rects.push(r);
+        }
+    }
+
+    fn menu_item_h(&self, it: &MenuItem) -> i32 {
+        if it.act.is_none() { self.px(9.0) } else { self.px(30.0) }
+    }
+
+    /// The menu's rectangle, kept inside the window.
+    pub(super) fn menu_rect(&self) -> Rect {
+        let Some(m) = &self.menu else { return Rect::default() };
+        let h: i32 = m.items.iter().map(|i| self.menu_item_h(i)).sum::<i32>() + self.px(12.0);
+        let w = self.px(300.0);
+        let x = m.x.min(self.w as i32 - w - self.px(6.0)).max(0);
+        let y = m.y.min(self.h as i32 - h - self.px(6.0)).max(0);
+        Rect::new(x, y, w, h)
+    }
+
+    pub(super) fn menu_item_rects(&self) -> Vec<(usize, Rect)> {
+        let Some(m) = &self.menu else { return Vec::new() };
+        let r = self.menu_rect();
+        let mut y = r.y + self.px(6.0);
+        let mut v = Vec::new();
+        for (i, it) in m.items.iter().enumerate() {
+            let h = self.menu_item_h(it);
+            if it.act.is_some() {
+                v.push((i, Rect::new(r.x + self.px(6.0), y, r.w - self.px(12.0), h)));
+            }
+            y += h;
+        }
+        v
+    }
+
+    fn menu_activate(&mut self, i: usize) {
+        let act = self.menu.as_ref().and_then(|m| m.items.get(i)).and_then(|it| it.act.clone());
+        self.close_menu();
+        match act {
+            Some(MenuAct::Run(op)) => self.run_refop(op),
+            Some(MenuAct::Ask(a)) => self.open_dialog(DialogKind::Ask(*a)),
+            Some(MenuAct::Name(n)) => {
+                let field = match &n {
+                    NameAct::Rename { old } => TextField::new(old),
+                    _ => TextField::default(),
+                };
+                let checkout = matches!(n, NameAct::CreateBranch { .. });
+                self.open_dialog(DialogKind::Name { act: n, field, checkout });
+            }
+            Some(MenuAct::Copy(t)) => {
+                crate::platform::set_clipboard(&t);
+                self.set_notice(format!("Copied {t}"));
+            }
+            None => {}
+        }
+    }
+
+    pub(super) fn menu_key(&mut self, k: Key) {
+        let Some(m) = &mut self.menu else { return };
+        let actionable: Vec<usize> =
+            m.items.iter().enumerate().filter(|(_, i)| i.act.is_some()).map(|(i, _)| i).collect();
+        let pos = m.sel.and_then(|s| actionable.iter().position(|&a| a == s));
+        match k {
+            Key::Esc => return self.close_menu(),
+            Key::Down | Key::Tab => m.sel = Some(actionable[pos.map_or(0, |p| (p + 1) % actionable.len())]),
+            Key::Up | Key::BackTab => {
+                m.sel = Some(
+                    actionable[pos.map_or(actionable.len() - 1, |p| (p + actionable.len() - 1) % actionable.len())],
+                )
+            }
+            Key::Enter | Key::Char(' ') => {
+                if let Some(s) = m.sel {
+                    return self.menu_activate(s);
+                }
+            }
+            _ => {}
+        }
+        let r = self.menu_rect();
+        self.damage.rects.push(r);
+    }
+
+    /// A click while the menu is open: on an item it runs, elsewhere the
+    /// menu closes.
+    pub(super) fn menu_click(&mut self, x: i32, y: i32) {
+        match self.menu_item_rects().into_iter().find(|(_, r)| r.contains(x, y)) {
+            Some((i, _)) => self.menu_activate(i),
+            None => self.close_menu(),
+        }
+    }
+
+    pub(super) fn open_dialog(&mut self, kind: DialogKind) {
+        self.dialog = Some(Dialog { kind, sel: 0, error: None, busy: false, hits: Vec::new() });
+        self.damage.full = true;
+    }
+
+    pub(super) fn close_dialog(&mut self) {
+        if self.dialog.take().is_some() {
+            self.damage.full = true;
+        }
+    }
+
+    pub(super) fn dialog_rect(&self) -> Rect {
+        let w = self.px(560.0).min(self.w as i32 - self.px(40.0));
+        let h = match self.dialog.as_ref().map(|d| &d.kind) {
+            Some(DialogKind::Name { .. }) => self.px(210.0),
+            _ => self.px(230.0),
+        };
+        Rect::new((self.w as i32 - w) / 2, (self.h as i32 - h) / 3, w, h)
+    }
+
+    fn dialog_confirm(&mut self, choice: usize) {
+        let Some(d) = &mut self.dialog else { return };
+        if d.busy {
+            return;
+        }
+        let op = match &d.kind {
+            DialogKind::Ask(a) => a.choices.get(choice).map(|c| c.1.clone()),
+            DialogKind::Name { act, field, checkout } => {
+                let n = field.text().trim().to_string();
+                if n.is_empty() {
+                    d.error = Some("Type a name first.".into());
+                    None
+                } else {
+                    Some(match act {
+                        NameAct::CreateBranch { at } => RefOp::CreateBranch(n, at.clone(), *checkout),
+                        NameAct::CreateTag { at } => RefOp::CreateTag(n, at.clone()),
+                        NameAct::Rename { old } => RefOp::Rename(old.clone(), n),
+                    })
+                }
+            }
+        };
+        match op {
+            Some(op) => {
+                d.busy = true;
+                d.error = None;
+                self.run_refop(op);
+            }
+            None => {
+                let r = self.dialog_rect();
+                self.damage.rects.push(r);
+            }
+        }
+    }
+
+    pub(super) fn dialog_key(&mut self, k: Key) {
+        let Some(d) = &mut self.dialog else { return };
+        let n = match &d.kind {
+            DialogKind::Ask(a) => a.choices.len(),
+            DialogKind::Name { .. } => 1,
+        };
+        match (&mut d.kind, k) {
+            (_, Key::Esc) => return self.close_dialog(),
+            (_, Key::Enter) => {
+                let s = d.sel;
+                return self.dialog_confirm(s);
+            }
+            (DialogKind::Ask(_), Key::Right | Key::Tab | Key::Down) => d.sel = (d.sel + 1) % n,
+            (DialogKind::Ask(_), Key::Left | Key::BackTab | Key::Up) => d.sel = (d.sel + n - 1) % n,
+            (DialogKind::Name { checkout, act: NameAct::CreateBranch { .. }, .. }, Key::Tab) => *checkout = !*checkout,
+            (DialogKind::Name { field, .. }, k) => {
+                match k {
+                    Key::Char(c) => field.insert(c.encode_utf8(&mut [0; 4])),
+                    Key::Backspace => field.backspace(),
+                    Key::CtrlBackspace => field.delete_word(),
+                    Key::Delete => field.delete(),
+                    Key::Left => field.left(),
+                    Key::Right => field.right(),
+                    Key::Home => field.home(),
+                    Key::End => field.end(),
+                    Key::Ctrl('a') => field.select_all(),
+                    Key::Ctrl('v') => {
+                        if let Some(t) = crate::platform::clipboard() {
+                            field.insert(t.lines().next().unwrap_or(""));
+                        }
+                    }
+                    _ => {}
+                }
+                d.error = None;
+            }
+            _ => {}
+        }
+        let r = self.dialog_rect();
+        self.damage.rects.push(r);
+    }
+
+    pub(super) fn dialog_click(&mut self, x: i32, y: i32) {
+        let r = self.dialog_rect();
+        if !r.contains(x, y) {
+            return self.close_dialog();
+        }
+        let hit = self.dialog.as_ref().and_then(|d| d.hits.iter().find(|h| h.0.contains(x, y)).map(|h| h.1));
+        match hit {
+            Some(DHit::Choice(i)) => self.dialog_confirm(i),
+            Some(DHit::Cancel) => self.close_dialog(),
+            Some(DHit::Toggle) => {
+                if let Some(Dialog { kind: DialogKind::Name { checkout, .. }, .. }) = &mut self.dialog {
+                    *checkout = !*checkout;
+                }
+                self.damage.rects.push(r);
+            }
+            _ => {}
+        }
+    }
+
+    pub(super) fn run_refop(&mut self, op: RefOp) {
+        let (Some(g), Some(t)) = (self.git_for_tab(), self.tabs.get(self.cur_tab)) else { return };
+        let sink = (self.sinks)(t.id);
+        self.set_notice(format!("{}…", op.verb()));
+        crate::work::refop(g, op, &sink);
+    }
+
+    pub(super) fn on_refop(&mut self, r: Result<String, OpError>) {
+        match r {
+            Ok(m) => {
+                self.close_dialog();
+                self.set_notice(m);
+                self.reload_current();
+            }
+            Err(OpError::NotMerged { branch, tip }) => {
+                // Deleting needs force: say what that loses and how to get it back.
+                let short = &tip[..tip.len().min(12)];
+                self.open_dialog(DialogKind::Ask(Ask {
+                    title: format!("{branch} is not merged"),
+                    text: format!(
+                        "{branch} has commits that are on no other branch. Deleting it anyway hides them; they can be restored with git branch {branch} {short} (also shown afterwards)."
+                    ),
+                    choices: vec![(format!("Delete {branch} anyway"), RefOp::DeleteBranch(branch.clone(), true), true)],
+                }));
+            }
+            Err(e) => {
+                let conflict = matches!(e, OpError::Conflicts { .. });
+                let msg = e.to_string();
+                match &mut self.dialog {
+                    // A name problem: keep the dialog open with the reason.
+                    Some(d) if !conflict => {
+                        d.busy = false;
+                        d.error = Some(msg.clone());
+                        let r = self.dialog_rect();
+                        self.damage.rects.push(r);
+                    }
+                    _ => self.close_dialog(),
+                }
+                self.set_notice(format!("Failed: {msg}"));
+                if conflict {
+                    // The working tree changed: show it.
+                    self.reload_current();
+                }
+            }
+        }
+    }
+
+    /// Right mouse button: the menu for the commit row or the sidebar ref
+    /// under the pointer.
+    pub fn right_click(&mut self, x: i32, y: i32) {
+        if self.dialog.is_some() || self.settings_view.is_some() || self.agent_view.is_some() {
+            return;
+        }
+        self.close_menu();
+        let b = self.lay.list_body;
+        if !self.r.changes_view && b.contains(x, y) {
+            let row = self.r.top + ((y - b.y) / self.lay.row_h.max(1)) as usize;
+            if row < self.r.commits.len() {
+                self.select(row);
+                let items = self.commit_menu(row);
+                return self.open_menu(x, y, items);
+            }
+        }
+        if self.lay.side.contains(x, y)
+            && let Some(i) = self.side_item_at(x, y)
+        {
+            let key = self.r.side[i].key.clone();
+            self.side_select(&key);
+            let items = self.ref_menu(&key);
+            self.open_menu(x, y, items);
+        }
+    }
+
+    /// `Ctrl+.`: the menu for the selected commit (or sidebar ref).
+    pub(super) fn open_menu_for_selection(&mut self) {
+        if self.focus == Focus::Side {
+            let key = self.r.side_sel.clone();
+            let items = self.ref_menu(&key);
+            let r = self.lay.side;
+            return self.open_menu(r.x + self.px(40.0), r.y + self.px(80.0), items);
+        }
+        let row = self.r.sel;
+        let y = self.row_rect(row).map_or(self.lay.list_body.y, |r| r.bottom());
+        let items = self.commit_menu(row);
+        self.open_menu(self.lay.list_body.x + self.px(120.0), y, items);
+    }
+
+    pub(super) fn paint_menu(&mut self, cv: &mut Canvas) {
+        if self.menu.is_none() {
+            return;
+        }
+        let r = self.menu_rect();
+        let rects = self.menu_item_rects();
+        let Some(m) = self.menu.take() else { return };
+        let old = cv.set_clip(cv.clip().intersect(r));
+        cv.round_border(r, self.pf(9.0), BORDER_STRONG, BG_PANEL);
+        let ui = self.f.ui;
+        let mut y = r.y + self.px(6.0);
+        for (i, it) in m.items.iter().enumerate() {
+            let h = self.menu_item_h(it);
+            if it.act.is_none() {
+                cv.fill(Rect::new(r.x + self.px(12.0), y + h / 2, r.w - self.px(24.0), 1), BORDER);
+            } else if let Some(&(_, ir)) = rects.iter().find(|(j, _)| *j == i) {
+                let on = m.sel == Some(i) || self.is_hot(Hot::Menu(i));
+                if on {
+                    cv.fill_round(ir, self.pf(6.0), BG_SELECT);
+                }
+                let c = if it.danger { DEL_TEXT } else { TEXT };
+                self.te.draw(
+                    cv,
+                    ui,
+                    self.pf(12.5),
+                    ir.x as f32 + self.pf(10.0),
+                    (ir.y as f32 + self.pf(19.5)).round(),
+                    &it.label,
+                    c,
+                    ir.w as f32 - self.pf(20.0),
+                );
+            }
+            y += h;
+        }
+        cv.set_clip(old);
+        self.menu = Some(m);
+    }
+
+    pub(super) fn paint_dialog(&mut self, cv: &mut Canvas) {
+        let Some(mut d) = self.dialog.take() else { return };
+        let r = self.dialog_rect();
+        let old = cv.set_clip(cv.clip().intersect(r));
+        cv.round_border(r, self.pf(12.0), BORDER_STRONG, BG_PANEL);
+        let (ui, semi) = (self.f.ui, self.f.semi);
+        let pad = self.px(22.0);
+        let x0 = (r.x + pad) as f32;
+        let inner = (r.w - 2 * pad) as f32;
+        let mut hits = Vec::new();
+        let (title, text) = match &d.kind {
+            DialogKind::Ask(a) => (a.title.clone(), a.text.clone()),
+            DialogKind::Name { act, .. } => match act {
+                NameAct::CreateBranch { at } => (format!("New branch at {}", short_ref(at)), String::new()),
+                NameAct::CreateTag { at } => (format!("New tag at {}", short_ref(at)), String::new()),
+                NameAct::Rename { old } => (format!("Rename {old}"), String::new()),
+            },
+        };
+        self.te.draw(cv, semi, self.pf(15.5), x0, r.y as f32 + self.pf(36.0), &title, TEXT, inner);
+        let mut y = r.y as f32 + self.pf(62.0);
+        if !text.is_empty() {
+            let size = self.pf(12.5);
+            for l in wrap(&mut self.te, ui, size, &text, inner) {
+                self.te.draw(cv, ui, self.pf(12.5), x0, y, &l, TEXT_2, inner);
+                y += self.pf(18.0);
+            }
+        }
+        if let DialogKind::Name { field, checkout, act } = &d.kind {
+            let f = Rect::new(x0 as i32, y as i32 - self.px(12.0), inner as i32, self.px(36.0));
+            cv.round_border(f, self.pf(7.0), ACCENT, BG_INPUT);
+            let fb = (f.y as f32 + f.h as f32 / 2.0 + self.pf(4.5)).round();
+            let tx = f.x as f32 + self.pf(12.0);
+            if field.text().is_empty() {
+                let ph = match act {
+                    NameAct::CreateTag { .. } => "v1.2.0",
+                    _ => "feature/my-change",
+                };
+                self.te.draw(cv, ui, self.pf(13.0), tx, fb, ph, TEXT_4, inner);
+            } else {
+                if field.all_selected() {
+                    let w = self.te.measure(ui, self.pf(13.0), field.text());
+                    cv.fill_round(
+                        Rect::new(tx as i32 - 2, f.y + self.px(8.0), w as i32 + 4, f.h - self.px(16.0)),
+                        self.pf(3.0),
+                        BG_TEXT_SELECT,
+                    );
+                }
+                self.te.draw(cv, ui, self.pf(13.0), tx, fb, field.text(), TEXT, inner);
+            }
+            let cx = tx + self.te.measure(ui, self.pf(13.0), &field.text()[..field.cursor()]);
+            cv.fill(Rect::new(cx as i32 + 1, f.y + self.px(9.0), self.px(1.5).max(1), f.h - self.px(18.0)), ACCENT);
+            hits.push((f, DHit::Field));
+            y = f.bottom() as f32 + self.pf(24.0);
+            if matches!(act, NameAct::CreateBranch { .. }) {
+                let label =
+                    if *checkout { "Check it out afterwards: yes (Tab)" } else { "Check it out afterwards: no (Tab)" };
+                let w = self.te.measure(ui, self.pf(12.5), label);
+                let t = Rect::new(
+                    x0 as i32 - self.px(4.0),
+                    y as i32 - self.px(16.0),
+                    w as i32 + self.px(8.0),
+                    self.px(24.0),
+                );
+                if self.is_hot(Hot::Dialog(hits.len())) {
+                    cv.fill_round(t, self.pf(5.0), BG_HOVER);
+                }
+                self.te.draw(cv, ui, self.pf(12.5), x0, y, label, TEXT_2, inner);
+                hits.push((t, DHit::Toggle));
+            }
+        }
+        if let Some(e) = &d.error {
+            self.te.draw(cv, ui, self.pf(12.0), x0, (r.bottom() - self.px(58.0)) as f32, e, DEL, inner);
+        }
+        // Buttons, right to left: Cancel, then the choices.
+        let choices: Vec<(String, bool)> = match &d.kind {
+            DialogKind::Ask(a) => a.choices.iter().map(|c| (c.0.clone(), c.2)).collect(),
+            DialogKind::Name { act, .. } => vec![(
+                match act {
+                    NameAct::CreateBranch { .. } => "Create branch".into(),
+                    NameAct::CreateTag { .. } => "Create tag".into(),
+                    NameAct::Rename { .. } => "Rename".into(),
+                },
+                false,
+            )],
+        };
+        let by = r.bottom() - self.px(48.0);
+        let bh = self.px(32.0);
+        let mut bx = r.right() - pad;
+        let cw = (self.te.measure(semi, self.pf(12.5), "Cancel") + self.pf(28.0)) as i32;
+        let cancel = Rect::new(bx - cw, by, cw, bh);
+        let (bg, border) = self.control_colors(Hot::Dialog(hits.len()), BG_BAR, BORDER);
+        cv.round_border(cancel, self.pf(7.0), border, bg);
+        self.te.draw(
+            cv,
+            semi,
+            self.pf(12.5),
+            cancel.x as f32 + self.pf(14.0),
+            (by as f32 + self.pf(21.0)).round(),
+            "Cancel",
+            TEXT_2,
+            cw as f32,
+        );
+        hits.push((cancel, DHit::Cancel));
+        bx = cancel.x - self.px(8.0);
+        for (i, (label, dangerous)) in choices.iter().enumerate().rev() {
+            let label = if d.busy && i == d.sel { "Working…".to_string() } else { label.clone() };
+            let w = (self.te.measure(semi, self.pf(12.5), &label) + self.pf(28.0)) as i32;
+            let b = Rect::new(bx - w, by, w, bh);
+            let selected = i == d.sel;
+            let hot = self.is_hot(Hot::Dialog(hits.len()));
+            let (bg, border, fg) = match (*dangerous, selected || hot) {
+                (true, true) => (DEL_BG, DEL, DEL_TEXT),
+                (true, false) => (BG_BAR, DANGER_BORDER, DEL_TEXT),
+                (false, true) => (ACCENT, ACCENT, ACCENT_TEXT),
+                (false, false) => (BG_BAR, BORDER, TEXT),
+            };
+            cv.round_border(b, self.pf(7.0), border, bg);
+            self.te.draw(
+                cv,
+                semi,
+                self.pf(12.5),
+                b.x as f32 + self.pf(14.0),
+                (by as f32 + self.pf(21.0)).round(),
+                &label,
+                fg,
+                w as f32,
+            );
+            hits.push((b, DHit::Choice(i)));
+            bx = b.x - self.px(8.0);
+        }
+        let hint = "Enter runs the highlighted button · Esc cancels";
+        self.te.draw(
+            cv,
+            ui,
+            self.pf(11.0),
+            x0,
+            (by as f32 + self.pf(21.0)).round(),
+            hint,
+            TEXT_4,
+            (bx - x0 as i32) as f32 - self.pf(8.0),
+        );
+        cv.set_clip(old);
+        d.hits = hits;
+        self.dialog = Some(d);
+    }
+
+    /// Snapshot only: the selected commit's menu, first item highlighted.
+    pub fn snapshot_menu(&mut self) {
+        self.open_menu_for_selection();
+        if let Some(m) = &mut self.menu {
+            m.sel = m.items.iter().position(|i| i.act.is_some());
+        }
+    }
+
+    /// Snapshot only: the "new branch" prompt with a typed name.
+    pub fn snapshot_prompt(&mut self) {
+        let at = self.r.commits.get(self.r.sel).map(|c| c.id.to_string()).unwrap_or_default();
+        self.open_dialog(DialogKind::Name {
+            act: NameAct::CreateBranch { at },
+            field: TextField::new("feature/blame-view"),
+            checkout: true,
+        });
+    }
+
+    pub(super) fn menu_hit_at(&self, x: i32, y: i32) -> Option<usize> {
+        self.menu_item_rects().into_iter().find(|(_, r)| r.contains(x, y)).map(|(i, _)| i)
+    }
+
+    pub(super) fn dialog_hit_at(&self, x: i32, y: i32) -> Option<usize> {
+        self.dialog.as_ref()?.hits.iter().position(|h| h.0.contains(x, y))
+    }
+}
+
+/// A SHA shortened; branch and tag names as they are.
+fn short_ref(s: &str) -> String {
+    if s.len() == 40 && s.chars().all(|c| c.is_ascii_hexdigit()) { s[..8].to_string() } else { s.to_string() }
+}

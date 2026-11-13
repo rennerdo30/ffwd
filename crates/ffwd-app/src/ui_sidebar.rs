@@ -227,7 +227,7 @@ impl Ui {
         self.r.side.iter().position(|i| i.key == key)
     }
 
-    fn side_item_at(&self, x: i32, y: i32) -> Option<usize> {
+    pub(super) fn side_item_at(&self, x: i32, y: i32) -> Option<usize> {
         let l = self.side_list_rect();
         if !l.contains(x, y) {
             return None;
@@ -328,6 +328,17 @@ impl Ui {
             self.focus = Focus::Side;
             self.damage.rects.extend([self.lay.details, self.lay.side]);
             self.damage.rows.push(self.r.sel);
+        }
+        // A double click on a branch or tag checks it out.
+        if self.double && self.r.side.get(i).is_some_and(|it| it.key == self.r.side_sel) {
+            let it = self.r.side[i].clone();
+            let name = it.key.get(2..).unwrap_or("").to_string();
+            if matches!(it.kind, SideKind::Branch | SideKind::RemoteBranch | SideKind::Tag)
+                && !it.current
+                && !name.is_empty()
+            {
+                return self.run_refop(crate::work::RefOp::Checkout(name));
+            }
         }
         // The chevron toggles; elsewhere the item activates (folders toggle too).
         self.side_activate(i);

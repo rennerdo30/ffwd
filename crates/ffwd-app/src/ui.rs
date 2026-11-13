@@ -21,6 +21,9 @@ use sidebar::SideItem;
 mod agents_view;
 #[path = "ui_changes.rs"]
 mod changes_view;
+#[path = "ui_menu.rs"]
+mod menu;
+use menu::{Dialog, DialogKind, Menu, NameAct};
 #[path = "ui_hover.rs"]
 mod hover;
 pub use hover::Cursor;
@@ -258,10 +261,20 @@ const CMD_REOPEN: &str = "Reopen closed tab";
 const CMD_UPDATES: &str = "Check for updates";
 const CMD_SETTINGS: &str = "Settings…";
 const CMD_AGENTS: &str = "Agents (experimental)…";
+const CMD_ACTIONS: &str = "Commit actions…";
+const CMD_BRANCH: &str = "Create branch here";
+const CMD_TAG: &str = "Create tag here";
+const CMD_PICK: &str = "Cherry-pick this commit";
+const CMD_REVERT: &str = "Revert this commit";
 
 /// Commands that work today; the rest of COMMANDS are listed so the
 /// palette shows the plan, and say so when chosen.
 const WORKING: &[&str] = &[
+    CMD_ACTIONS,
+    CMD_BRANCH,
+    CMD_TAG,
+    CMD_PICK,
+    CMD_REVERT,
     CMD_SETTINGS,
     CMD_AGENTS,
     CMD_FETCH,
@@ -285,11 +298,12 @@ const COMMANDS: &[(&str, &str)] = &[
     (CMD_UPDATES, ""),
     (CMD_SETTINGS, "Ctrl ,"),
     (CMD_AGENTS, "Ctrl Shift A"),
+    (CMD_ACTIONS, "Ctrl ."),
     ("Commit staged changes", "Ctrl Enter"),
-    ("Create branch here", "Ctrl B"),
-    ("Create tag here", "Ctrl Shift G"),
-    ("Cherry-pick this commit", ""),
-    ("Revert this commit", ""),
+    (CMD_BRANCH, "Ctrl B"),
+    (CMD_TAG, "Ctrl Shift G"),
+    (CMD_PICK, ""),
+    (CMD_REVERT, ""),
     ("Interactive rebase from here", "Ctrl Shift R"),
     ("Stash changes", "Ctrl Shift S"),
     ("Open file history", ""),
@@ -412,6 +426,9 @@ pub struct Ui {
     repo_settings_requested: HashSet<String>,
     /// Settings → Agents edits this repository's overrides.
     agent_scope_repo: bool,
+    /// A context menu and a dialog (ui_menu.rs).
+    menu: Option<Menu>,
+    dialog: Option<Dialog>,
     pub notice: Option<String>,
     update_available: bool,
     update_requested: bool,
@@ -507,6 +524,8 @@ impl Ui {
             repo_settings: HashMap::new(),
             repo_settings_requested: HashSet::new(),
             agent_scope_repo: false,
+            menu: None,
+            dialog: None,
             update_available: false,
             update_requested: false,
             update_check_requested: false,
@@ -1070,6 +1089,7 @@ impl Ui {
             Msg::ChangesOp { commit, result } => self.on_changes_op(commit, result),
             Msg::LastMessage(m) => self.on_last_message(m),
             Msg::Discarded(b) => self.r.changes.undo.push(b),
+            Msg::RefOp(r) => self.on_refop(r),
         }
     }
 
@@ -1238,6 +1258,19 @@ impl Ui {
     // ---------------------------------------------------------------- input
 
     pub fn key(&mut self, k: Key) {
+        if self.dialog.is_some() {
+            return self.dialog_key(k);
+        }
+        if self.menu.is_some() {
+            return self.menu_key(k);
+        }
+        if matches!(k, Key::Ctrl('.'))
+            && self.settings_view.is_none()
+            && self.agent_view.is_none()
+            && !self.tabs.is_empty()
+        {
+            return self.open_menu_for_selection();
+        }
         if matches!(k, Key::Ctrl(',')) && self.settings_view.is_none() {
             return self.open_settings();
         }
@@ -1293,6 +1326,8 @@ impl Ui {
             Key::CtrlShift('l') => return self.start_op(Op::Pull),
             Key::CtrlShift('k') => return self.start_op(Op::Push),
             Key::CtrlShift('u') => return self.request_update_install(),
+            Key::Ctrl('b') if !self.r.changes_view => return self.selected_commit_command(CMD_BRANCH),
+            Key::CtrlShift('g') if !self.r.changes_view => return self.selected_commit_command(CMD_TAG),
             Key::Ctrl(_) | Key::CtrlShift(_) | Key::NextTab | Key::PrevTab => return,
             _ => {}
         }
@@ -1381,6 +1416,13 @@ impl Ui {
     }
 
     pub fn click(&mut self, x: i32, y: i32) {
+        if self.dialog.is_some() {
+            self.press_at(x, y);
+            return self.dialog_click(x, y);
+        }
+        if self.menu.is_some() {
+            return self.menu_click(x, y);
+        }
         let now = std::time::Instant::now();
         self.double = self.last_click.is_some_and(|(t, px, py)| {
             now.duration_since(t).as_millis() < 450 && (px - x).abs() < 5 && (py - y).abs() < 5
@@ -1444,7 +1486,18 @@ impl Ui {
                     self.focus = Focus::List;
                     self.damage.rects.extend([self.lay.details, self.lay.side]);
                 }
+                let again = self.double && row == self.r.sel;
                 self.select(row);
+                if again {
+                    // A double click checks out the branch at that commit.
+                    let id = self.r.commits[row].id;
+                    if let Some(b) =
+                        self.r.refs.refs.iter().find(|r| r.kind == RefKind::Local && r.target == id && !r.is_head)
+                    {
+                        let name = b.name.to_string();
+                        self.run_refop(crate::work::RefOp::Checkout(name));
+                    }
+                }
             }
             return;
         }
@@ -1593,6 +1646,27 @@ impl Ui {
         self.damage.rects.push(r);
     }
 
+    /// A command for the selected commit (palette or shortcut).
+    fn selected_commit_command(&mut self, c: &str) {
+        let Some(sha) = self.r.commits.get(self.r.sel).map(|c| c.id.to_string()) else {
+            return self.set_notice("Select a commit first.".into());
+        };
+        match c {
+            CMD_BRANCH => self.open_dialog(DialogKind::Name {
+                act: NameAct::CreateBranch { at: sha },
+                field: TextField::default(),
+                checkout: true,
+            }),
+            CMD_TAG => self.open_dialog(DialogKind::Name {
+                act: NameAct::CreateTag { at: sha },
+                field: TextField::default(),
+                checkout: false,
+            }),
+            CMD_PICK => self.run_refop(crate::work::RefOp::CherryPick(sha)),
+            _ => self.run_refop(crate::work::RefOp::Revert(sha)),
+        }
+    }
+
     fn run_command(&mut self, c: &str) {
         match c {
             CMD_FETCH => self.start_op(Op::Fetch),
@@ -1604,6 +1678,8 @@ impl Ui {
             CMD_UPDATES => self.request_update_check(),
             CMD_SETTINGS => self.open_settings(),
             CMD_AGENTS => self.open_agents(),
+            CMD_ACTIONS => self.open_menu_for_selection(),
+            CMD_BRANCH | CMD_TAG | CMD_PICK | CMD_REVERT => self.selected_commit_command(c),
             LAYOUT_BELOW => self.set_layout(DetailsLayout::Below),
             LAYOUT_BESIDE => self.set_layout(DetailsLayout::Beside),
             c if c.starts_with("AI:") || c.starts_with("Settings: AI") => self.set_notice(
@@ -1796,7 +1872,7 @@ impl Ui {
         }
         // A modal panel dims what is behind it, so the eye goes to the
         // panel. Remote sessions get no translucency (performance rule 6).
-        if (self.agent_view.is_some() || self.settings_view.is_some()) && !self.remote {
+        if (self.agent_view.is_some() || self.settings_view.is_some() || self.dialog.is_some()) && !self.remote {
             cv.fill_alpha(clip, 0x000000, 100);
         }
         if self.agent_view.is_some() && !clip.intersect(self.agents_rect()).is_empty() {
@@ -1804,6 +1880,12 @@ impl Ui {
         }
         if self.settings_view.is_some() && !clip.intersect(self.settings_rect()).is_empty() {
             self.paint_settings(cv);
+        }
+        if self.menu.is_some() && !clip.intersect(self.menu_rect()).is_empty() {
+            self.paint_menu(cv);
+        }
+        if self.dialog.is_some() && !clip.intersect(self.dialog_rect()).is_empty() {
+            self.paint_dialog(cv);
         }
     }
 
@@ -3272,6 +3354,103 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Branches from the keyboard: Ctrl+. opens the commit's menu, a name
+    /// prompt creates the branch; deleting an unmerged branch asks twice.
+    #[test]
+    fn branch_menu_prompt_and_unmerged_delete_with_keys() {
+        use std::sync::mpsc;
+        let mut te = TextEngine::new();
+        let Some(f) = load_fonts(&mut te) else { return };
+        let dir = std::env::temp_dir().join(format!("ffwd-ui-branches-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = Git { root: dir.clone() };
+        for a in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.name", "ffwd test"],
+            &["config", "user.email", "test@example.invalid"],
+            &["config", "commit.gpgsign", "false"],
+        ] {
+            g.output(a).unwrap();
+        }
+        std::fs::write(dir.join("a.txt"), "a\n").unwrap();
+        g.output(&["add", "."]).unwrap();
+        g.output(&["commit", "-q", "-m", "first"]).unwrap();
+        // "lonely" has a commit no other branch has.
+        g.output(&["switch", "-q", "-c", "lonely"]).unwrap();
+        std::fs::write(dir.join("b.txt"), "b\n").unwrap();
+        g.output(&["add", "."]).unwrap();
+        g.output(&["commit", "-q", "-m", "lonely work"]).unwrap();
+        g.output(&["switch", "-q", "main"]).unwrap();
+        let (tx, rx) = mpsc::channel::<(u64, Msg)>();
+        let tx = Arc::new(std::sync::Mutex::new(tx));
+        let sinks: SinkFactory = Arc::new(move |id| {
+            let tx = tx.clone();
+            Arc::new(move |m| {
+                if let Ok(t) = tx.lock() {
+                    let _ = t.send((id, m));
+                }
+            })
+        });
+        crate::work::start(dir.clone(), &sinks(1));
+        let empty = crate::settings::Settings::parse("");
+        let mut ui = Ui::new(te, f, empty.clone(), empty, Some((1, dir.clone())), sinks, 1280, 800, 1.0);
+        let pump = |ui: &mut Ui, what: &str, done: &dyn Fn(&Ui) -> bool| {
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while !done(ui) {
+                let left = until.saturating_duration_since(std::time::Instant::now());
+                assert!(!left.is_zero(), "timed out waiting for {what}; notice: {:?}", ui.notice);
+                if let Ok((id, m)) = rx.recv_timeout(left) {
+                    ui.on_tab_msg(id, m);
+                }
+            }
+        };
+        let pick = |ui: &mut Ui, label: &str| {
+            for _ in 0..40 {
+                ui.key(Key::Down);
+                let m = ui.menu.as_ref().unwrap();
+                if m.sel.is_some_and(|s| m.items[s].label.starts_with(label)) {
+                    ui.key(Key::Enter);
+                    return;
+                }
+            }
+            panic!("no menu item {label}");
+        };
+        let branch =
+            |name: &str| g.output(&["rev-parse", "--verify", "--quiet", &format!("refs/heads/{name}")]).is_ok();
+        pump(&mut ui, "history and refs", &|u| u.r.log_done && u.r.refs.head_branch.is_some());
+        // Ctrl+. on the selected (HEAD) commit, then "Create branch here…".
+        ui.key(Key::Ctrl('.'));
+        assert!(ui.menu.is_some());
+        pick(&mut ui, "Create branch here");
+        assert!(ui.dialog.is_some() && ui.menu.is_none());
+        for c in "feat/from-keys".chars() {
+            ui.key(Key::Char(c));
+        }
+        // Tab: don't check it out, so HEAD stays on main.
+        ui.key(Key::Tab);
+        ui.key(Key::Enter);
+        pump(&mut ui, "the new branch", &|u| u.dialog.is_none());
+        assert!(branch("feat/from-keys"));
+        assert_eq!(String::from_utf8(g.output(&["branch", "--show-current"]).unwrap()).unwrap().trim(), "main");
+        // Delete "lonely" from its sidebar menu: confirm, then "not merged", then delete.
+        pump(&mut ui, "the new refs", &|u| u.r.side.iter().any(|i| i.key == "b:lonely"));
+        let items = ui.ref_menu("b:lonely");
+        ui.open_menu(100, 100, items);
+        pick(&mut ui, "Delete lonely");
+        assert!(ui.dialog.is_some());
+        ui.key(Key::Enter);
+        pump(&mut ui, "the not-merged question", &|u| {
+            u.dialog.as_ref().is_some_and(|d| matches!(&d.kind, DialogKind::Ask(a) if a.title.contains("not merged")))
+        });
+        assert!(branch("lonely"), "a plain delete never drops unmerged work");
+        ui.key(Key::Enter);
+        pump(&mut ui, "the forced delete", &|u| u.dialog.is_none());
+        assert!(!branch("lonely"));
+        assert!(ui.notice.as_deref().is_some_and(|n| n.contains("git branch lonely ")), "{:?}", ui.notice);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     fn changes_view_side(unstaged: bool) -> ffwd_core::changes::Side {
         if unstaged { ffwd_core::changes::Side::Unstaged } else { ffwd_core::changes::Side::Staged }
     }
@@ -3290,7 +3469,7 @@ mod tests {
         let mut screen = vec![0u32; w * h];
         ui.paint(&mut Canvas::new(&mut screen, w, h), true);
         type Step = (&'static str, fn(&mut Ui));
-        let steps: [Step; 8] = [
+        let steps: [Step; 10] = [
             ("open settings", |u| u.open_settings()),
             ("hover in settings", |u| u.pointer(640, 300)),
             ("next page", |u| u.key(Key::NextTab)),
@@ -3299,6 +3478,14 @@ mod tests {
             ("close by clicking outside", |u| u.click(5, 790)),
             ("open the palette", |u| u.open_palette()),
             ("close the palette", |u| u.key(Key::Esc)),
+            ("open a dialog", |u| {
+                u.open_dialog(DialogKind::Ask(menu::Ask {
+                    title: "Reset main?".into(),
+                    text: "Text".into(),
+                    choices: vec![("Mixed".into(), crate::work::RefOp::Revert("x".into()), false)],
+                }))
+            }),
+            ("close the dialog", |u| u.key(Key::Esc)),
         ];
         for (name, step) in steps {
             step(&mut ui);

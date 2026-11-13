@@ -10,6 +10,11 @@
   - stage single lines (`Space` picks, `S` stages);
   - discard with a confirmation and `Ctrl+Z` to undo;
   - add to `.gitignore` (`I`), skip hooks, recent messages (`Ctrl+R`).
+- **Branches, tags and history** (FF-36, FF-37):
+  - right-click menus and `Ctrl+.` for commits and sidebar refs;
+  - check out (also remote branches, with tracking, and detached), create, rename and delete branches and tags;
+  - merge (four modes), rebase, cherry-pick, revert, reset (soft, mixed, hard), each with a backup ref where commits could be lost;
+  - double-click checkout; `Ctrl+B` and `Ctrl+Shift+G`.
 - **Fix:** the Settings backdrop no longer stays on screen after closing (FF-52).
 
 ## 0.2.0-beta.1

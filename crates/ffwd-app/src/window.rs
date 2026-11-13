@@ -638,6 +638,12 @@ impl ApplicationHandler<UserEvent> for App {
                 }
                 self.sync_cursor();
             }
+            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Right, .. } => {
+                let (x, y) = self.cursor;
+                if let Some(ui) = &mut self.ui {
+                    ui.right_click(x, y);
+                }
+            }
             WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Middle, .. } => {
                 let (x, y) = self.cursor;
                 if let Some(ui) = &mut self.ui {
