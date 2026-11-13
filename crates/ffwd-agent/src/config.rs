@@ -265,11 +265,22 @@ impl Config {
         };
         let preset_grants = flag(get("preset_grants"), true, "preset_grants", &mut errors);
         let mut write_paths = paths("write_paths");
+        let mut read_paths = paths("read_paths");
         let mut env_pass = split_list(&text("env_pass", DEFAULT_ENV_PASS), ';');
+        // The tool's own paths: writable unless agents.preset_access says
+        // read or off for one (FF-23 per-path access).
+        let access = parse_preset_access(&text("preset_access", ""));
         if let (Some(p), true) = (preset, preset_grants) {
             for h in p.home_write {
-                if !write_paths.iter().any(|w| w == &PathBuf::from(h)) {
-                    write_paths.push(PathBuf::from(h));
+                let path = PathBuf::from(h);
+                let level = access.iter().find(|(k, _)| k == h).map_or("write", |(_, v)| v.as_str());
+                let list = match level {
+                    "off" => continue,
+                    "read" => &mut read_paths,
+                    _ => &mut write_paths,
+                };
+                if !list.iter().any(|w| w == &path) {
+                    list.push(path);
                 }
             }
             for e in p.env_pass {
@@ -292,7 +303,7 @@ impl Config {
             network: flag(get("network"), true, "network", &mut errors),
             git_access,
             home_access,
-            read_paths: paths("read_paths"),
+            read_paths,
             write_paths,
             env_pass,
             env_inherit: flag(get("env_inherit"), false, "env_inherit", &mut errors),
@@ -487,8 +498,44 @@ pub fn argv(template: &str, vars: &[(&str, &str)]) -> Result<Vec<String>, String
     Ok(split_command(template)?.iter().map(|a| expand(a, vars)).collect())
 }
 
+/// `agents.preset_access`: `path=off|read|write` entries, `;` between
+/// them (FF-23): the access each of the preset's own paths gets.
+pub fn parse_preset_access(s: &str) -> Vec<(String, String)> {
+    split_list(s, ';')
+        .into_iter()
+        .filter_map(|e| {
+            let (k, v) = e.split_once('=')?;
+            let v = v.trim().to_ascii_lowercase();
+            ["off", "read", "write"].contains(&v.as_str()).then(|| (k.trim().to_string(), v))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn preset_paths_follow_preset_access() {
+        let get = |extra: &'static str| {
+            move |k: &str| match k {
+                "preset" => Some("claude".to_string()),
+                "preset_access" => Some(extra.to_string()),
+                _ => None,
+            }
+        };
+        let (c, errs) = Config::from_lookup(get(""));
+        assert!(errs.is_empty(), "{errs:?}");
+        assert!(c.write_paths.contains(&PathBuf::from("~/.claude")), "writable by default");
+        let (c, _) = Config::from_lookup(get("~/.claude=read; ~/.claude.json=off"));
+        assert!(c.read_paths.contains(&PathBuf::from("~/.claude")));
+        assert!(!c.write_paths.contains(&PathBuf::from("~/.claude")));
+        assert!(
+            !c.write_paths.contains(&PathBuf::from("~/.claude.json"))
+                && !c.read_paths.contains(&PathBuf::from("~/.claude.json"))
+        );
+        assert_eq!(parse_preset_access("a=READ; b=bogus; c"), [("a".to_string(), "read".to_string())]);
+    }
+
     use super::*;
 
     #[test]

@@ -53,6 +53,7 @@ pub struct Args {
     pub agents_demo: bool,
     /// Snapshot of Settings → Agents for one repository (example values).
     pub scope_demo: bool,
+    pub access_demo: bool,
     /// Snapshot with the pointer resting here (hover states).
     pub hover: Option<(i32, i32)>,
     /// Snapshot of the Local Changes view.
@@ -104,6 +105,7 @@ fn parse_args() -> Result<Args, String> {
         settings_page: None,
         agents_demo: false,
         scope_demo: false,
+        access_demo: false,
         hover: None,
         changes: false,
         files: None,
@@ -153,6 +155,7 @@ fn parse_args() -> Result<Args, String> {
             "--settings-page" => a.settings_page = Some(val("--settings-page")?.parse().map_err(|_| "bad page")?),
             "--agents-demo" => a.agents_demo = true,
             "--settings-scope-demo" => a.scope_demo = true,
+            "--settings-access-demo" => a.access_demo = true,
             "--changes" => a.changes = true,
             "--files" => a.files = Some(val("--files")?),
             "--files-tab" => a.files_tab = Some(val("--files-tab")?),

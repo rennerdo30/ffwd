@@ -986,6 +986,29 @@ setup_script = \"cargo fetch\"
         self.agent_scope_repo = true;
     }
 
+    /// Snapshot only: the agent's per-path access list (FF-23), scrolled to
+    /// the add row. In-memory settings; nothing is written.
+    pub fn snapshot_access_demo(&mut self) {
+        let Some(t) = self.tabs.get(self.cur_tab) else { return };
+        let key = repo_key(&t.path);
+        let demo = "[agents]
+enabled = \"true\"
+preset = \"claude\"
+preset_access = \"~/.claude.json=read\"
+read_paths = \"~/.gitconfig\"
+write_paths = \"/data/shared\"
+";
+        self.repo_settings.insert(key.clone(), crate::settings::Settings::parse(demo));
+        self.repo_settings_requested.insert(key);
+        self.open_settings_page(1);
+        self.agent_scope_repo = true;
+        let add = self.rows().iter().position(|r| *r == settings_view::Row::AddGrant).unwrap_or(0);
+        if let Some(v) = &mut self.settings_view {
+            v.sel = add;
+        }
+        self.settings_follow();
+    }
+
     /// Snapshot only: example runs, so the panel can be checked offscreen.
     pub fn snapshot_agents_demo(&mut self) {
         let Some(tab) = self.tab_path() else { return };
