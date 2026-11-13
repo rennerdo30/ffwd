@@ -498,6 +498,21 @@ impl Ui {
         self.run_change_op(crate::work::ChangeOp::Lines(Box::new(e), side, picks), "Staging");
     }
 
+    /// The line of the Local Changes diff under (x, y), if that pane
+    /// shows a diff there (not the AI pane or the conflict resolver).
+    pub(super) fn changes_diff_line_at(&self, x: i32, y: i32) -> Option<usize> {
+        if !self.r.changes_view || self.r.changes.ai.is_some() || self.selected_entry().is_some_and(|e| e.conflicted) {
+            return None;
+        }
+        let r = self.changes_layout().diff;
+        let body_y = r.y + self.px(32.0);
+        if !r.contains(x, y) || y < body_y {
+            return None;
+        }
+        let i = self.r.changes.diff_top + ((y - body_y) / self.px(20.0).max(1)) as usize;
+        (i < self.r.changes.diff.as_ref()?.lines.len()).then_some(i)
+    }
+
     fn toggle_pick(&mut self, i: usize) {
         let Some(d) = &self.r.changes.diff else { return };
         if !matches!(d.lines.get(i).map(|l| l.kind), Some(LineKind::Add | LineKind::Del)) {

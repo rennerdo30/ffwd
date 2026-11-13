@@ -168,7 +168,7 @@ The capture above is the real PoC UI. `ffwd --snapshot` rendered it offscreen fr
 
 - **File menus** (right click a file in Local Changes, the Files view or a commit's file list): Open in editor, Open with the default app, Show in Explorer/Finder, Open in the diff tool (for a conflicted file: Resolve in the merge tool), Copy path, Copy full path.
 - **Editor:** Settings → General → **Editor** (`tools.editor`), a command such as `code` or a full path, with quotes for spaces. Empty uses the default app.
-  - Right-click a line in a commit's diff for **Open in editor at line n** (the line in the new file; a removed line opens where it was) or **Copy line**.
+  - Right-click a line in a commit's diff or the Local Changes diff for **Open in editor at line n** (the line in the new file; a removed line opens where it was) or **Copy line**.
   - The line is passed the way known editors expect: VS Code, Cursor and VSCodium `-g file:n`; Sublime Text, Zed and Helix `file:n`; JetBrains IDEs `--line n file`; Notepad++ `-nn file`; Vim, Neovim, Emacs and nano `+n file`; Kate `-l n file`. Other editors get the file only.
   - `{file}` and `{line}` in the command place them yourself, for example `myeditor --goto {file}:{line}`.
 - **Diff and merge tools:** `git difftool` / `git mergetool` with the tool your Git config names (`diff.guitool`, `diff.tool`, `merge.tool`). Without one, ffwd says how to set it instead of starting a terminal tool. After the merge tool closes, Local Changes reloads.

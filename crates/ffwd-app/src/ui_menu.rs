@@ -1286,8 +1286,12 @@ impl Ui {
     /// The right-click menu of a diff line: open the file in the editor
     /// at that line, copy the line.
     pub(super) fn diff_line_menu(&mut self, x: i32, y: i32) -> Option<Vec<MenuItem>> {
-        let i = self.diff_line_at(x, y)?;
-        let d = self.r.diff.clone()?;
+        // The history's diff, or the Local Changes diff (FF-41).
+        let (i, changes) = match self.changes_diff_line_at(x, y) {
+            Some(i) => (i, true),
+            None => (self.diff_line_at(x, y)?, false),
+        };
+        let d = if changes { self.r.changes.diff.as_deref()? } else { self.r.diff.as_deref()? };
         let line = d.lines.get(i)?;
         if !matches!(
             line.kind,
@@ -1298,7 +1302,7 @@ impl Ui {
         let root = self.r.git.as_ref()?.root.clone();
         let full = root.join(&*d.path);
         let mut v = Vec::new();
-        if let Some(n) = ffwd_core::diff::new_line_at(&d, i) {
+        if let Some(n) = ffwd_core::diff::new_line_at(d, i) {
             v.push(item(format!("Open in editor at line {n}"), MenuAct::OpenFileAt(full, n)));
         }
         v.push(item("Copy line", MenuAct::Copy(line.text.to_string())));
