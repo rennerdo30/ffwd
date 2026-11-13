@@ -113,6 +113,10 @@ pub enum Msg {
         merge: bool,
         result: Result<String, String>,
     },
+    /// The open pull requests from the GitHub CLI, or why there are none.
+    PullRequests(Result<Vec<ffwd_core::hosting::PullRequest>, String>),
+    /// `gh pr create --web` finished (it opens the browser).
+    PrCreate(Result<String, String>),
     /// A branch, tag or history operation ended.
     RefOp(Result<String, ffwd_core::refops::OpError>),
     /// What a discard removed (for Ctrl+Z).
@@ -168,6 +172,8 @@ pub enum RefOp {
     Sync(ffwd_core::ops::Op),
     /// Apply a patch to the working tree; 3-way leaves conflict markers.
     ApplyPatch(String, bool),
+    /// Check out a GitHub pull request (remote, number) as `pr/<n>`.
+    PrCheckout(String, u32),
     /// Interactive rebase onto a base (`None`: the root), steps oldest first.
     RebaseInteractive(Option<String>, Vec<ffwd_core::rebase::Step>),
     /// Init and update one submodule path, or all.
@@ -211,6 +217,7 @@ impl RefOp {
             RefOp::Sync(op) => op.name().to_string(),
             RefOp::ApplyPatch(_, false) => "Apply a patch".into(),
             RefOp::ApplyPatch(_, true) => "Apply a patch (3-way)".into(),
+            RefOp::PrCheckout(_, n) => format!("Check out pull request #{n}"),
             RefOp::RebaseInteractive(_, steps) => format!("Interactive rebase of {} commits", steps.len()),
             RefOp::SubUpdate(Some(p)) => format!("Update submodule {p}"),
             RefOp::SubUpdate(None) => "Update all submodules".into(),
@@ -247,6 +254,7 @@ impl RefOp {
             RefOp::RemoteTest(_) => "Testing the connection",
             RefOp::Sync(op) => op.verb(),
             RefOp::ApplyPatch(..) => "Applying the patch",
+            RefOp::PrCheckout(..) => "Checking out the pull request",
             RefOp::RebaseInteractive(..) => "Rebasing",
             RefOp::SubUpdate(_) => "Updating submodules",
             RefOp::SubAdd(..) => "Adding the submodule",
@@ -287,6 +295,7 @@ pub fn refop(git: Git, op: RefOp, sink: &Sink) {
             }
             RefOp::Sync(_) => Err(r::OpError::Failed("internal: a sync runs through start_op".into())),
             RefOp::ApplyPatch(p, three) => ffwd_core::patches::apply(&git, p, *three),
+            RefOp::PrCheckout(remote, n) => ffwd_core::hosting::checkout(&git, remote, *n),
             RefOp::RebaseInteractive(base, steps) => ffwd_core::rebase::run_plan(&git, base.as_deref(), steps),
             RefOp::SubUpdate(p) => ffwd_core::submodules::update(&git, p.as_deref()),
             RefOp::SubAdd(u, p) => ffwd_core::submodules::add(&git, u, p),

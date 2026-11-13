@@ -289,6 +289,7 @@ const CMD_PATCH_UNSTAGED: &str = "Copy unstaged changes as patch";
 const CMD_PATCH_STAGED: &str = "Copy staged changes as patch";
 const CMD_APPLY_CLIP: &str = "Apply patch from the clipboard";
 const CMD_APPLY_FILE: &str = "Apply patch from a file…";
+const CMD_CREATE_PR: &str = "Create pull request on GitHub";
 const CMD_AI_COMMIT: &str = "AI: Draft a commit message";
 const CMD_CLONE: &str = "Clone repository…";
 const CMD_INIT: &str = "Create a new repository…";
@@ -323,6 +324,7 @@ const WORKING: &[&str] = &[
     CMD_PATCH_STAGED,
     CMD_APPLY_CLIP,
     CMD_APPLY_FILE,
+    CMD_CREATE_PR,
     CMD_AI_COMMIT,
     CMD_CLONE,
     CMD_INIT,
@@ -369,6 +371,7 @@ const COMMANDS: &[(&str, &str)] = &[
     (CMD_PATCH_STAGED, ""),
     (CMD_APPLY_CLIP, ""),
     (CMD_APPLY_FILE, ""),
+    (CMD_CREATE_PR, ""),
     (CMD_AI_COMMIT, ""),
     (CMD_CLONE, ""),
     (CMD_INIT, ""),
@@ -440,6 +443,9 @@ pub struct RepoState {
     pub rebase: Option<rebase_view::RebaseState>,
     /// The find bar over the commit list (FF-34).
     pub search: Option<search_view::Search>,
+    /// Open pull requests (GitHub through gh); `Err` holds why not (or
+    /// "loading").
+    pub prs: Option<Result<Vec<ffwd_core::hosting::PullRequest>, String>>,
     /// Commits to push and to pull (marked in the list).
     pub ahead_ids: HashSet<Oid>,
     pub behind_ids: HashSet<Oid>,
@@ -1155,6 +1161,10 @@ impl Ui {
                 self.rebuild_side();
                 self.damage.rects.extend([self.lay.side, self.lay.top]);
                 self.damage_visible_rows();
+                // Pull requests come from the hosting site (FF-40).
+                if self.hosting_enabled() {
+                    self.load_prs();
+                }
             }
             Msg::Refs(Err(e)) => self.set_notice(format!("Could not read refs: {e}")),
             Msg::Status(s) => {
@@ -1275,6 +1285,15 @@ impl Ui {
             Msg::PatchMade(r) => self.on_patch_made(r),
             Msg::PatchChecked { patch, result } => self.on_patch_checked(patch, result),
             Msg::ToolDone { merge, result } => self.on_tool_done(merge, result),
+            Msg::PullRequests(r) => {
+                self.r.prs = Some(r);
+                self.rebuild_side();
+                self.damage.rects.push(self.lay.side);
+            }
+            Msg::PrCreate(r) => match r {
+                Ok(m) => self.set_notice(m),
+                Err(e) => self.set_notice(format!("Failed: {e}")),
+            },
             Msg::AiPrepared { seq, result } => self.on_ai_prepared(seq, result),
             Msg::AiToken { seq, text } => self.on_ai_token(seq, text),
             Msg::AiDone { seq, result } => self.on_ai_done(seq, result),
@@ -2019,6 +2038,16 @@ impl Ui {
         self.reload_current();
     }
 
+    /// Whether ffwd asks the hosting site (setting `hosting.enabled`,
+    /// default on; tests and snapshots turn it off).
+    fn hosting_enabled(&self) -> bool {
+        // Tests never reach the network unless they ask for it.
+        if cfg!(test) {
+            return self.settings.get("hosting.enabled") == Some("true");
+        }
+        self.settings.get("hosting.enabled") != Some("false") && std::env::var_os("FFWD_NO_HOSTING").is_none()
+    }
+
     /// A command for the selected commit (palette or shortcut).
     fn selected_commit_command(&mut self, c: &str) {
         let Some(sha) = self.r.commits.get(self.r.sel).map(|c| c.id.to_string()) else {
@@ -2066,6 +2095,7 @@ impl Ui {
                 field: TextField::default(),
                 checkout: false,
             }),
+            CMD_CREATE_PR => self.create_pr(),
             CMD_AI_COMMIT => self.ai_draft(),
             CMD_CLONE => self.open_dialog(DialogKind::Name {
                 act: NameAct::CloneUrl,
@@ -5130,6 +5160,84 @@ mod tests {
             assert_eq!(ui.r.diff_top, starts[0] - 3, "split {split}");
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Pull requests (FF-40): listed in the sidebar (fed in as the GitHub
+    /// CLI would answer), with a menu; "Check out as pr/<n>" fetches
+    /// GitHub's pull/<n>/head (here from a local stand-in) and switches.
+    #[test]
+    fn pull_requests_listed_and_checked_out() {
+        use std::sync::mpsc;
+        let mut te = TextEngine::new();
+        let Some(f) = load_fonts(&mut te) else { return };
+        let base = std::env::temp_dir().join(format!("ffwd-ui-prs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let g = Git { root: base.join("work") };
+        std::fs::create_dir_all(&g.root).unwrap();
+        for a in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.name", "ffwd test"],
+            &["config", "user.email", "test@example.invalid"],
+            &["config", "commit.gpgsign", "false"],
+        ] {
+            g.output(a).unwrap();
+        }
+        std::fs::write(g.root.join("a.txt"), "a").unwrap();
+        g.output(&["add", "."]).unwrap();
+        g.output(&["commit", "-q", "-m", "first"]).unwrap();
+        Git { root: base.clone() }.output(&["init", "-q", "--bare", "hub.git"]).unwrap();
+        g.output(&["remote", "add", "origin", &base.join("hub.git").to_string_lossy()]).unwrap();
+        g.output(&["push", "-q", "origin", "main"]).unwrap();
+        std::fs::write(g.root.join("b.txt"), "b").unwrap();
+        g.output(&["add", "."]).unwrap();
+        g.output(&["commit", "-q", "-m", "pr work"]).unwrap();
+        g.output(&["push", "-q", "origin", "HEAD:refs/pull/7/head"]).unwrap();
+        g.output(&["reset", "-q", "--hard", "HEAD~1"]).unwrap();
+        let (tx, rx) = mpsc::channel::<(u64, Msg)>();
+        let tx = Arc::new(std::sync::Mutex::new(tx));
+        let sinks: SinkFactory = Arc::new(move |id| {
+            let tx = tx.clone();
+            Arc::new(move |m| {
+                if let Ok(t) = tx.lock() {
+                    let _ = t.send((id, m));
+                }
+            })
+        });
+        crate::work::start(g.root.clone(), &sinks(1));
+        let empty = crate::settings::Settings::parse("");
+        let mut ui = Ui::new(te, f, empty.clone(), empty, Some((1, g.root.clone())), sinks, 1280, 800, 1.0);
+        let pump = |ui: &mut Ui, what: &str, done: &dyn Fn(&Ui) -> bool| {
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while !done(ui) {
+                let left = until.saturating_duration_since(std::time::Instant::now());
+                assert!(!left.is_zero(), "timed out waiting for {what}; notice: {:?}", ui.notice);
+                if let Ok((id, m)) = rx.recv_timeout(left) {
+                    ui.on_tab_msg(id, m);
+                }
+            }
+        };
+        pump(&mut ui, "refs", &|u| u.r.log_done && u.r.refs.head_branch.is_some());
+        assert!(ui.r.prs.is_none(), "tests never ask the hosting site");
+        let pr = ffwd_core::hosting::PullRequest {
+            number: 7,
+            title: "Add b".into(),
+            head: "feat/b".into(),
+            author: "alice".into(),
+            draft: true,
+            url: "https://github.com/o/r/pull/7".into(),
+        };
+        ui.on_msg(Msg::PullRequests(Ok(vec![pr])));
+        let it = ui.r.side.iter().find(|i| i.key == "p:7").expect("listed in the sidebar");
+        assert_eq!((it.label.as_str(), it.badge.as_str()), ("#7 Add b", "draft"));
+        let labels: Vec<String> = ui.ref_menu("p:7").iter().map(|i| i.label.clone()).collect();
+        assert!(labels.iter().any(|l| l == "Open in the browser"), "{labels:?}");
+        let items = ui.ref_menu("p:7");
+        let k = items.iter().position(|i| i.label == "Check out as pr/7").unwrap();
+        ui.open_menu(100, 100, items);
+        ui.menu_activate(k);
+        pump(&mut ui, "the checkout", &|u| u.r.refs.head_branch.as_deref() == Some("pr/7"));
+        assert!(g.root.join("b.txt").exists());
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     /// The find bar from the keyboard: message search selects the match,

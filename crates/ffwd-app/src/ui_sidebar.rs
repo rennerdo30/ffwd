@@ -40,6 +40,7 @@ pub(super) enum SideKind {
     Tag,
     Stash,
     Worktree,
+    PullRequest,
     Submodule,
 }
 
@@ -234,6 +235,25 @@ impl Ui {
                     State::Conflict => "conflict".into(),
                 };
                 v.push(it);
+            }
+        }
+        // Open pull requests (GitHub through gh, FF-40).
+        if let Some(Ok(prs)) = &self.r.prs {
+            let shown: Vec<&ffwd_core::hosting::PullRequest> =
+                prs.iter().filter(|p| matches(&p.title) || matches(&p.head)).collect();
+            if (!filtering || !shown.is_empty()) && header(&mut v, "Pull requests", "h:prs", fmt::num(shown.len())) {
+                for p in shown {
+                    let mut it = SideItem::new(
+                        0,
+                        SideKind::PullRequest,
+                        &format!("#{} {}", p.number, p.title),
+                        format!("p:{}", p.number),
+                    );
+                    if p.draft {
+                        it.badge = "draft".into();
+                    }
+                    v.push(it);
+                }
             }
         }
         if self.r.refs.worktrees.len() > 1 {
@@ -568,7 +588,7 @@ impl Ui {
                 SideKind::Stash => (STASH_FG, TEXT_2),
                 SideKind::Changes => (MOD, TEXT),
                 SideKind::All | SideKind::Files | SideKind::Activity => (TEXT_2, TEXT),
-                SideKind::Worktree | SideKind::Submodule => (TEXT_3, TEXT_2),
+                SideKind::Worktree | SideKind::Submodule | SideKind::PullRequest => (TEXT_3, TEXT_2),
                 SideKind::Header => (TEXT_3, TEXT_3),
             };
             let text = if selected { TEXT } else { text };
@@ -623,6 +643,21 @@ impl Ui {
                     cv.round_border(o, self.pf(2.0), icon, BG_SIDEBAR);
                     cv.fill(
                         Rect::new((ix - self.pf(1.5)) as i32, (cy - self.pf(1.5)) as i32, self.px(3.0), self.px(3.0)),
+                        icon,
+                    );
+                }
+                SideKind::PullRequest => {
+                    // Two dots joined: a branch asking to merge.
+                    cv.fill_circle(ix - self.pf(3.0), cy - self.pf(3.5), self.pf(1.8), icon);
+                    cv.fill_circle(ix + self.pf(3.0), cy + self.pf(3.5), self.pf(1.8), icon);
+                    cv.stroke(
+                        &[(ix - self.pf(3.0), cy - self.pf(3.5)), (ix - self.pf(3.0), cy + self.pf(4.5))],
+                        self.pf(1.3),
+                        icon,
+                    );
+                    cv.stroke(
+                        &[(ix - self.pf(3.0), cy - self.pf(1.0)), (ix + self.pf(3.0), cy + self.pf(3.5))],
+                        self.pf(1.3),
                         icon,
                     );
                 }

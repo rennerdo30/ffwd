@@ -164,6 +164,12 @@ The capture above is the real PoC UI. `ffwd --snapshot` rendered it offscreen fr
 - **Diff and merge tools:** `git difftool` / `git mergetool` with the tool your Git config names (`diff.guitool`, `diff.tool`, `merge.tool`). Without one, ffwd says how to set it instead of starting a terminal tool. After the merge tool closes, Local Changes reloads.
 - **Git program:** Settings → General → **Git program** (`git.path`) or the `FFWD_GIT` variable, chosen once at start, off the UI thread.
 
+## Pull requests (FF-40)
+
+- **Source:** the GitHub CLI (`gh`), signed in by the user; ffwd never sees a token. With a GitHub remote, ffwd lists the open pull requests (up to 50) on a worker after the refs load. A reload after a fetch lists them again. Setting `hosting.enabled = false` (or `FFWD_NO_HOSTING`) turns it off.
+- **Sidebar:** a Pull requests section with "#<n> <title>", "draft" marked. Its menu: Check out as `pr/<n>` (fetches GitHub's `pull/<n>/head`, no `gh` needed), Open in the browser, Copy link, Copy branch name.
+- **Create:** the section header's menu or the palette, "Create pull request on GitHub", runs `gh pr create --web`. GitHub's page opens with the repository's template. If the branch is not pushed yet, ffwd says so.
+
 ## Stashes (FF-38)
 
 - **Save:** `Ctrl+Shift+S` (or the palette's "Stash changes") opens a dialog with an optional message. Untracked files are included by default; `Tab` toggles that.

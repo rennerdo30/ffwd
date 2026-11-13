@@ -485,6 +485,7 @@ dependencies = [
 name = "ffwd-core"
 version = "0.2.0-beta.1"
 dependencies = [
+ "serde_json",
  "windows-sys 0.61.2",
 ]
 

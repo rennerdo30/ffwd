@@ -134,11 +134,11 @@
 
 | Feature | ffwd | Notes |
 |---|---|---|
-| GitHub, GitLab, Bitbucket, Azure DevOps, Gitea accounts, including Enterprise and self-hosted | M2 | Tokens in the OS keychain |
+| GitHub, GitLab, Bitbucket, Azure DevOps, Gitea accounts, including Enterprise and self-hosted | Partial | GitHub through the GitHub CLI (`gh`), which keeps the token in the OS keychain; ffwd never sees it. Others come later |
 | OAuth sign-in; several accounts per service | M2 | |
 | Clone from the account's repository list | M2 | |
-| Create pull requests (uses the repository's PR template) | M2 | |
-| Pull request and issue tabs with author and assignee filters | M3 | |
+| Create pull requests (uses the repository's PR template) | Partial | GitHub through the GitHub CLI: opens GitHub's new pull request page for the branch (with the template) |
+| Pull request and issue tabs with author and assignee filters | Partial | GitHub: open pull requests in the sidebar (open in the browser, check out as `pr/<n>`); filters and issues come later |
 | GitHub notifications (unread marks, menu bar on Mac) | M3 | |
 | Avatars from GitHub, including anonymous addresses | M1 | |
 | CI and pipeline status | M3 | Not in other clients; FF-24 |

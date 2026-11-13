@@ -12,6 +12,7 @@ pub mod diff;
 pub mod files;
 pub mod git;
 pub mod graph;
+pub mod hosting;
 pub mod log;
 pub mod ops;
 pub mod patches;

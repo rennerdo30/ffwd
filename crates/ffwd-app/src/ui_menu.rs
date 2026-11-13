@@ -28,6 +28,8 @@ pub enum MenuAct {
     OpenUrl(String),
     /// Copy a patch (commit, stash, working changes) to the clipboard.
     CopyPatch(PatchSrc),
+    /// `gh pr create --web` for the current branch.
+    CreatePr,
     /// Files (FF-47): open in the editor (or the default app), show in
     /// the folder, external diff and merge tools.
     OpenFile(PathBuf, bool),
@@ -304,6 +306,31 @@ impl Ui {
             v.push(item("Update all submodules", MenuAct::Run(RefOp::SubUpdate(None))));
             v.push(item("Make all URLs relative", MenuAct::Run(RefOp::SubRelative(None))));
             v.push(item("Add submodule…", MenuAct::Name(NameAct::AddSubmoduleUrl)));
+        } else if let Some(n) = key.strip_prefix("p:").and_then(|n| n.parse::<u32>().ok()) {
+            let pr = self
+                .r
+                .prs
+                .as_ref()
+                .and_then(|r| r.as_ref().ok())
+                .and_then(|v| v.iter().find(|p| p.number == n))
+                .cloned();
+            let remote = self
+                .r
+                .refs
+                .remotes
+                .iter()
+                .find(|r| ffwd_core::web::host(&r.fetch_url).is_some_and(|h| h == "github.com"))
+                .map(|r| r.name.to_string())
+                .unwrap_or_else(|| "origin".into());
+            v.push(item(format!("Check out as pr/{n}"), MenuAct::Run(RefOp::PrCheckout(remote, n))));
+            if let Some(p) = pr {
+                v.push(item("Open in the browser", MenuAct::OpenUrl(p.url.to_string())));
+                v.push(sep());
+                v.push(item("Copy link", MenuAct::Copy(p.url.to_string())));
+                v.push(item("Copy branch name", MenuAct::Copy(p.head.to_string())));
+            }
+        } else if key == "h:prs" {
+            v.push(item("Create pull request on GitHub", MenuAct::CreatePr));
         } else if key == "h:remotes" {
             v.push(item("Add remote…", MenuAct::Name(NameAct::AddRemoteUrl)));
             v.push(item("Fetch all remotes", MenuAct::Run(RefOp::Sync(ffwd_core::ops::Op::Fetch))));
@@ -454,6 +481,7 @@ impl Ui {
             Some(MenuAct::OpenTerminal(p)) => crate::platform::open_terminal(p),
             Some(MenuAct::OpenUrl(u)) => crate::platform::open_url(u),
             Some(MenuAct::CopyPatch(src)) => self.make_patch(src, None),
+            Some(MenuAct::CreatePr) => self.create_pr(),
             Some(MenuAct::RebaseFrom(sha)) => self.open_rebase(sha),
             Some(MenuAct::OpenSubmodule(name)) => self.open_submodule(&name),
             Some(MenuAct::Ask(a)) => self.open_dialog(DialogKind::Ask(*a)),
@@ -1027,6 +1055,30 @@ impl Ui {
         if merge && self.r.changes_view {
             self.reload_changes();
         }
+    }
+
+    /// Loads the open pull requests when a GitHub remote exists (once per
+    /// repository load; a reload after fetch loads them again).
+    pub(super) fn load_prs(&mut self) {
+        if self.r.prs.is_some() || !ffwd_core::hosting::has_github_remote(&self.r.refs.remotes) {
+            return;
+        }
+        let (Some(g), Some(t)) = (self.git_for_tab(), self.tabs.get(self.cur_tab)) else { return };
+        self.r.prs = Some(Err("loading".into()));
+        let sink = (self.sinks)(t.id);
+        crate::work::spawn("pull-requests", &sink, move |sink| {
+            sink(Msg::PullRequests(ffwd_core::hosting::pull_requests(&g)));
+        });
+    }
+
+    /// Opens GitHub's page for a new pull request from the current branch.
+    pub(super) fn create_pr(&mut self) {
+        let (Some(g), Some(t)) = (self.git_for_tab(), self.tabs.get(self.cur_tab)) else { return };
+        let sink = (self.sinks)(t.id);
+        self.set_notice("Opening GitHub's new pull request page…".into());
+        crate::work::spawn("pr-create", &sink, move |sink| {
+            sink(Msg::PrCreate(ffwd_core::hosting::create_web(&g)));
+        });
     }
 
     pub(super) fn run_refop(&mut self, op: RefOp) {
