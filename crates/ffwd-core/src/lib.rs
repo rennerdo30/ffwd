@@ -13,6 +13,7 @@ pub mod log;
 pub mod ops;
 pub mod refops;
 pub mod refs;
+pub mod search;
 
 pub use git::{Git, GitError};
 pub use graph::{Graph, GraphRow, Seg};

@@ -15,6 +15,7 @@
   - check out (also remote branches, with tracking, and detached), create, rename and delete branches and tags;
   - merge (four modes), rebase, cherry-pick, revert, reset (soft, mixed, hard), each with a backup ref where commits could be lost;
   - double-click checkout; `Ctrl+B` and `Ctrl+Shift+G`.
+- **Find bar** (`Ctrl+F`, FF-34): search messages, authors, SHAs, content (`-S`) and paths. Results stream in, non-matches are dimmed, matches are marked on the scroll track, and `↑`/`↓` jump between them.
 - **Fix:** the Settings backdrop no longer stays on screen after closing (FF-52).
 
 ## 0.2.0-beta.1

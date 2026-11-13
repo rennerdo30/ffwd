@@ -23,6 +23,8 @@ mod agents_view;
 mod changes_view;
 #[path = "ui_menu.rs"]
 mod menu;
+#[path = "ui_search.rs"]
+mod search_view;
 use menu::{Dialog, DialogKind, Menu, NameAct};
 #[path = "ui_hover.rs"]
 mod hover;
@@ -262,6 +264,7 @@ const CMD_UPDATES: &str = "Check for updates";
 const CMD_SETTINGS: &str = "Settings…";
 const CMD_AGENTS: &str = "Agents (experimental)…";
 const CMD_ACTIONS: &str = "Commit actions…";
+const CMD_SEARCH: &str = "Search commits…";
 const CMD_BRANCH: &str = "Create branch here";
 const CMD_TAG: &str = "Create tag here";
 const CMD_PICK: &str = "Cherry-pick this commit";
@@ -270,6 +273,7 @@ const CMD_REVERT: &str = "Revert this commit";
 /// Commands that work today; the rest of COMMANDS are listed so the
 /// palette shows the plan, and say so when chosen.
 const WORKING: &[&str] = &[
+    CMD_SEARCH,
     CMD_ACTIONS,
     CMD_BRANCH,
     CMD_TAG,
@@ -299,6 +303,7 @@ const COMMANDS: &[(&str, &str)] = &[
     (CMD_SETTINGS, "Ctrl ,"),
     (CMD_AGENTS, "Ctrl Shift A"),
     (CMD_ACTIONS, "Ctrl ."),
+    (CMD_SEARCH, "Ctrl F"),
     ("Commit staged changes", "Ctrl Enter"),
     (CMD_BRANCH, "Ctrl B"),
     (CMD_TAG, "Ctrl Shift G"),
@@ -357,6 +362,8 @@ pub struct RepoState {
     /// The Local Changes view replaces history and details (FF-35).
     pub changes_view: bool,
     pub changes: changes_view::Changes,
+    /// The find bar over the commit list (FF-34).
+    pub search: Option<search_view::Search>,
 }
 
 /// One repository tab.
@@ -429,6 +436,8 @@ pub struct Ui {
     /// A context menu and a dialog (ui_menu.rs).
     menu: Option<Menu>,
     dialog: Option<Dialog>,
+    /// The newest search; older search workers stop when it moves on.
+    search_seq: Arc<std::sync::atomic::AtomicU64>,
     pub notice: Option<String>,
     update_available: bool,
     update_requested: bool,
@@ -526,6 +535,7 @@ impl Ui {
             agent_scope_repo: false,
             menu: None,
             dialog: None,
+            search_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             update_available: false,
             update_requested: false,
             update_check_requested: false,
@@ -1014,6 +1024,7 @@ impl Ui {
                     self.r.by_id.insert(c.id, self.r.commits.len() as u32);
                     self.r.commits.push(c);
                 }
+                self.search_new_rows(start);
                 if self.r.first_batch_ms.is_none() {
                     self.r.first_batch_ms = Some(elapsed_ms);
                 }
@@ -1090,6 +1101,7 @@ impl Ui {
             Msg::LastMessage(m) => self.on_last_message(m),
             Msg::Discarded(b) => self.r.changes.undo.push(b),
             Msg::RefOp(r) => self.on_refop(r),
+            Msg::SearchBatch { seq, ids, done } => self.on_search_batch(seq, ids, done),
         }
     }
 
@@ -1270,6 +1282,14 @@ impl Ui {
             && !self.tabs.is_empty()
         {
             return self.open_menu_for_selection();
+        }
+        if self.settings_view.is_none() && self.agent_view.is_none() && self.palette.is_none() {
+            if matches!(k, Key::Ctrl('f')) && !self.r.changes_view {
+                return self.open_search();
+            }
+            if self.r.search.as_ref().is_some_and(|s| s.typing) && !self.r.changes_view && self.search_key(k) {
+                return;
+            }
         }
         if matches!(k, Key::Ctrl(',')) && self.settings_view.is_none() {
             return self.open_settings();
@@ -1469,6 +1489,9 @@ impl Ui {
         }
         if let Some(&(_, a)) = self.top_buttons.iter().find(|(r, _)| r.contains(x, y)) {
             self.top_action(a);
+            return;
+        }
+        if !self.r.changes_view && self.r.search.is_some() && self.search_click(x, y) {
             return;
         }
         if self.r.changes_view && self.changes_click(x, y) {
@@ -1679,6 +1702,7 @@ impl Ui {
             CMD_SETTINGS => self.open_settings(),
             CMD_AGENTS => self.open_agents(),
             CMD_ACTIONS => self.open_menu_for_selection(),
+            CMD_SEARCH => self.open_search(),
             CMD_BRANCH | CMD_TAG | CMD_PICK | CMD_REVERT => self.selected_commit_command(c),
             LAYOUT_BELOW => self.set_layout(DetailsLayout::Below),
             LAYOUT_BESIDE => self.set_layout(DetailsLayout::Beside),
@@ -2361,7 +2385,9 @@ impl Ui {
         let (ui, semi) = (self.f.ui, self.f.semi);
         let (text_x, author_x, date_x, sha_x) = self.list_columns();
         let head = self.lay.list_head;
-        if !clip.intersect(head).is_empty() {
+        if !clip.intersect(head).is_empty() && self.r.search.is_some() {
+            self.paint_search_head(cv, head);
+        } else if !clip.intersect(head).is_empty() {
             cv.fill(head, BG);
             cv.fill(Rect::new(head.x, head.bottom() - 1, head.w, 1), BORDER_SOFT);
             let base = (head.y as f32 + head.h as f32 / 2.0 + self.pf(4.0)).round();
@@ -2388,6 +2414,10 @@ impl Ui {
                 let rr = Rect::new(body.x, y, body.w, self.lay.row_h);
                 let old = cv.set_clip(clip.intersect(body).intersect(rr));
                 self.paint_row(cv, row, rr, text_x, author_x, date_x, sha_x, ui, semi);
+                // A search dims what doesn't match; the matches stay bright.
+                if self.row_dimmed(row) {
+                    cv.fill_alpha(rr, BG, 165);
+                }
                 cv.set_clip(old);
                 y += self.lay.row_h;
             }
@@ -2402,6 +2432,7 @@ impl Ui {
                 let ty = sb.y + ((sb.h - th) as f32 * self.r.top as f32 / (n - vis) as f32) as i32;
                 cv.fill_round(Rect::new(sb.x + self.px(2.0), ty, sb.w - self.px(4.0), th), self.pf(3.0), BORDER_HOVER);
             }
+            self.paint_search_marks(cv, sb);
             // Selection marker on the scroll track.
             let my = sb.y + (sb.h as f32 * self.r.sel as f32 / n as f32) as i32;
             cv.fill(Rect::new(sb.x + self.px(1.0), my, sb.w - self.px(2.0), self.px(2.0)), ACCENT);
@@ -3448,6 +3479,87 @@ mod tests {
         pump(&mut ui, "the forced delete", &|u| u.dialog.is_none());
         assert!(!branch("lonely"));
         assert!(ui.notice.as_deref().is_some_and(|n| n.contains("git branch lonely ")), "{:?}", ui.notice);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The find bar from the keyboard: message search selects the match,
+    /// Tab changes the field, content waits for Enter, Esc closes.
+    #[test]
+    fn find_bar_with_keys() {
+        use std::sync::mpsc;
+        let mut te = TextEngine::new();
+        let Some(f) = load_fonts(&mut te) else { return };
+        let dir = std::env::temp_dir().join(format!("ffwd-ui-search-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = Git { root: dir.clone() };
+        for a in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.name", "ffwd test"],
+            &["config", "user.email", "test@example.invalid"],
+            &["config", "commit.gpgsign", "false"],
+        ] {
+            g.output(a).unwrap();
+        }
+        for (file, text, msg) in [
+            ("a.txt", "a\n", "Add the README"),
+            ("p.rs", "fn draw_panel() {}\n", "Draw the panel"),
+            ("a.txt", "b\n", "Fix a typo"),
+        ] {
+            std::fs::write(dir.join(file), text).unwrap();
+            g.output(&["add", "."]).unwrap();
+            g.output(&["commit", "-q", "-m", msg]).unwrap();
+        }
+        let (tx, rx) = mpsc::channel::<(u64, Msg)>();
+        let tx = Arc::new(std::sync::Mutex::new(tx));
+        let sinks: SinkFactory = Arc::new(move |id| {
+            let tx = tx.clone();
+            Arc::new(move |m| {
+                if let Ok(t) = tx.lock() {
+                    let _ = t.send((id, m));
+                }
+            })
+        });
+        crate::work::start(dir.clone(), &sinks(1));
+        let empty = crate::settings::Settings::parse("");
+        let mut ui = Ui::new(te, f, empty.clone(), empty, Some((1, dir.clone())), sinks, 1280, 800, 1.0);
+        let pump = |ui: &mut Ui, what: &str, done: &dyn Fn(&Ui) -> bool| {
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while !done(ui) {
+                let left = until.saturating_duration_since(std::time::Instant::now());
+                assert!(!left.is_zero(), "timed out waiting for {what}");
+                if let Ok((id, m)) = rx.recv_timeout(left) {
+                    ui.on_tab_msg(id, m);
+                }
+            }
+        };
+        let done = |u: &Ui| u.r.search.as_ref().is_some_and(|s| s.done);
+        pump(&mut ui, "history", &|u| u.r.log_done && u.r.commits.len() == 3);
+        ui.key(Key::Ctrl('f'));
+        for c in "panel".chars() {
+            ui.key(Key::Char(c));
+        }
+        pump(&mut ui, "the message search", &done);
+        assert_eq!(ui.r.search.as_ref().unwrap().rows.len(), 1);
+        assert_eq!(&*ui.r.commits[ui.r.sel].subject, "Draw the panel", "the first match is selected");
+        assert!(ui.row_dimmed(0) && !ui.row_dimmed(ui.r.sel));
+        // Message → Author → SHA: "panel" is no SHA prefix.
+        ui.key(Key::Tab);
+        ui.key(Key::Tab);
+        pump(&mut ui, "the SHA search", &done);
+        assert!(ui.r.search.as_ref().unwrap().rows.is_empty());
+        // → Content: waits for Enter.
+        ui.key(Key::Tab);
+        ui.key(Key::Ctrl('a'));
+        for c in "draw_panel".chars() {
+            ui.key(Key::Char(c));
+        }
+        assert!(ui.r.search.as_ref().unwrap().rows.is_empty() && !ui.search_active(), "content waits for Enter");
+        ui.key(Key::Enter);
+        pump(&mut ui, "the content search", &|u| done(u) && u.search_active());
+        assert_eq!(ui.r.search.as_ref().unwrap().rows.len(), 1);
+        ui.key(Key::Esc);
+        assert!(ui.r.search.is_none() && !ui.row_dimmed(0));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -59,6 +59,8 @@ pub struct Args {
     pub menu: bool,
     /// Snapshot with the "create branch" prompt open.
     pub prompt: bool,
+    /// Snapshot with the find bar searching messages for this text.
+    pub find: Option<String>,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -83,6 +85,7 @@ fn parse_args() -> Result<Args, String> {
         changes: false,
         menu: false,
         prompt: false,
+        find: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -119,6 +122,7 @@ fn parse_args() -> Result<Args, String> {
             "--changes" => a.changes = true,
             "--menu" => a.menu = true,
             "--prompt" => a.prompt = true,
+            "--find" => a.find = Some(val("--find")?),
             "--hover" => {
                 let v = val("--hover")?;
                 let (x, y) = v.split_once(',').ok_or("--hover is X,Y")?;

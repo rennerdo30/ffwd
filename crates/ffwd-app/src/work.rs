@@ -47,6 +47,12 @@ pub enum Msg {
         commit: bool,
         result: Result<String, String>,
     },
+    /// Search results (`seq` drops stale searches).
+    SearchBatch {
+        seq: u64,
+        ids: Vec<Oid>,
+        done: bool,
+    },
     /// A branch, tag or history operation ended.
     RefOp(Result<String, ffwd_core::refops::OpError>),
     /// What a discard removed (for Ctrl+Z).

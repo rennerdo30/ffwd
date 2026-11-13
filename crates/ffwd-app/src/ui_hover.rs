@@ -23,6 +23,8 @@ pub enum Hot {
     Agent(usize),
     /// An entry of the Local Changes view's hit list.
     Change(usize),
+    /// An element of the find bar.
+    Find(usize),
     /// A context menu item.
     Menu(usize),
     /// A dialog element.
@@ -90,6 +92,9 @@ impl Ui {
         if self.search_rect.contains(x, y) {
             return Some(Hot::Search);
         }
+        if !self.r.changes_view && self.r.search.is_some() && self.lay.list_head.contains(x, y) {
+            return self.search_hit_at(x, y).map(Hot::Find);
+        }
         let b = self.lay.list_body;
         if b.contains(x, y) {
             let row = self.r.top + ((y - b.y) / self.lay.row_h.max(1)) as usize;
@@ -117,6 +122,7 @@ impl Ui {
             Hot::Setting(..) | Hot::SettingsPage(_) => self.settings_rect(),
             Hot::Agent(_) => self.agents_rect(),
             Hot::Menu(_) => self.menu_rect(),
+            Hot::Find(_) => self.lay.list_head,
             Hot::Dialog(_) => self.dialog_rect(),
             Hot::Change(i) => self.r.changes.hits.get(i).map_or(self.lay.list, |h| h.0.inset(-2, -2)),
         }
@@ -158,6 +164,7 @@ impl Ui {
             Some(Hot::Row(_) | Hot::File(_)) => Cursor::Default,
             Some(Hot::Agent(i)) if self.agent_hit_is_field(i) => Cursor::Text,
             Some(Hot::Change(i)) if self.change_hit_is_text(i) => Cursor::Text,
+            Some(Hot::Find(i)) if self.search_hit_is_field(i) => Cursor::Text,
             Some(Hot::Setting(row, _)) if self.setting_is_text(row) => Cursor::Text,
             Some(_) => Cursor::Pointer,
         };

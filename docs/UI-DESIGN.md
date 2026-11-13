@@ -78,6 +78,19 @@ The capture above is the real PoC UI. `ffwd --snapshot` rendered it offscreen fr
   - a tab shows an amber ring while its repository has uncommitted changes;
   - every Git call runs on a worker.
 
+## Find bar (FF-34)
+
+`Ctrl+F` (or *Search commits…* in `Ctrl+K`) turns the list header into a find bar.
+
+- **Fields:** Message, Author, SHA, Content and Path. `Tab` switches between them, or click a chip.
+  - Message and author search as you type (literal text, case-insensitive).
+  - SHA matches prefixes in the loaded history without calling Git.
+  - Content (`git log -S`) and Path (any part of a path) search on `Enter`, because they read every commit.
+- **Results:** they stream in from a worker, and a newer search stops the older one at once.
+  - Commits that don't match are dimmed; matches are marked in amber on the scroll track.
+  - The first match is selected, and the bar counts "n of m".
+- **Keys:** `Enter`/`↓` go to the next match, `↑` to the previous; `Esc` closes the bar. Clicking the list gives it the keyboard back; `Ctrl+F` returns to the bar.
+
 ## Branches, tags and history operations (FF-36, FF-37)
 
 - **Commit menu:** right-click a commit, or press `Ctrl+.`, for:
@@ -147,6 +160,7 @@ Like other clients: one tab per repository under the top bar.
 | `Space` / `Enter` (Local Changes) | Stage or unstage the selected file |
 | `Ctrl+Enter` | Commit (Local Changes) |
 | `Ctrl+.` / right click | Actions for the selected commit or ref |
+| `Ctrl+F` | Find bar: search commits |
 | `Ctrl+B` / `Ctrl+Shift+G` | Create a branch / tag at the selected commit |
 | `Ctrl+A` `Ctrl+C` `Ctrl+V` `Ctrl+X` `Ctrl+Backspace` `← →` `Home End` | Text editing in the palette and settings fields |
 | `Ctrl+W` / `Ctrl+Shift+T` | Close the tab / reopen the last closed one |

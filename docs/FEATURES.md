@@ -40,8 +40,8 @@
 
 | Feature | ffwd | Notes |
 |---|---|---|
-| Commit search by message, author, SHA | Partial | The palette finds SHAs and refs |
-| Search by diff content and by file path, with matching files listed | M1 | Streams from a worker |
+| Commit search by message, author, SHA | **Built** | Find bar (`Ctrl+F`) |
+| Search by diff content and by file path, with matching files listed | Partial | Content and path search are built; the list of matching files comes later |
 | Search the current branch or the whole repository | M1 | |
 | Recent search queries | M1 | |
 | Remove matches with Delete (a to-do list) | M2 | |

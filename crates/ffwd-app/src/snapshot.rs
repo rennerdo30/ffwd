@@ -108,6 +108,20 @@ pub fn run(args: &Args, t0: Instant) -> i32 {
     if args.prompt {
         ui.snapshot_prompt();
     }
+    if let Some(q) = &args.find {
+        ui.key(Key::Ctrl('f'));
+        for c in q.chars() {
+            ui.key(Key::Char(c));
+        }
+        let until = Instant::now() + Duration::from_secs(10);
+        while let Ok((id, m)) = rx.recv_timeout(until.saturating_duration_since(Instant::now())) {
+            let done = matches!(m, Msg::SearchBatch { done: true, .. });
+            ui.on_tab_msg(id, m);
+            if done {
+                break;
+            }
+        }
+    }
     if let Some(p) = args.settings_page {
         ui.open_settings_page(p);
     }
