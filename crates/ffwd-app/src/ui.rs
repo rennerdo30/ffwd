@@ -621,6 +621,9 @@ pub struct Ui {
     diff_strip: Rect,
     /// The list title, which switches all branches / current branch.
     scope_rect: Rect,
+    /// Extra height of the details header for a commit message longer
+    /// than fits by default (up to five body lines; FF-57).
+    details_extra: i32,
     /// The history header's Find button (FF-57).
     head_find_rect: Rect,
     /// The status bar's action for the notice (Install update, Discard,
@@ -768,6 +771,7 @@ impl Ui {
             search_rect: Rect::default(),
             diff_strip: Rect::default(),
             scope_rect: Rect::default(),
+            details_extra: 0,
             head_find_rect: Rect::default(),
             notice_act: None,
             notice_btn: Rect::default(),
@@ -1261,6 +1265,8 @@ impl Ui {
             },
         };
         self.r.top = self.r.top.min(self.max_top());
+        // The message wraps differently at the new width.
+        self.details_extra = self.details_extra_for();
         self.damage.full = true;
     }
 
@@ -1618,14 +1624,17 @@ impl Ui {
             self.show_first_file();
             self.request_diff();
         } else {
+            self.update_details_extra();
             self.request_details();
         }
-        self.damage.rects.extend([self.lay.details, self.lay.status]);
+        // The scroll track carries the selection marker.
+        self.damage.rects.extend([self.lay.details, self.lay.status, self.lay.scrollbar]);
     }
 
     /// Selects the commit's first file, or the first that matched the
     /// search (FF-34), and scrolls the file list to it.
     fn show_first_file(&mut self) {
+        self.update_details_extra();
         let i = self.first_file();
         self.r.sel_file = i;
         self.r.file_top = (i + 1).saturating_sub(self.file_rows_visible().max(1));
@@ -3459,7 +3468,42 @@ impl Ui {
     }
 
     fn header_h(&self) -> i32 {
-        self.px(190.0)
+        self.px(190.0) + self.details_extra
+    }
+
+    /// Body lines shown at most, and the default room (two lines).
+    const BODY_LINES: usize = 5;
+
+    /// Recomputes the details header's extra height for the selected
+    /// commit's message (on new details and on resize, never mid-paint).
+    fn update_details_extra(&mut self) {
+        let extra = self.details_extra_for();
+        if extra != self.details_extra {
+            self.details_extra = extra;
+            self.damage.rects.push(self.lay.details);
+        }
+    }
+
+    fn details_extra_for(&mut self) -> i32 {
+        let Some(det) = self.r.details.clone() else { return 0 };
+        let (ui, semi) = (self.f.ui, self.f.semi);
+        let maxw = self.lay.details.w as f32 - 2.0 * self.pf(22.0);
+        if maxw <= 0.0 {
+            return 0;
+        }
+        let subject = det.message.lines().next().unwrap_or("").to_string();
+        let s16 = self.pf(16.0);
+        let subj = wrap(&mut self.te, semi, s16, &subject, maxw).len().clamp(1, 2);
+        let body: Vec<String> =
+            det.message.lines().skip(1).skip_while(|l| l.trim().is_empty()).map(|s| s.to_string()).collect();
+        let s13 = self.pf(13.0);
+        let lines: usize = body.iter().map(|p| wrap(&mut self.te, ui, s13, p, maxw).len().max(1)).sum();
+        // The same arithmetic as paint_details: the rows that fit by default.
+        let lh = self.pf(19.0);
+        let y = self.pf(34.0) + subj as f32 * self.pf(22.0);
+        let fit = ((self.pf(140.0) - self.pf(30.0) - y) / lh).floor().max(0.0) as usize;
+        let more = lines.min(Self::BODY_LINES).saturating_sub(fit);
+        (more as f32 * lh).round() as i32
     }
 
     fn file_rows_visible(&self) -> usize {
@@ -3531,7 +3575,7 @@ impl Ui {
         };
         // The body gets the lines that fit above the author row; the last
         // visible line ends in an ellipsis when more text follows.
-        let meta_y = d.y as f32 + self.pf(140.0);
+        let meta_y = d.y as f32 + self.pf(140.0) + self.details_extra as f32;
         let lh = self.pf(19.0);
         let fit = ((meta_y - self.pf(30.0) - y) / lh).floor().max(0.0) as usize;
         let lines: Vec<String> = body.iter().flat_map(|p| wrap(&mut self.te, ui, s13, p, maxw)).collect();
@@ -7049,6 +7093,74 @@ mod tests {
         assert!(s.contains('…') && s.starts_with("worktree") && s.ends_with("f2b"), "{s}");
         assert!(te.measure(f.ui, 13.0, &s) <= w);
         assert_eq!(fit_middle(&mut te, f.ui, 13.0, name, 1.0), "…");
+    }
+
+    /// The commit message in the details (FF-57): a long body shows up to
+    /// five lines and moves the file list down; a short one keeps the
+    /// default height; repaints match full paints.
+    #[test]
+    fn details_show_more_of_the_message() {
+        use std::sync::mpsc;
+        let mut te = TextEngine::new();
+        let Some(f) = load_fonts(&mut te) else { return };
+        let dir = std::env::temp_dir().join(format!("ffwd-ui-body-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = Git { root: dir.clone() };
+        for a in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.name", "ffwd test"],
+            &["config", "user.email", "test@example.invalid"],
+            &["config", "commit.gpgsign", "false"],
+        ] {
+            g.output(a).unwrap();
+        }
+        std::fs::write(dir.join("a.txt"), "a\n").unwrap();
+        g.output(&["add", "."]).unwrap();
+        g.output(&["commit", "-q", "-m", "Short"]).unwrap();
+        std::fs::write(dir.join("a.txt"), "b\n").unwrap();
+        let body = (1..=8).map(|i| format!("Line {i} of the body.")).collect::<Vec<_>>().join("\n");
+        g.output(&["commit", "-q", "-am", &format!("Long\n\n{body}")]).unwrap();
+        let (tx, rx) = mpsc::channel::<(u64, Msg)>();
+        let tx = Arc::new(std::sync::Mutex::new(tx));
+        let sinks: SinkFactory = Arc::new(move |id| {
+            let tx = tx.clone();
+            Arc::new(move |m| {
+                if let Ok(t) = tx.lock() {
+                    let _ = t.send((id, m));
+                }
+            })
+        });
+        crate::work::start(dir.clone(), &sinks(1));
+        let empty = crate::settings::Settings::parse("");
+        let mut ui = Ui::new(te, f, empty.clone(), empty, Some((1, dir.clone())), sinks, 1280, 800, 1.0);
+        let pump = |ui: &mut Ui, what: &str, done: &dyn Fn(&Ui) -> bool| {
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while !done(ui) {
+                let left = until.saturating_duration_since(std::time::Instant::now());
+                assert!(!left.is_zero(), "timed out waiting for {what}");
+                if let Ok((id, m)) = rx.recv_timeout(left) {
+                    ui.on_tab_msg(id, m);
+                }
+            }
+        };
+        let shown =
+            |subject: &'static str| move |u: &Ui| u.r.details.as_ref().is_some_and(|d| d.message.starts_with(subject));
+        pump(&mut ui, "the long commit", &shown("Long"));
+        let mut screen = vec![0u32; 1280 * 800];
+        ui.paint(&mut Canvas::new(&mut screen, 1280, 800), true);
+        let long_files = ui.files_rect().y;
+        assert!(ui.details_extra > 0, "a long body takes more room");
+        assert!(ui.details_extra <= (3.0 * ui.pf(19.0)).round() as i32 + 1, "at most five lines: {}", ui.details_extra);
+        ui.key(Key::Down);
+        pump(&mut ui, "the short commit", &shown("Short"));
+        assert_eq!(ui.details_extra, 0);
+        assert!(ui.files_rect().y < long_files, "the file list moves back up");
+        assert_partial_paint_is_full(&mut ui, &mut screen, "short commit");
+        ui.key(Key::Up);
+        pump(&mut ui, "the long commit again", &shown("Long"));
+        assert_partial_paint_is_full(&mut ui, &mut screen, "long commit");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Find in the diff (FF-34): `Ctrl+F` with the diff focused searches
