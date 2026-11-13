@@ -206,13 +206,13 @@ fn execute(cfg: &Config, repo: &Path, id: &str, prompt: &str, cancel: &AtomicBoo
     send(&rec);
 
     // 1. Repository, base and folders.
-    let prep = (|| -> Result<(Git, PathBuf, PathBuf, PathBuf, Option<String>), String> {
+    let prep = (|| -> Result<(Git, PathBuf, PathBuf, PathBuf, Found), String> {
         if let Some(why) = cfg.refusal() {
             return Err(why);
         }
         // Is the agent installed where it will run? Checked before any
         // Git change, so a refusal leaves nothing behind.
-        let home = preflight(cfg)?;
+        let found = preflight(cfg)?;
         let mut top = Git::discover(repo).map_err(|e| e.to_string())?;
         top.root = native(&top.root.to_string_lossy());
         let common = native(&git_text(&top, &["rev-parse", "--path-format=absolute", "--git-common-dir"])?);
@@ -231,9 +231,9 @@ fn execute(cfg: &Config, repo: &Path, id: &str, prompt: &str, cancel: &AtomicBoo
             return Err(format!("{} already exists", rec.worktree.display()));
         }
         std::fs::create_dir_all(&run_dir).map_err(|e| format!("cannot create {}: {e}", run_dir.display()))?;
-        Ok((top, common, root, run_dir, home))
+        Ok((top, common, root, run_dir, found))
     })();
-    let (top, common, _root, run_dir, home) = match prep {
+    let (top, common, _root, run_dir, found) = match prep {
         Ok(v) => v,
         Err(why) => {
             fail(&mut rec, &mut log, why);
@@ -309,7 +309,8 @@ fn execute(cfg: &Config, repo: &Path, id: &str, prompt: &str, cancel: &AtomicBoo
         git_dir: &git_dir,
         run_dir: &run_dir,
         vars: vars.clone(),
-        home,
+        home: found.home,
+        program: found.program,
     };
     rec.status = Status::Running;
     save(&rec);
@@ -489,11 +490,43 @@ fn execute(cfg: &Config, repo: &Path, id: &str, prompt: &str, cancel: &AtomicBoo
     send(&rec);
 }
 
+/// What the preflight check found where the agent will run.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Found {
+    /// That place's home folder.
+    pub home: Option<String>,
+    /// Inside WSL: (the program's name in the command, its real path).
+    pub program: Option<(String, String)>,
+}
+
+/// Reads the WSL check's output: the home folder, then the program's real
+/// path, as the last two lines (login shells may print before them).
+pub fn parse_wsl_found(out: &str, program: &str) -> Found {
+    let lines: Vec<&str> = out.lines().map(|l| l.trim().trim_matches('\0')).filter(|l| !l.is_empty()).collect();
+    let n = lines.len();
+    let home = (n >= 2).then(|| lines[n - 2]).filter(|h| h.starts_with('/')).map(str::to_string);
+    let real = lines.last().filter(|p| p.starts_with('/')).map(|p| (program.to_string(), p.to_string()));
+    Found { home, program: real }
+}
+
+/// The WSL check: finds `$1` (the agent's program) with the plain PATH or
+/// else through the user's login shell (zsh, bash: `~/.local/bin`, nvm),
+/// refuses one seen only through /mnt, checks `$2` (bubblewrap), and prints
+/// the home folder and the program's real path. Exit 3: not found, 4: no
+/// bubblewrap, 5: only the Windows one.
+pub const WSL_CHECK: &str = "p=$(command -v \"$1\" 2>/dev/null)\n\
+case \"$p\" in /*) ;; *) p=$(\"${SHELL:-/bin/sh}\" -lic 'command -v \"$0\"' \"$1\" </dev/null 2>/dev/null | tail -n 1) ;; esac\n\
+case \"$p\" in /*) ;; *) exit 3 ;; esac\n\
+case \"$p\" in /mnt/*) exit 5 ;; esac\n\
+command -v \"$2\" >/dev/null 2>&1 || exit 4\n\
+r=$(readlink -f \"$p\" 2>/dev/null) || r=$p\n\
+printf '%s\\n%s\\n' \"$HOME\" \"$r\"";
+
 /// Checks that the agent's program (and bubblewrap) exist where the agent
-/// will run. Returns that place's home folder. Inside WSL this matters
-/// most: tools installed on Windows are not there, and a Windows program
-/// seen through `/mnt/c` cannot run inside the sandbox.
-pub fn preflight(cfg: &Config) -> Result<Option<String>, String> {
+/// will run. Inside WSL this matters most: tools installed on Windows are
+/// not there, a Windows program seen through `/mnt/c` cannot run inside the
+/// sandbox, and tools in the user's own folders need the login shell.
+pub fn preflight(cfg: &Config) -> Result<Found, String> {
     let program = config::split_command(&cfg.command)
         .map_err(|e| format!("the agent command cannot be read: {e}"))?
         .into_iter()
@@ -512,8 +545,7 @@ pub fn preflight(cfg: &Config) -> Result<Option<String>, String> {
             if !cfg.wsl_distro.is_empty() {
                 args.extend(["-d".to_string(), cfg.wsl_distro.clone()]);
             }
-            let script = "p=$(command -v \"$1\" 2>/dev/null) || exit 3\ncase \"$p\" in /mnt/*) exit 5;; esac\ncommand -v \"$2\" >/dev/null 2>&1 || exit 4\nprintf '%s\\n' \"$HOME\"";
-            args.extend(["-e", "sh", "-c", script, "sh"].map(String::from));
+            args.extend(["-e", "sh", "-c", WSL_CHECK, "sh"].map(String::from));
             args.extend([program.clone(), cfg.bwrap_path.clone()]);
             let l = Launch {
                 program: "wsl.exe".into(),
@@ -528,7 +560,7 @@ pub fn preflight(cfg: &Config) -> Result<Option<String>, String> {
             let exit = proc::run(&l, Duration::from_secs(60), &never, |b| out.extend(b));
             let last = out.iter().rev().find(|l| !l.trim().is_empty()).map(|l| l.trim().replace('\0', ""));
             match exit {
-                Exit::Code(0) => Ok(last.filter(|h| h.starts_with('/'))),
+                Exit::Code(0) => Ok(parse_wsl_found(&out.join("\n"), &program)),
                 Exit::Code(3) => Err(format!(
                     "{program} is not installed inside WSL ({distro}); the Windows one cannot run in the WSL sandbox. \
                      Install it inside WSL ({install}) and log in there, or set Sandbox to None with Allow no sandbox \
@@ -559,7 +591,7 @@ pub fn preflight(cfg: &Config) -> Result<Option<String>, String> {
                     "{program} is not on PATH. Install it ({install}) or set the full path in the agent command."
                 ));
             }
-            Ok(sandbox::host_home())
+            Ok(Found { home: sandbox::host_home(), program: None })
         }
         SandboxKind::MacOs | SandboxKind::None | SandboxKind::Auto => {
             if !found(&program) {
@@ -567,10 +599,10 @@ pub fn preflight(cfg: &Config) -> Result<Option<String>, String> {
                     "{program} is not on PATH. Install it, or set the full path in the agent command."
                 ));
             }
-            Ok(sandbox::host_home())
+            Ok(Found { home: sandbox::host_home(), program: None })
         }
         // The wrapper may bring its own tools (a container image).
-        SandboxKind::Custom => Ok(sandbox::host_home()),
+        SandboxKind::Custom => Ok(Found { home: sandbox::host_home(), program: None }),
     }
 }
 
@@ -803,6 +835,38 @@ mod tests {
         };
         let e = preflight(&cfg).unwrap_err();
         assert!(e.contains("ffwd-no-such-agent-xyz is not on PATH"), "{e}");
+    }
+
+    #[test]
+    fn wsl_check_output_is_read_from_the_end() {
+        let out = "Welcome to zsh!\n/home/me\n/home/me/.local/share/claude/versions/2.1\n";
+        let f = parse_wsl_found(out, "claude");
+        assert_eq!(f.home.as_deref(), Some("/home/me"));
+        assert_eq!(f.program, Some(("claude".into(), "/home/me/.local/share/claude/versions/2.1".into())));
+        assert_eq!(parse_wsl_found("", "claude"), Found::default());
+        assert_eq!(parse_wsl_found("noise\n", "claude"), Found::default(), "not a path");
+    }
+
+    /// On a Windows PC with WSL, a tool installed in the user's own
+    /// folders (here `~/.local/bin/claude`) is found through the login
+    /// shell. Run by hand: `cargo test -p ffwd-agent -- --ignored
+    /// wsl_preflight_finds`, with FFWD_TEST_WSL_DISTRO set.
+    #[test]
+    #[ignore]
+    fn wsl_preflight_finds_a_login_shell_tool() {
+        let distro = std::env::var("FFWD_TEST_WSL_DISTRO").unwrap_or_default();
+        let (cfg, _) = Config::from_lookup(|k| match k {
+            "enabled" => Some("true".into()),
+            "preset" => Some("claude".into()),
+            "sandbox" => Some("wsl".into()),
+            "wsl_distro" => Some(distro.clone()),
+            _ => None,
+        });
+        let f = preflight(&cfg).expect("claude is found inside WSL");
+        let (name, real) = f.program.expect("its path");
+        assert_eq!(name, "claude");
+        assert!(real.starts_with('/') && !real.starts_with("/mnt/"), "{real}");
+        assert!(f.home.is_some_and(|h| h.starts_with("/home/")));
     }
 
     /// On a Windows PC with WSL: a tool installed only on Windows is
