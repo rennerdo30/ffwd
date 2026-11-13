@@ -276,6 +276,7 @@ const CMD_BRANCH: &str = "Create branch here";
 const CMD_TAG: &str = "Create tag here";
 const CMD_PICK: &str = "Cherry-pick this commit";
 const CMD_REVERT: &str = "Revert this commit";
+const CMD_STASH: &str = "Stash changes";
 
 /// Commands that work today; the rest of COMMANDS are listed so the
 /// palette shows the plan, and say so when chosen.
@@ -286,6 +287,7 @@ const WORKING: &[&str] = &[
     CMD_TAG,
     CMD_PICK,
     CMD_REVERT,
+    CMD_STASH,
     CMD_SETTINGS,
     CMD_AGENTS,
     CMD_FETCH,
@@ -317,7 +319,7 @@ const COMMANDS: &[(&str, &str)] = &[
     (CMD_PICK, ""),
     (CMD_REVERT, ""),
     ("Interactive rebase from here", "Ctrl Shift R"),
-    ("Stash changes", "Ctrl Shift S"),
+    (CMD_STASH, "Ctrl Shift S"),
     ("Open file history", ""),
     ("Blame file", ""),
     ("AI: Explain this commit", "Ctrl I"),
@@ -1399,6 +1401,7 @@ impl Ui {
             Key::CtrlShift('l') => return self.start_op(Op::Pull),
             Key::CtrlShift('k') => return self.start_op(Op::Push),
             Key::CtrlShift('u') => return self.request_update_install(),
+            Key::CtrlShift('s') => return self.open_stash_dialog(),
             Key::Ctrl('b') if !self.r.changes_view => return self.selected_commit_command(CMD_BRANCH),
             Key::CtrlShift('g') if !self.r.changes_view => return self.selected_commit_command(CMD_TAG),
             Key::Ctrl(_) | Key::CtrlShift(_) | Key::NextTab | Key::PrevTab => return,
@@ -1750,6 +1753,14 @@ impl Ui {
         self.damage.rects.push(r);
     }
 
+    /// Stash the working changes: a message and whether untracked files go too.
+    pub fn open_stash_dialog(&mut self) {
+        if self.tabs.is_empty() {
+            return;
+        }
+        self.open_dialog(DialogKind::Name { act: NameAct::StashSave, field: TextField::default(), checkout: true });
+    }
+
     /// A command for the selected commit (palette or shortcut).
     fn selected_commit_command(&mut self, c: &str) {
         let Some(sha) = self.r.commits.get(self.r.sel).map(|c| c.id.to_string()) else {
@@ -1785,6 +1796,7 @@ impl Ui {
             CMD_ACTIONS => self.open_menu_for_selection(),
             CMD_SEARCH => self.open_search(),
             CMD_BRANCH | CMD_TAG | CMD_PICK | CMD_REVERT => self.selected_commit_command(c),
+            CMD_STASH => self.open_stash_dialog(),
             LAYOUT_BELOW => self.set_layout(DetailsLayout::Below),
             LAYOUT_BESIDE => self.set_layout(DetailsLayout::Beside),
             c if c.starts_with("AI:") || c.starts_with("Settings: AI") => self.set_notice(
@@ -3695,6 +3707,112 @@ mod tests {
         pump(&mut ui, "the forced delete", &|u| u.dialog.is_none());
         assert!(!branch("lonely"));
         assert!(ui.notice.as_deref().is_some_and(|n| n.contains("git branch lonely ")), "{:?}", ui.notice);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Stashes from the keyboard: Ctrl+Shift+S saves with a message (Tab
+    /// leaves untracked files out), the sidebar menu renames, pops and
+    /// drops, and dropping asks first and names the way back (FF-38).
+    #[test]
+    fn stash_save_rename_pop_drop_with_keys() {
+        use std::sync::mpsc;
+        let mut te = TextEngine::new();
+        let Some(f) = load_fonts(&mut te) else { return };
+        let dir = std::env::temp_dir().join(format!("ffwd-ui-stash-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = Git { root: dir.clone() };
+        for a in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.name", "ffwd test"],
+            &["config", "user.email", "test@example.invalid"],
+            &["config", "commit.gpgsign", "false"],
+            &["config", "core.autocrlf", "false"],
+        ] {
+            g.output(a).unwrap();
+        }
+        std::fs::write(dir.join("a.txt"), "a\n").unwrap();
+        g.output(&["add", "."]).unwrap();
+        g.output(&["commit", "-q", "-m", "first"]).unwrap();
+        std::fs::write(dir.join("a.txt"), "changed\n").unwrap();
+        std::fs::write(dir.join("new.txt"), "untracked\n").unwrap();
+        let (tx, rx) = mpsc::channel::<(u64, Msg)>();
+        let tx = Arc::new(std::sync::Mutex::new(tx));
+        let sinks: SinkFactory = Arc::new(move |id| {
+            let tx = tx.clone();
+            Arc::new(move |m| {
+                if let Ok(t) = tx.lock() {
+                    let _ = t.send((id, m));
+                }
+            })
+        });
+        crate::work::start(dir.clone(), &sinks(1));
+        let empty = crate::settings::Settings::parse("");
+        let mut ui = Ui::new(te, f, empty.clone(), empty, Some((1, dir.clone())), sinks, 1280, 800, 1.0);
+        let pump = |ui: &mut Ui, what: &str, done: &dyn Fn(&Ui) -> bool| {
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while !done(ui) {
+                let left = until.saturating_duration_since(std::time::Instant::now());
+                assert!(!left.is_zero(), "timed out waiting for {what}; notice: {:?}", ui.notice);
+                if let Ok((id, m)) = rx.recv_timeout(left) {
+                    ui.on_tab_msg(id, m);
+                }
+            }
+        };
+        let pick = |ui: &mut Ui, label: &str| {
+            for _ in 0..40 {
+                ui.key(Key::Down);
+                let m = ui.menu.as_ref().unwrap();
+                if m.sel.is_some_and(|s| m.items[s].label.starts_with(label)) {
+                    ui.key(Key::Enter);
+                    return;
+                }
+            }
+            panic!("no menu item {label}");
+        };
+        let read = |f: &str| std::fs::read_to_string(dir.join(f)).unwrap_or_default();
+        pump(&mut ui, "history and refs", &|u| u.r.log_done && u.r.refs.head_branch.is_some());
+        // Save: message, Tab leaves untracked files out, Enter.
+        ui.key(Key::CtrlShift('s'));
+        assert!(ui.dialog.is_some());
+        for c in "wip a".chars() {
+            ui.key(Key::Char(c));
+        }
+        ui.key(Key::Tab);
+        ui.key(Key::Enter);
+        pump(&mut ui, "the stash", &|u| u.dialog.is_none() && u.r.refs.stashes.len() == 1);
+        assert_eq!(&*ui.r.refs.stashes[0].1, "On main: wip a");
+        assert_eq!(read("a.txt"), "a\n", "the change is stashed");
+        assert_eq!(read("new.txt"), "untracked\n", "untracked files stayed");
+        // Rename from the sidebar menu.
+        let items = ui.ref_menu("s:stash@{0}");
+        ui.open_menu(100, 100, items);
+        pick(&mut ui, "Rename");
+        ui.key(Key::Ctrl('a'));
+        for c in "better name".chars() {
+            ui.key(Key::Char(c));
+        }
+        ui.key(Key::Enter);
+        pump(&mut ui, "the rename", &|u| {
+            u.dialog.is_none() && u.r.refs.stashes.first().is_some_and(|s| &*s.1 == "better name")
+        });
+        // Pop brings the change back and removes the stash.
+        let items = ui.ref_menu("s:stash@{0}");
+        ui.open_menu(100, 100, items);
+        pick(&mut ui, "Pop");
+        pump(&mut ui, "the pop", &|u| u.r.log_done && u.r.refs.stashes.is_empty() && read("a.txt") == "changed\n");
+        // Stash again (with untracked files), then drop: it asks first.
+        ui.key(Key::CtrlShift('s'));
+        ui.key(Key::Enter);
+        pump(&mut ui, "the second stash", &|u| u.dialog.is_none() && u.r.refs.stashes.len() == 1);
+        assert!(!dir.join("new.txt").exists(), "untracked files go by default");
+        let items = ui.ref_menu("s:stash@{0}");
+        ui.open_menu(100, 100, items);
+        pick(&mut ui, "Drop");
+        assert!(ui.dialog.as_ref().is_some_and(|d| matches!(&d.kind, DialogKind::Ask(_))), "dropping asks first");
+        ui.key(Key::Enter);
+        pump(&mut ui, "the drop", &|u| u.dialog.is_none() && u.r.refs.stashes.is_empty());
+        assert!(ui.notice.as_deref().is_some_and(|n| n.contains("git stash store")), "{:?}", ui.notice);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

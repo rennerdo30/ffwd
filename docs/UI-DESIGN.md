@@ -78,6 +78,20 @@ The capture above is the real PoC UI. `ffwd --snapshot` rendered it offscreen fr
   - a tab shows an amber ring while its repository has uncommitted changes;
   - every Git call runs on a worker.
 
+## Stashes (FF-38)
+
+- **Save:** `Ctrl+Shift+S` (or the palette's "Stash changes") opens a dialog with an optional message. Untracked files are included by default; `Tab` toggles that.
+- **Sidebar menu** (right click or `Ctrl+.` on a stash):
+  - **Apply** keeps the stash; **Pop** applies it, then drops it.
+  - **Rename…** changes its message (the stash moves to the top).
+  - **Drop…** asks first.
+  - **Copy message**.
+- **Safety:**
+  - a drop keeps the stash commit under `refs/ffwd/backup/` and names the `git stash store` command that brings it back;
+  - a rename stores the new entry before dropping the old one;
+  - an apply or pop with conflicts keeps the stash and points to Local Changes.
+- The sidebar shows each stash's list message, so a rename shows at once.
+
 ## Files (FF-51, FF-43)
 
 - **Where:** the sidebar's Workspace section has **Files** below All Commits. It replaces history and details, like Local Changes.

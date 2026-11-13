@@ -63,6 +63,8 @@ pub struct Args {
     pub menu: bool,
     /// Snapshot with the "create branch" prompt open.
     pub prompt: bool,
+    /// Opens the stash dialog (Ctrl+Shift+S).
+    pub stash_dialog: bool,
     /// Snapshot with the find bar searching messages for this text.
     pub find: Option<String>,
     /// Snapshot with the diff side by side.
@@ -95,6 +97,7 @@ fn parse_args() -> Result<Args, String> {
         files_tab: None,
         menu: false,
         prompt: false,
+        stash_dialog: false,
         find: None,
         diff_split: false,
         file: None,
@@ -136,6 +139,7 @@ fn parse_args() -> Result<Args, String> {
             "--files-tab" => a.files_tab = Some(val("--files-tab")?),
             "--menu" => a.menu = true,
             "--prompt" => a.prompt = true,
+            "--stash-dialog" => a.stash_dialog = true,
             "--find" => a.find = Some(val("--find")?),
             "--diff-split" => a.diff_split = true,
             "--file" => a.file = Some(val("--file")?.parse().map_err(|_| "bad file index")?),

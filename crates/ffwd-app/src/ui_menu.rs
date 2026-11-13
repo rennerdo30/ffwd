@@ -34,9 +34,21 @@ pub struct Menu {
 
 #[derive(Clone, Debug)]
 pub enum NameAct {
-    CreateBranch { at: String },
-    CreateTag { at: String },
-    Rename { old: String },
+    CreateBranch {
+        at: String,
+    },
+    CreateTag {
+        at: String,
+    },
+    Rename {
+        old: String,
+    },
+    /// Stash the working changes; the toggle includes untracked files.
+    StashSave,
+    StashRename {
+        name: String,
+        old: String,
+    },
 }
 
 /// A choice dialog: a title, what will happen, and buttons.
@@ -172,6 +184,24 @@ impl Ui {
                 MenuAct::Name(NameAct::CreateBranch { at: name.into() }),
             ));
             v.push(item("Copy name", MenuAct::Copy(name.into())));
+        } else if let Some(name) = key.strip_prefix("s:") {
+            let msg = self.r.refs.stashes.iter().find(|s| &*s.0 == name).map_or(String::new(), |s| s.1.to_string());
+            v.push(item(format!("Apply {name}"), MenuAct::Run(RefOp::StashApply(name.into(), false))));
+            v.push(item(format!("Pop {name} (apply, then drop)"), MenuAct::Run(RefOp::StashApply(name.into(), true))));
+            v.push(sep());
+            v.push(item("Rename…", MenuAct::Name(NameAct::StashRename { name: name.into(), old: msg.clone() })));
+            v.push(danger(
+                format!("Drop {name}…"),
+                MenuAct::Ask(Box::new(Ask {
+                    title: format!("Drop {name}?"),
+                    text: format!(
+                        "\"{msg}\" is removed from the stash list. ffwd keeps its commit under refs/ffwd/backup/ and names the command that brings it back."
+                    ),
+                    choices: vec![(format!("Drop {name}"), RefOp::StashDrop(name.into()), true)],
+                })),
+            ));
+            v.push(sep());
+            v.push(item("Copy message", MenuAct::Copy(msg)));
         } else if let Some(name) = key.strip_prefix("t:") {
             v.push(item(format!("Checkout {name} (detached)"), MenuAct::Run(RefOp::Checkout(name.into()))));
             merge_rebase(&mut v, name);
@@ -293,10 +323,10 @@ impl Ui {
             Some(MenuAct::Ask(a)) => self.open_dialog(DialogKind::Ask(*a)),
             Some(MenuAct::Name(n)) => {
                 let field = match &n {
-                    NameAct::Rename { old } => TextField::new(old),
+                    NameAct::Rename { old } | NameAct::StashRename { old, .. } => TextField::new(old),
                     _ => TextField::default(),
                 };
-                let checkout = matches!(n, NameAct::CreateBranch { .. });
+                let checkout = matches!(n, NameAct::CreateBranch { .. } | NameAct::StashSave);
                 self.open_dialog(DialogKind::Name { act: n, field, checkout });
             }
             Some(MenuAct::Copy(t)) => {
@@ -354,6 +384,8 @@ impl Ui {
     pub(super) fn dialog_rect(&self) -> Rect {
         let w = self.px(560.0).min(self.w as i32 - self.px(40.0));
         let h = match self.dialog.as_ref().map(|d| &d.kind) {
+            // The stash dialog has a line of text above its field.
+            Some(DialogKind::Name { act: NameAct::StashSave, .. }) => self.px(250.0),
             Some(DialogKind::Name { .. }) => self.px(210.0),
             _ => self.px(230.0),
         };
@@ -369,7 +401,7 @@ impl Ui {
             DialogKind::Ask(a) => a.choices.get(choice).map(|c| c.1.clone()),
             DialogKind::Name { act, field, checkout } => {
                 let n = field.text().trim().to_string();
-                if n.is_empty() {
+                if n.is_empty() && !matches!(act, NameAct::StashSave) {
                     d.error = Some("Type a name first.".into());
                     None
                 } else {
@@ -377,6 +409,11 @@ impl Ui {
                         NameAct::CreateBranch { at } => RefOp::CreateBranch(n, at.clone(), *checkout),
                         NameAct::CreateTag { at } => RefOp::CreateTag(n, at.clone()),
                         NameAct::Rename { old } => RefOp::Rename(old.clone(), n),
+                        NameAct::StashSave => RefOp::StashSave(
+                            n,
+                            ffwd_core::stash::SaveOptions { untracked: *checkout, keep_index: false },
+                        ),
+                        NameAct::StashRename { name, .. } => RefOp::StashRename(name.clone(), n),
                     })
                 }
             }
@@ -408,7 +445,9 @@ impl Ui {
             }
             (DialogKind::Ask(_), Key::Right | Key::Tab | Key::Down) => d.sel = (d.sel + 1) % n,
             (DialogKind::Ask(_), Key::Left | Key::BackTab | Key::Up) => d.sel = (d.sel + n - 1) % n,
-            (DialogKind::Name { checkout, act: NameAct::CreateBranch { .. }, .. }, Key::Tab) => *checkout = !*checkout,
+            (DialogKind::Name { checkout, act: NameAct::CreateBranch { .. } | NameAct::StashSave, .. }, Key::Tab) => {
+                *checkout = !*checkout
+            }
             (DialogKind::Name { field, .. }, k) => {
                 match k {
                     Key::Char(c) => field.insert(c.encode_utf8(&mut [0; 4])),
@@ -595,6 +634,12 @@ impl Ui {
                 NameAct::CreateBranch { at } => (format!("New branch at {}", short_ref(at)), String::new()),
                 NameAct::CreateTag { at } => (format!("New tag at {}", short_ref(at)), String::new()),
                 NameAct::Rename { old } => (format!("Rename {old}"), String::new()),
+                NameAct::StashSave => (
+                    "Stash the working changes".to_string(),
+                    "Staged and unstaged changes are saved as a stash and the working tree is reset to HEAD."
+                        .to_string(),
+                ),
+                NameAct::StashRename { name, .. } => (format!("Rename {name}"), String::new()),
             },
         };
         self.te.draw(cv, semi, self.pf(15.5), x0, r.y as f32 + self.pf(36.0), &title, TEXT, inner);
@@ -605,6 +650,9 @@ impl Ui {
                 self.te.draw(cv, ui, self.pf(12.5), x0, y, &l, TEXT_2, inner);
                 y += self.pf(18.0);
             }
+            if matches!(d.kind, DialogKind::Name { .. }) {
+                y += self.pf(10.0);
+            }
         }
         if let DialogKind::Name { field, checkout, act } = &d.kind {
             let f = Rect::new(x0 as i32, y as i32 - self.px(12.0), inner as i32, self.px(36.0));
@@ -614,6 +662,8 @@ impl Ui {
             if field.text().is_empty() {
                 let ph = match act {
                     NameAct::CreateTag { .. } => "v1.2.0",
+                    NameAct::StashSave => "Message (optional)",
+                    NameAct::StashRename { .. } => "Stash message",
                     _ => "feature/my-change",
                 };
                 self.te.draw(cv, ui, self.pf(13.0), tx, fb, ph, TEXT_4, inner);
@@ -632,9 +682,13 @@ impl Ui {
             cv.fill(Rect::new(cx as i32 + 1, f.y + self.px(9.0), self.px(1.5).max(1), f.h - self.px(18.0)), ACCENT);
             hits.push((f, DHit::Field));
             y = f.bottom() as f32 + self.pf(24.0);
-            if matches!(act, NameAct::CreateBranch { .. }) {
-                let label =
-                    if *checkout { "Check it out afterwards: yes (Tab)" } else { "Check it out afterwards: no (Tab)" };
+            if matches!(act, NameAct::CreateBranch { .. } | NameAct::StashSave) {
+                let label = match (act, *checkout) {
+                    (NameAct::StashSave, true) => "Include untracked files: yes (Tab)",
+                    (NameAct::StashSave, false) => "Include untracked files: no (Tab)",
+                    (_, true) => "Check it out afterwards: yes (Tab)",
+                    (_, false) => "Check it out afterwards: no (Tab)",
+                };
                 let w = self.te.measure(ui, self.pf(12.5), label);
                 let t = Rect::new(
                     x0 as i32 - self.px(4.0),
@@ -659,7 +713,8 @@ impl Ui {
                 match act {
                     NameAct::CreateBranch { .. } => "Create branch".into(),
                     NameAct::CreateTag { .. } => "Create tag".into(),
-                    NameAct::Rename { .. } => "Rename".into(),
+                    NameAct::Rename { .. } | NameAct::StashRename { .. } => "Rename".into(),
+                    NameAct::StashSave => "Stash".into(),
                 },
                 false,
             )],

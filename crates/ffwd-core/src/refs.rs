@@ -89,7 +89,8 @@ pub fn load(git: &Git) -> Result<Refs, GitError> {
     if let Ok(h) = git.output(&["rev-parse", "--verify", "-q", "HEAD"]) {
         refs.head = Oid::from_hex(h.trim_ascii());
     }
-    if let Ok(s) = git.output_limited(&["stash", "list", "--format=%gd%x1f%s"], 1 << 20) {
+    // The reflog message (%gs), which a rename changes, not the commit subject.
+    if let Ok(s) = git.output_limited(&["stash", "list", "--format=%gd%x1f%gs"], 1 << 20) {
         for line in s.split(|&b| b == b'\n').filter(|l| !l.is_empty()) {
             let mut it = line.splitn(2, |&b| b == 0x1f);
             if let (Some(a), Some(b)) = (it.next(), it.next()) {

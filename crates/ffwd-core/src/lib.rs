@@ -16,6 +16,7 @@ pub mod ops;
 pub mod refops;
 pub mod refs;
 pub mod search;
+pub mod stash;
 
 pub use git::{Git, GitError};
 pub use graph::{Graph, GraphRow, Seg};

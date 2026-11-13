@@ -110,7 +110,7 @@
 
 | Feature | ffwd | Notes |
 |---|---|---|
-| Stash, apply, pop, drop (several), rename | M1 | |
+| Stash, apply, pop, drop (several), rename | Partial | Stash, apply, pop, drop and rename are built; dropping several at once comes later |
 | Partial stash (selected files); snapshot to a stash | M1 | |
 | Stash and re-apply on pull, checkout and track | M1 | |
 | Separate sidebar section; recent stashes in a toolbar dropdown | Partial | The sidebar section is built |

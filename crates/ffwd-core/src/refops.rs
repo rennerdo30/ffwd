@@ -51,7 +51,7 @@ fn why(e: GitError) -> OpError {
     })
 }
 
-fn run(git: &Git, args: &[&str]) -> Result<String, OpError> {
+pub(crate) fn run(git: &Git, args: &[&str]) -> Result<String, OpError> {
     git.run_with(args, None, &[], 1 << 20).map(|b| String::from_utf8_lossy(&b).trim().to_string()).map_err(why)
 }
 
@@ -172,7 +172,7 @@ pub enum MergeMode {
     Squash,
 }
 
-fn conflicts(git: &Git, abort: &'static str) -> Option<OpError> {
+pub(crate) fn conflicts(git: &Git, abort: &'static str) -> Option<OpError> {
     let out = run(git, &["diff", "--name-only", "--diff-filter=U"]).ok()?;
     let n = out.lines().filter(|l| !l.is_empty()).count();
     (n > 0).then_some(OpError::Conflicts { files: n, abort })

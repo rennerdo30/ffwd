@@ -131,6 +131,9 @@ pub fn run(args: &Args, t0: Instant) -> i32 {
     if args.prompt {
         ui.snapshot_prompt();
     }
+    if args.stash_dialog {
+        ui.open_stash_dialog();
+    }
     if args.diff_split {
         ui.diff_split = true;
     }

@@ -111,6 +111,13 @@ pub enum RefOp {
     Reset(String, ffwd_core::refops::ResetMode),
     /// Abort the stopped merge, rebase, cherry-pick or revert.
     Abort(&'static str),
+    /// message, options
+    StashSave(String, ffwd_core::stash::SaveOptions),
+    /// name, pop (drop after a clean apply)
+    StashApply(String, bool),
+    StashDrop(String),
+    /// name, new message
+    StashRename(String, String),
 }
 
 impl RefOp {
@@ -127,6 +134,10 @@ impl RefOp {
             RefOp::Revert(_) => "Reverting",
             RefOp::Reset(..) => "Resetting",
             RefOp::Abort(_) => "Aborting",
+            RefOp::StashSave(..) => "Stashing",
+            RefOp::StashApply(..) => "Applying the stash",
+            RefOp::StashDrop(_) => "Dropping the stash",
+            RefOp::StashRename(..) => "Renaming the stash",
         }
     }
 }
@@ -147,6 +158,10 @@ pub fn refop(git: Git, op: RefOp, sink: &Sink) {
             RefOp::Revert(c) => r::revert(&git, c),
             RefOp::Reset(to, m) => r::reset(&git, to, *m),
             RefOp::Abort(kind) => ffwd_core::conflict::abort_op(&git, kind).map_err(r::OpError::Failed),
+            RefOp::StashSave(m, o) => ffwd_core::stash::save(&git, m, *o),
+            RefOp::StashApply(n, pop) => ffwd_core::stash::apply(&git, n, *pop),
+            RefOp::StashDrop(n) => ffwd_core::stash::drop(&git, n),
+            RefOp::StashRename(n, m) => ffwd_core::stash::rename(&git, n, m),
         };
         sink(Msg::RefOp(res));
         sink(Msg::InProgress(r::in_progress(&git)));
