@@ -157,7 +157,7 @@
 | Reveal the line in an editor | **Built** | Right-click a diff line: *Open in editor at line n* (known editors get their go-to-line arguments; `{file}`/`{line}` placeholders for others) and *Copy line* |
 | Copy as patch | **Built** | A commit, a stash, the working changes, or one file of a commit (its file menu); also *Save as patch…* |
 | Remember the scroll position per file | **Built** | Per commit and file, for the session (up to 1,000 files); an option change keeps the current scroll |
-| Image diff: PNG, JPEG, WebP, TGA, SVG, HEIC; swipe and onion; exact pixel diff, 16-bit | Partial | PNG before and after, side by side, with size and bytes; other formats, swipe, onion and pixel diff come later |
+| Image diff: PNG, JPEG, WebP, TGA, SVG, HEIC; swipe and onion; exact pixel diff, 16-bit | Partial | PNG and JPEG before and after, side by side, with size and bytes; other formats, swipe, onion and pixel diff come later |
 | Binary and LFS file views | M2 | |
 | Submodule diff that lists its commits | M2 | |
 | Large diffs loaded on request | **Built** | Capped; paging in M1 |
