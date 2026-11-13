@@ -81,7 +81,7 @@
 | Space becomes `-` or `_` in branch names; name validation | **Built** | Space types `-` (pasted whitespace too); git's ref-name rules are checked while typing, with the reason, and Enter refuses an invalid name (branches and tags) |
 | Sort references (alphabetical, recently used) | **Built** | Branches by name or by most recent commit (Branches header menu; setting `sidebar.branch_order`) |
 | Upstream state icons; warning for an invalid upstream | Partial | Sidebar badges show ↑ahead ↓behind, and a red **gone** when the upstream was deleted on the remote; the branch menu offers *Stop tracking … (gone)*. Icons per state come later |
-| Change the tracking branch; track a remote branch (stash and re-apply) | M1 | |
+| Change the tracking branch; track a remote branch (stash and re-apply) | Partial | Branch menu: *Set upstream…* / *Change upstream…* (checks the remote branch exists, then `git branch --set-upstream-to`). Stash and re-apply come with FF-38 |
 | Fast-forward a branch without checking it out; several at once | M2 | |
 | Select stale local branches | M2 | |
 | Tags: create (`Ctrl+Shift+G`), delete, push one or many | Partial | Create, delete, push one and delete on the remote are built; several at once come later |

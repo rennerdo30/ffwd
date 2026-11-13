@@ -159,6 +159,8 @@ pub enum RefOp {
     Rename(String, String),
     /// Stop a branch tracking its (gone) upstream.
     UnsetUpstream(String),
+    /// Make a branch track a remote branch: (branch, upstream).
+    SetUpstream(String, String),
     /// name, force
     DeleteBranch(String, bool),
     CreateTag(String, String),
@@ -220,6 +222,7 @@ impl RefOp {
             RefOp::CreateBranch(n, ..) => format!("Create branch {n}"),
             RefOp::Rename(o, n) => format!("Rename {o} to {n}"),
             RefOp::UnsetUpstream(b) => format!("Stop {b} tracking its upstream"),
+            RefOp::SetUpstream(b, u) => format!("Make {b} track {u}"),
             RefOp::DeleteBranch(n, _) => format!("Delete branch {n}"),
             RefOp::CreateTag(n, _) => format!("Create tag {n}"),
             RefOp::DeleteTag(n) => format!("Delete tag {n}"),
@@ -267,6 +270,7 @@ impl RefOp {
             RefOp::CreateBranch(..) => "Creating the branch",
             RefOp::Rename(..) => "Renaming",
             RefOp::UnsetUpstream(_) => "Unsetting the upstream",
+            RefOp::SetUpstream(..) => "Setting the upstream",
             RefOp::DeleteBranch(..) | RefOp::DeleteTag(_) => "Deleting",
             RefOp::CreateTag(..) => "Tagging",
             RefOp::Merge(..) => "Merging",
@@ -309,6 +313,7 @@ pub fn refop(git: Git, op: RefOp, sink: &Sink) {
             RefOp::CreateBranch(n, at, sw) => r::create_branch(&git, n, at, *sw),
             RefOp::Rename(o, n) => r::rename_branch(&git, o, n),
             RefOp::UnsetUpstream(b) => r::unset_upstream(&git, b),
+            RefOp::SetUpstream(b, u) => r::set_upstream(&git, b, u),
             RefOp::DeleteBranch(n, f) => r::delete_branch(&git, n, *f),
             RefOp::CreateTag(n, at) => r::create_tag(&git, n, at, None),
             RefOp::DeleteTag(n) => r::delete_tag(&git, n),

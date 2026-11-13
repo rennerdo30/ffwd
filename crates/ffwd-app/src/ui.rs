@@ -7862,6 +7862,88 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
+    /// Set and change a branch's upstream (FF-36): the branch menu's
+    /// "Set upstream…" refuses a name that isn't a remote branch, then
+    /// tracks the one typed; the menu then offers "Change upstream…".
+    #[test]
+    fn set_a_branch_upstream_from_the_menu() {
+        use std::sync::mpsc;
+        let mut te = TextEngine::new();
+        let Some(f) = load_fonts(&mut te) else { return };
+        let base = std::env::temp_dir().join(format!("ffwd-ui-setup-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let dir = base.join("work");
+        std::fs::create_dir_all(&dir).unwrap();
+        Git { root: base.clone() }.output(&["init", "-q", "--bare", "-b", "main", "remote.git"]).unwrap();
+        let g = Git { root: dir.clone() };
+        let url = base.join("remote.git").to_string_lossy().replace('\\', "/");
+        for a in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.name", "ffwd test"],
+            &["config", "user.email", "test@example.invalid"],
+            &["config", "commit.gpgsign", "false"],
+            &["remote", "add", "origin", &url],
+            &["commit", "-q", "--allow-empty", "-m", "first"],
+            &["push", "-q", "-u", "origin", "main"],
+            &["push", "-q", "origin", "main:other"],
+            &["fetch", "-q"],
+            &["branch", "feature"],
+        ] {
+            g.output(a).unwrap();
+        }
+        let (tx, rx) = mpsc::channel::<(u64, Msg)>();
+        let tx = Arc::new(std::sync::Mutex::new(tx));
+        let sinks: SinkFactory = Arc::new(move |id| {
+            let tx = tx.clone();
+            Arc::new(move |m| {
+                if let Ok(t) = tx.lock() {
+                    let _ = t.send((id, m));
+                }
+            })
+        });
+        crate::work::start(dir.clone(), &sinks(1));
+        let empty = crate::settings::Settings::parse("");
+        let mut ui = Ui::new(te, f, empty.clone(), empty, Some((1, dir.clone())), sinks, 1280, 800, 1.0);
+        let pump = |ui: &mut Ui, what: &str, done: &dyn Fn(&Ui) -> bool| {
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while !done(ui) {
+                let left = until.saturating_duration_since(std::time::Instant::now());
+                assert!(!left.is_zero(), "timed out waiting for {what}; notice {:?}", ui.notice);
+                if let Ok((id, m)) = rx.recv_timeout(left) {
+                    ui.on_tab_msg(id, m);
+                }
+            }
+        };
+        let feature = |u: &Ui| u.r.refs.refs.iter().find(|r| &*r.name == "feature").cloned();
+        pump(&mut ui, "the refs", &|u| {
+            feature(u).is_some() && u.r.refs.refs.iter().any(|r| &*r.name == "origin/other")
+        });
+        let items = ui.ref_menu("b:feature");
+        let k = items.iter().position(|i| i.label == "Set upstream…").unwrap();
+        ui.open_menu(100, 200, items);
+        ui.menu_activate(k);
+        let field = |ui: &Ui| match &ui.dialog.as_ref().unwrap().kind {
+            menu::DialogKind::Name { field, .. } => field.text().to_string(),
+            _ => panic!("a name dialog"),
+        };
+        assert_eq!(field(&ui), "origin/feature");
+        ui.key(Key::Enter);
+        assert!(
+            ui.dialog.as_ref().and_then(|d| d.error.clone()).is_some_and(|e| e.contains("not a remote branch")),
+            "an unknown remote branch is refused"
+        );
+        ui.key(Key::Ctrl('a'));
+        for c in "origin/other".chars() {
+            ui.key(Key::Char(c));
+        }
+        ui.key(Key::Enter);
+        pump(&mut ui, "the new upstream", &|u| {
+            feature(u).is_some_and(|r| r.upstream.as_deref() == Some("origin/other"))
+        });
+        assert!(ui.ref_menu("b:feature").iter().any(|i| i.label == "Change upstream…"));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     /// Find in the diff (FF-34): `Ctrl+F` with the diff focused searches
     /// the shown diff (case-insensitive), Enter steps through the matches
     /// and scrolls to them, the query stays for the next file, and Esc

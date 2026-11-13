@@ -290,6 +290,7 @@ pub(super) fn for_act(act: &super::menu::MenuAct) -> Option<Glyph> {
             R::CreateBranch(..) => Glyph::Branch,
             R::Rename(..) | R::StashRename(..) | R::RemoteRename(..) => Glyph::Edit,
             R::UnsetUpstream(_) => Glyph::Ignore,
+            R::SetUpstream(..) => Glyph::Link,
             R::DeleteBranch(..)
             | R::DeleteTag(_)
             | R::StashDrop(_)
@@ -332,7 +333,7 @@ pub(super) fn for_act(act: &super::menu::MenuAct) -> Option<Glyph> {
             N::CreateTag { .. } => Glyph::Tag,
             N::StashSave => Glyph::Stash,
             N::AddRemoteUrl | N::AddRemoteName { .. } | N::AddSubmoduleUrl | N::AddSubmodulePath { .. } => Glyph::Plus,
-            N::RemoteUrl { .. } => Glyph::Link,
+            N::RemoteUrl { .. } | N::SetUpstream { .. } => Glyph::Link,
             N::MoveSubmodule { .. } => Glyph::Folder,
             N::CloneUrl | N::CloneDest { .. } => Glyph::Fetch,
             N::InitDir => Glyph::Plus,

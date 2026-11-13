@@ -109,6 +109,12 @@ pub enum NameAct {
     RenameRemote {
         old: String,
     },
+    /// Make `branch` track a remote branch (FF-36); the field starts with
+    /// its current upstream or `origin/<branch>`.
+    SetUpstream {
+        branch: String,
+        current: String,
+    },
     /// Add a submodule: its URL, then its folder.
     AddSubmoduleUrl,
     AddSubmodulePath {
@@ -302,6 +308,18 @@ impl Ui {
                 MenuAct::Name(NameAct::CreateBranch { at: name.into() }),
             ));
             v.push(item("Rename…", MenuAct::Name(NameAct::Rename { old: name.into() })));
+            // Track a remote branch, or change which one (FF-36).
+            let current = self
+                .r
+                .refs
+                .refs
+                .iter()
+                .find(|r| r.kind == RefKind::Local && &*r.name == name)
+                .and_then(|r| r.upstream.as_deref().map(str::to_string));
+            let label = if current.is_some() { "Change upstream…" } else { "Set upstream…" };
+            let current =
+                current.unwrap_or_else(|| format!("{}/{name}", self.default_remote().unwrap_or("origin".into())));
+            v.push(item(label, MenuAct::Name(NameAct::SetUpstream { branch: name.into(), current })));
             // An upstream deleted on the remote (FF-36): stop tracking it.
             if let Some(r) =
                 self.r.refs.refs.iter().find(|r| r.kind == RefKind::Local && &*r.name == name && r.upstream_gone)
@@ -633,6 +651,7 @@ impl Ui {
                     | NameAct::StashRename { old, .. }
                     | NameAct::RemoteUrl { old, .. }
                     | NameAct::RenameRemote { old }
+                    | NameAct::SetUpstream { current: old, .. }
                     | NameAct::RenameTab { old, .. }
                     | NameAct::MoveSubmodule { path: old } => TextField::new(old),
                     _ => TextField::default(),
@@ -818,6 +837,11 @@ impl Ui {
                 } else if let Some(e) = ref_name.then(|| ffwd_core::refs::check_ref_name(&n).err()).flatten() {
                     d.error = Some(e);
                     None
+                } else if matches!(act, NameAct::SetUpstream { .. })
+                    && !self.r.refs.refs.iter().any(|r| r.kind == RefKind::Remote && *r.name == *n)
+                {
+                    d.error = Some(format!("{n} is not a remote branch here; fetch first, or check the name."));
+                    None
                 } else {
                     Some(match act {
                         NameAct::CreateBranch { at } => RefOp::CreateBranch(n, at.clone(), *checkout),
@@ -832,6 +856,7 @@ impl Ui {
                         NameAct::AddRemoteName { url } => RefOp::RemoteAdd(n, url.clone()),
                         NameAct::RemoteUrl { name, .. } => RefOp::RemoteSetUrl(name.clone(), n),
                         NameAct::RenameRemote { old } => RefOp::RemoteRename(old.clone(), n),
+                        NameAct::SetUpstream { branch, .. } => RefOp::SetUpstream(branch.clone(), n),
                         NameAct::RenameTab { .. } => unreachable!("handled above"),
                         NameAct::CloneUrl | NameAct::CloneDest { .. } | NameAct::InitDir => {
                             unreachable!("handled above")
@@ -1536,6 +1561,10 @@ impl Ui {
                 NameAct::AddRemoteName { url } => (format!("Name the remote for {url}"), String::new()),
                 NameAct::RemoteUrl { name, .. } => (format!("URL of {name}"), String::new()),
                 NameAct::RenameRemote { old } => (format!("Rename the remote {old}"), String::new()),
+                NameAct::SetUpstream { branch, .. } => (
+                    format!("Upstream of {branch}"),
+                    "The remote branch it pulls from and pushes to, such as origin/main.".to_string(),
+                ),
                 NameAct::RenameTab { old, .. } => {
                     (format!("Rename the tab {old}"), "An empty name shows the folder's name again.".to_string())
                 }
@@ -1589,6 +1618,7 @@ impl Ui {
                     NameAct::StashRename { .. } => "Stash message",
                     NameAct::AddRemoteUrl | NameAct::RemoteUrl { .. } => "https://github.com/owner/repo.git",
                     NameAct::AddRemoteName { .. } | NameAct::RenameRemote { .. } => "origin",
+                    NameAct::SetUpstream { .. } => "origin/main",
                     NameAct::CloneUrl => "https://github.com/owner/repo.git",
                     NameAct::CloneDest { .. } | NameAct::InitDir => "Folder",
                     NameAct::AddSubmoduleUrl => "https://github.com/owner/library.git",
@@ -1649,6 +1679,7 @@ impl Ui {
                     NameAct::AddRemoteName { .. } => "Add and fetch".into(),
                     NameAct::RemoteUrl { .. } => "Save URL".into(),
                     NameAct::RenameRemote { .. } | NameAct::RenameTab { .. } => "Rename".into(),
+                    NameAct::SetUpstream { .. } => "Track".into(),
                     NameAct::CloneUrl => "Next".into(),
                     NameAct::CloneDest { .. } => "Clone".into(),
                     NameAct::InitDir => "Create".into(),

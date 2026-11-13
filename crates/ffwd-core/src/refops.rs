@@ -128,6 +128,13 @@ pub fn rename_branch(git: &Git, old: &str, new: &str) -> R {
     Ok(format!("Renamed {old} to {new}"))
 }
 
+/// Makes `branch` track `upstream` (a remote branch such as `origin/x`).
+pub fn set_upstream(git: &Git, branch: &str, upstream: &str) -> R {
+    let to = format!("--set-upstream-to={upstream}");
+    run(git, &["branch", &to, branch])?;
+    Ok(format!("{branch} now tracks {upstream}"))
+}
+
 /// Stops `branch` tracking its upstream (for one that is gone on the
 /// remote). Nothing else changes; setting an upstream again is a push.
 pub fn unset_upstream(git: &Git, branch: &str) -> R {
