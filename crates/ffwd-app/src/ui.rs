@@ -594,6 +594,21 @@ fn fmt_bytes(n: usize) -> String {
     }
 }
 
+/// Splits a conventional-commit prefix off a subject: `("feat(ui): ",
+/// "add x")`. Only short lowercase types count, so ordinary subjects with
+/// a colon stay whole.
+fn split_prefix(subject: &str) -> (&str, &str) {
+    let Some(colon) = subject.find(": ") else { return ("", subject) };
+    let head = &subject[..colon];
+    let ty = head.split(['(', '!']).next().unwrap_or("");
+    let scope_ok = match head.find('(') {
+        Some(i) => head[i..].trim_end_matches('!').ends_with(')') && !head[i..].contains(' '),
+        None => !head.contains(' '),
+    };
+    let ok = (2..=10).contains(&ty.len()) && ty.chars().all(|c| c.is_ascii_lowercase()) && scope_ok && colon <= 30;
+    if ok { subject.split_at(colon + 2) } else { ("", subject) }
+}
+
 fn now_secs() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64)
 }
@@ -3128,7 +3143,15 @@ impl Ui {
         }
         let merge = c.parents.len() > 1;
         let subj_color = if merge { TEXT_2 } else { TEXT };
-        let end = self.te.draw(cv, ui, self.pf(13.0), x, base, &c.subject, subj_color, max_x - x);
+        // A conventional-commit prefix ("feat:", "fix(ui)!:") in the accent
+        // colour, the rest as usual (FF-33).
+        let (prefix, rest) = split_prefix(&c.subject);
+        let x = if prefix.is_empty() {
+            x
+        } else {
+            self.te.draw(cv, ui, self.pf(13.0), x, base, prefix, ACCENT_FG, max_x - x)
+        };
+        let end = self.te.draw(cv, ui, self.pf(13.0), x, base, rest, subj_color, max_x - x);
         if c.has_body && end + self.pf(16.0) < max_x {
             // "Has a description" marker.
             let mx = end + self.pf(9.0);
@@ -6054,5 +6077,15 @@ mod tests {
                 g.controls
             );
         }
+    }
+
+    #[test]
+    fn conventional_prefixes() {
+        assert_eq!(split_prefix("feat: add x"), ("feat: ", "add x"));
+        assert_eq!(split_prefix("fix(ui)!: crash"), ("fix(ui)!: ", "crash"));
+        assert_eq!(split_prefix("Merge branch 'x': y"), ("", "Merge branch 'x': y"));
+        assert_eq!(split_prefix("Note: something"), ("", "Note: something"));
+        assert_eq!(split_prefix("feat(two words): x"), ("", "feat(two words): x"));
+        assert_eq!(split_prefix("no colon"), ("", "no colon"));
     }
 }

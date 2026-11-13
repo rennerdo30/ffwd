@@ -150,6 +150,7 @@ The capture above is the real PoC UI. `ffwd --snapshot` rendered it offscreen fr
 - **To push and to pull:** an amber ↑ before commits your branch has and its upstream lacks, a blue ↓ before commits the upstream has and your branch lacks.
 - **Current branch only:** click the list title ("All commits · n") to show only HEAD's history ("Current branch · n", amber), and click again for all. The palette has the same toggle; each tab remembers its own.
 - **Web link:** the commit menu has "Open on <host>" and "Copy web link" when the remote is on GitHub, GitLab, Bitbucket, Azure DevOps or a Gitea-style host.
+- **Prefixes:** a conventional-commit prefix (`feat:`, `fix(ui)!:`; a short lowercase type, an optional scope without spaces) shows in the accent colour.
 
 ## Patches (FF-46)
 

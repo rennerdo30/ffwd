@@ -23,7 +23,7 @@
 | Collapse merges and branches in the graph (arrow keys, collapse all) | M2 | |
 | "First parent" view mode | M2 | The diff already offers first-parent |
 | Pin (star) branches and tags | M2 | |
-| Message prefixes highlighted (`feat:`, `fix:`) | M2 | |
+| Message prefixes highlighted (`feat:`, `fix:`) | **Built** | Conventional-commit prefixes (`feat:`, `fix(ui)!:`) in the accent colour; ordinary colons stay plain |
 | Icon when a commit has a description | Partial | "…" after the subject |
 | Simplified graph tooltip on merge nodes; highlight the node under the mouse | M2 | |
 | Commit-link hover shows commit details | M2 | |
