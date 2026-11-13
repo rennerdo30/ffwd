@@ -61,6 +61,20 @@ pub enum Msg {
         path: String,
         result: Result<(Vec<ffwd_core::conflict::Seg>, &'static str), String>,
     },
+    /// The Files view's tree with each file's lowercase path for the filter.
+    FilesTree(crate::ui::FilesTreeResult),
+    FileContent {
+        seq: u64,
+        result: Result<Box<crate::ui::FileLoaded>, String>,
+    },
+    FileBlame {
+        seq: u64,
+        result: Result<Box<ffwd_core::files::Blame>, String>,
+    },
+    FileHistory {
+        seq: u64,
+        result: Result<Vec<ffwd_core::Oid>, String>,
+    },
     /// A branch, tag or history operation ended.
     RefOp(Result<String, ffwd_core::refops::OpError>),
     /// What a discard removed (for Ctrl+Z).

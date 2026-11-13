@@ -180,13 +180,13 @@
 
 | Feature | ffwd | Notes |
 |---|---|---|
-| File tree at any commit, with line numbers, image and LFS previews | M2 | |
+| File tree at any commit, with line numbers, image and LFS previews | Partial | The working tree with change marks, a filter, line numbers and syntax colours is built; other commits, images and LFS come later |
 | Save a commit's files to disk; drag files to other apps | M2 | |
-| File history (follows renames), by file name from Quick Launch | M2 | |
+| File history (follows renames), by file name from Quick Launch | Partial | The Files view's History tab follows renames; Quick Launch comes later |
 | Directory history | M2 | |
 | History for the selected code | M2 | |
 | Timeline in the history window | M2 | |
-| Blame with a timeline, back and forward | M2 | Streamed |
+| Blame with a timeline, back and forward | Partial | Blame per line with commit bands; timeline and back and forward come later |
 | Reflog: show and recover lost commits | M2 | Also feeds undo |
 
 ## 12. Repositories, tabs and workspaces (FF-44)

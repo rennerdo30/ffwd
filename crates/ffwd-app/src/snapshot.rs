@@ -99,6 +99,29 @@ pub fn run(args: &Args, t0: Instant) -> i32 {
             }
         }
     }
+    if let Some(path) = &args.files {
+        // The tree, then the file and its tab, all from workers (bounded).
+        ui.enter_files();
+        let until = Instant::now() + Duration::from_secs(15);
+        let mut opened = false;
+        while let Ok((id, m)) = rx.recv_timeout(until.saturating_duration_since(Instant::now())) {
+            let tree = matches!(m, Msg::FilesTree(_));
+            let done = matches!(m, Msg::FileContent { .. } | Msg::FileBlame { .. } | Msg::FileHistory { .. });
+            ui.on_tab_msg(id, m);
+            if tree && !opened {
+                if path.is_empty() || !ui.reveal_file(path) {
+                    break;
+                }
+                opened = true;
+                if let Some(t) = &args.files_tab {
+                    ui.snapshot_files_tab(t);
+                }
+            }
+            if done && ui.files_ready() {
+                break;
+            }
+        }
+    }
     if args.settings {
         ui.open_settings();
     }

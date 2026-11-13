@@ -30,6 +30,7 @@ pub(super) struct SideItem {
 pub(super) enum SideKind {
     Header,
     Changes,
+    Files,
     All,
     Branch,
     Folder,
@@ -153,6 +154,7 @@ impl Ui {
                 .map_or(String::new(), |s| if s.total() > 0 { fmt::num(s.total() as usize) } else { String::new() });
             v.push(c);
             v.push(SideItem::new(0, SideKind::All, "All Commits", "all".into()));
+            v.push(SideItem::new(0, SideKind::Files, "Files", "files".into()));
         }
         let refs = &self.r.refs.refs;
         let locals: Vec<(String, &Ref)> = refs
@@ -303,10 +305,15 @@ impl Ui {
         match it.kind {
             SideKind::Header | SideKind::Folder | SideKind::Remote => self.toggle_side(i),
             SideKind::Changes => self.enter_changes(),
-            SideKind::All => self.leave_changes(),
+            SideKind::Files => self.enter_files(),
+            SideKind::All => {
+                self.leave_changes();
+                self.leave_files();
+            }
             _ => match it.target.and_then(|t| self.r.by_id.get(&t).copied()) {
                 Some(row) => {
                     self.leave_changes();
+                    self.leave_files();
                     self.select(row as usize)
                 }
                 None if it.target.is_some() => {
@@ -528,7 +535,7 @@ impl Ui {
                 SideKind::Tag => (TAG_FG, TEXT_2),
                 SideKind::Stash => (STASH_FG, TEXT_2),
                 SideKind::Changes => (MOD, TEXT),
-                SideKind::All => (TEXT_2, TEXT),
+                SideKind::All | SideKind::Files => (TEXT_2, TEXT),
                 SideKind::Worktree => (TEXT_3, TEXT_2),
                 SideKind::Header => (TEXT_3, TEXT_3),
             };
@@ -536,7 +543,7 @@ impl Ui {
             match it.kind {
                 SideKind::Branch if it.current => self.check(cv, ix, cy, icon),
                 SideKind::Branch | SideKind::RemoteBranch => self.branch_icon(cv, ix, cy, icon),
-                SideKind::Folder => self.folder_icon(cv, ix, cy, icon),
+                SideKind::Folder | SideKind::Files => self.folder_icon(cv, ix, cy, icon),
                 SideKind::Tag => {
                     let s = self.pf(4.0);
                     cv.stroke(

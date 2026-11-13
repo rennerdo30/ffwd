@@ -78,6 +78,20 @@ The capture above is the real PoC UI. `ffwd --snapshot` rendered it offscreen fr
   - a tab shows an amber ring while its repository has uncommitted changes;
   - every Git call runs on a worker.
 
+## Files (FF-51, FF-43)
+
+- **Where:** the sidebar's Workspace section has **Files** below All Commits. It replaces history and details, like Local Changes.
+- **Tree (left):** every tracked and untracked (not ignored) file of the working tree, folders first.
+  - Changed files and the folders above them are coloured; files carry a letter (`M`, `D`, `U`) or "new".
+  - A single top folder opens on the first look; the open folders and file survive a refresh.
+- **Filter:** typing in the tree filters by path, showing matching files under their folders (at most 5,000). `Esc` clears it.
+- **Right pane:** the open file with three tabs:
+  - **Content:** line numbers and syntax colours.
+  - **Blame:** per line, the commit that last changed it. Each commit run gets a band with SHA, author and age on its first line and the subject on its second.
+  - **History:** the commits that changed the file, following renames. `Enter` or a double click shows the commit in the history.
+- **Keys:** `↑`/`↓` move; `→`/`←` open and close folders (`←` on a file goes to its folder); `Enter` opens; `Tab` switches between tree and pane; `c`, `b`, `h` (or `1`, `2`, `3`) pick the tab.
+- **Speed:** the tree, content, blame and history load on workers. Content stops at 4 MB, the tree at 300,000 files, and only visible rows paint.
+
 ## Conflicts (FF-42)
 
 - **Banner:** while a merge, rebase, cherry-pick or revert is stopped, an amber banner at the top of Local Changes names it and counts the conflicted files.

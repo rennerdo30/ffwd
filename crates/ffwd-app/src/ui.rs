@@ -25,6 +25,9 @@ mod changes_view;
 mod conflict_view;
 #[path = "ui_diff.rs"]
 mod diff_view;
+#[path = "ui_files.rs"]
+mod files_view;
+pub use files_view::{Loaded as FileLoaded, TreeResult as FilesTreeResult};
 #[path = "ui_menu.rs"]
 mod menu;
 #[path = "ui_search.rs"]
@@ -366,6 +369,9 @@ pub struct RepoState {
     /// The Local Changes view replaces history and details (FF-35).
     pub changes_view: bool,
     pub changes: changes_view::Changes,
+    /// The Files view: folder tree, content, blame, file history (FF-51, FF-43).
+    pub files_view: bool,
+    pub files: files_view::Files,
     /// The find bar over the commit list (FF-34).
     pub search: Option<search_view::Search>,
 }
@@ -673,6 +679,9 @@ impl Ui {
         if self.r.changes_view {
             self.reload_changes();
         }
+        if self.r.files_view {
+            self.load_files_tree();
+        }
         self.palette = None;
         self.title_dirty = true;
         self.damage.full = true;
@@ -778,7 +787,18 @@ impl Ui {
         let name = std::mem::take(&mut self.r.repo_name);
         let (git, tz, notice) = (self.r.git.take(), self.r.tz, self.notice.take());
         let (changes_view, changes) = (self.r.changes_view, std::mem::take(&mut self.r.changes));
-        self.r = RepoState { repo_name: name, git, tz, reselect, changes_view, changes, ..Default::default() };
+        let (files_view, files) = (self.r.files_view, std::mem::take(&mut self.r.files));
+        self.r = RepoState {
+            repo_name: name,
+            git,
+            tz,
+            reselect,
+            changes_view,
+            changes,
+            files_view,
+            files,
+            ..Default::default()
+        };
         self.notice = notice;
         let _ = path;
         self.activate_current();
@@ -1126,6 +1146,10 @@ impl Ui {
                 }
             }
             Msg::ConflictFile { seq, path, result } => self.on_conflict_file(seq, path, result),
+            Msg::FilesTree(r) => self.on_files_tree(r),
+            Msg::FileContent { seq, result } => self.on_file_content(seq, result),
+            Msg::FileBlame { seq, result } => self.on_file_blame(seq, result),
+            Msg::FileHistory { seq, result } => self.on_file_history(seq, result),
         }
     }
 
@@ -1313,7 +1337,7 @@ impl Ui {
             return self.open_menu_for_selection();
         }
         if self.settings_view.is_none() && self.agent_view.is_none() && self.palette.is_none() {
-            if matches!(k, Key::Ctrl('f')) && !self.r.changes_view {
+            if matches!(k, Key::Ctrl('f')) && !self.r.changes_view && !self.r.files_view {
                 return self.open_search();
             }
             if self.r.search.as_ref().is_some_and(|s| s.typing) && !self.r.changes_view && self.search_key(k) {
@@ -1388,6 +1412,9 @@ impl Ui {
             return;
         }
         if self.r.changes_view && self.focus != Focus::Side && self.focus != Focus::SideFilter && self.changes_key(k) {
+            return;
+        }
+        if self.r.files_view && self.focus != Focus::Side && self.focus != Focus::SideFilter && self.files_key(k) {
             return;
         }
         let page = self.visible_rows().saturating_sub(1).max(1);
@@ -1466,6 +1493,8 @@ impl Ui {
             self.agents_wheel(n);
         } else if self.lay.side.contains(x, y) {
             self.side_wheel(n);
+        } else if self.r.files_view {
+            self.files_wheel(x, y, n);
         } else if self.r.changes_view {
             self.changes_wheel(x, y, n);
         } else if self.lay.list.contains(x, y) {
@@ -1531,6 +1560,13 @@ impl Ui {
         }
         if let Some(&(_, a)) = self.top_buttons.iter().find(|(r, _)| r.contains(x, y)) {
             self.top_action(a);
+            return;
+        }
+        if self.r.files_view && self.files_click(x, y) {
+            if self.focus == Focus::Side || self.focus == Focus::SideFilter {
+                self.focus = Focus::List;
+                self.damage.rects.push(self.lay.side);
+            }
             return;
         }
         if !self.r.changes_view && self.r.search.is_some() && self.search_click(x, y) {
@@ -1815,9 +1851,10 @@ impl Ui {
                 let action = p.items.get(p.sel).map(|i| i.action.clone());
                 self.close_palette();
                 match action {
-                    Some(PAction::Goto(_) | PAction::GotoRef(..)) if self.r.changes_view => {
+                    Some(PAction::Goto(_) | PAction::GotoRef(..)) if self.r.changes_view || self.r.files_view => {
                         // A jump shows history again.
                         self.leave_changes();
+                        self.leave_files();
                         if let Some(PAction::Goto(id) | PAction::GotoRef(id, ..)) = action
                             && let Some(&row) = self.r.by_id.get(&id)
                         {
@@ -1921,7 +1958,11 @@ impl Ui {
         if !clip.intersect(l.side).is_empty() {
             self.paint_side(cv);
         }
-        if self.r.changes_view {
+        if self.r.files_view {
+            if !clip.intersect(self.files_layout().area).is_empty() {
+                self.paint_files(cv);
+            }
+        } else if self.r.changes_view {
             if !clip.intersect(self.changes_layout().area).is_empty() {
                 self.paint_changes(cv);
             }
@@ -2264,6 +2305,9 @@ impl Ui {
     pub fn on_window_focus(&mut self) {
         if self.tabs.is_empty() {
             return;
+        }
+        if self.r.files_view {
+            self.load_files_tree();
         }
         if self.r.changes_view {
             self.reload_changes();
@@ -3360,6 +3404,118 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The Files view, as a user drives it: the tree opens a single top
+    /// folder, typing filters, Enter opens a file, b and h show its blame
+    /// and history, Left folds a folder (FF-51, FF-43).
+    #[test]
+    fn files_view_filter_open_blame_history_with_keys() {
+        use std::sync::mpsc;
+        let mut te = TextEngine::new();
+        let Some(f) = load_fonts(&mut te) else { return };
+        let dir = std::env::temp_dir().join(format!("ffwd-ui-files-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        let g = Git { root: dir.clone() };
+        for a in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.name", "ffwd test"],
+            &["config", "user.email", "test@example.invalid"],
+            &["config", "commit.gpgsign", "false"],
+        ] {
+            g.output(a).unwrap();
+        }
+        std::fs::write(dir.join("src/a.rs"), "fn a() {}\n").unwrap();
+        std::fs::write(dir.join("README.md"), "# demo\n").unwrap();
+        g.output(&["add", "."]).unwrap();
+        g.output(&["commit", "-q", "-m", "first"]).unwrap();
+        std::fs::write(dir.join("src/a.rs"), "fn a() {}\nfn b() {}\n").unwrap();
+        g.output(&["commit", "-q", "-am", "second", "--author", "Other <o@example.invalid>"]).unwrap();
+        std::fs::write(dir.join("src/new.rs"), "x\n").unwrap();
+        let (tx, rx) = mpsc::channel::<(u64, Msg)>();
+        let tx = Arc::new(std::sync::Mutex::new(tx));
+        let sinks: SinkFactory = Arc::new(move |id| {
+            let tx = tx.clone();
+            Arc::new(move |m| {
+                if let Ok(t) = tx.lock() {
+                    let _ = t.send((id, m));
+                }
+            })
+        });
+        crate::work::start(dir.clone(), &sinks(1));
+        let empty = crate::settings::Settings::parse("");
+        let mut ui = Ui::new(te, f, empty.clone(), empty, Some((1, dir.clone())), sinks, 1280, 800, 1.0);
+        let pump = |ui: &mut Ui, done: &dyn Fn(&Ui) -> bool| {
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while !done(ui) {
+                let left = until.saturating_duration_since(std::time::Instant::now());
+                assert!(!left.is_zero(), "timed out");
+                if let Ok((id, m)) = rx.recv_timeout(left) {
+                    ui.on_tab_msg(id, m);
+                }
+            }
+        };
+        pump(&mut ui, &|u| u.r.git.is_some() && u.r.commits.len() == 2);
+        ui.enter_files();
+        pump(&mut ui, &|u| u.r.files.tree.is_some());
+        let mut screen = vec![0u32; 1280 * 800];
+        ui.paint(&mut Canvas::new(&mut screen, 1280, 800), true);
+        let names = |u: &Ui| -> Vec<String> {
+            let t = u.r.files.tree.as_ref().unwrap();
+            u.r.files.rows.iter().map(|&(id, _)| t.path(id)).collect()
+        };
+        // The only top folder opens on the first look; folders come first.
+        assert_eq!(names(&ui), ["src", "src/a.rs", "src/new.rs", "README.md"]);
+        let t = ui.r.files.tree.as_ref().unwrap();
+        let new = ui.r.files.rows[2].0;
+        assert_eq!(t.nodes[new as usize].mark, b'?', "untracked files are marked");
+        // Typing filters (to the file and its folders); Down goes back to the tree.
+        for c in "a.rs".chars() {
+            ui.key(Key::Char(c));
+        }
+        assert_eq!(names(&ui), ["src", "src/a.rs"]);
+        assert_partial_paint_is_full(&mut ui, &mut screen, "filter");
+        ui.key(Key::Down);
+        ui.key(Key::Down);
+        assert_partial_paint_is_full(&mut ui, &mut screen, "move in the tree");
+        ui.key(Key::Enter);
+        pump(&mut ui, &|u| u.r.files.content.is_some());
+        assert_partial_paint_is_full(&mut ui, &mut screen, "open a file");
+        ui.pointer(900, 120);
+        assert_partial_paint_is_full(&mut ui, &mut screen, "hover a tab");
+        assert_eq!(ui.r.files.file.as_ref().map(|x| x.1.as_str()), Some("src/a.rs"));
+        assert_eq!(ui.r.files.content.as_ref().unwrap().content.lines.len(), 2);
+        ui.key(Key::Tab);
+        ui.key(Key::Char('b'));
+        pump(&mut ui, &|u| u.r.files.blame.is_some());
+        assert_partial_paint_is_full(&mut ui, &mut screen, "blame");
+        let b = ui.r.files.blame.as_ref().unwrap();
+        let authors: Vec<&str> = b.lines.iter().map(|&i| &*b.commits[i as usize].author).collect();
+        assert_eq!(authors, ["ffwd test", "Other"]);
+        ui.key(Key::Char('h'));
+        pump(&mut ui, &|u| u.r.files.history.is_some());
+        assert_eq!(ui.r.files.history.as_ref().unwrap().len(), 2);
+        assert_partial_paint_is_full(&mut ui, &mut screen, "history");
+        // Enter on a history row shows that commit in the history view.
+        ui.key(Key::Enter);
+        assert!(!ui.r.files_view, "Enter jumps to the history");
+        assert_partial_paint_is_full(&mut ui, &mut screen, "jump to the history");
+        assert_eq!(ui.r.sel, 0, "the newest commit is selected");
+        // Back in the view, clearing the filter keeps the file; Left folds.
+        ui.enter_files();
+        pump(&mut ui, &|u| u.r.files.tree.is_some() && u.r.files.file.is_some());
+        ui.r.files.focus = files_view::FFocus::Filter;
+        ui.key(Key::Esc);
+        ui.key(Key::Esc);
+        assert_eq!(names(&ui).len(), 4);
+        ui.key(Key::Home);
+        ui.key(Key::Left);
+        assert_eq!(names(&ui), ["src", "README.md"], "Left folds the folder");
+        assert_partial_paint_is_full(&mut ui, &mut screen, "fold");
+        ui.key(Key::Right);
+        assert_eq!(names(&ui).len(), 4, "Right opens it again");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Lines, discard and undo, recent messages, all from the keyboard.
     #[test]
     fn local_changes_lines_discard_undo_with_keys() {
@@ -3738,15 +3894,21 @@ mod tests {
         ];
         for (name, step) in steps {
             step(&mut ui);
-            ui.paint(&mut Canvas::new(&mut screen, w, h), false);
-            let mut fresh = vec![0u32; w * h];
-            ui.paint(&mut Canvas::new(&mut fresh, w, h), true);
-            // The status bar shows the last paint's time, so it differs
-            // between any two paints; everything above it must match.
-            let n = ui.lay.status.y.max(0) as usize * w;
-            let bad = screen[..n].iter().zip(&fresh[..n]).position(|(a, b)| a != b);
-            assert!(bad.is_none(), "after '{name}': pixel {:?} differs from a full paint", bad.map(|i| (i % w, i / w)));
+            assert_partial_paint_is_full(&mut ui, &mut screen, name);
         }
+    }
+
+    /// Paints the damage onto `screen` and checks it against a full paint.
+    fn assert_partial_paint_is_full(ui: &mut Ui, screen: &mut [u32], name: &str) {
+        let (w, h) = (ui.w, ui.h);
+        ui.paint(&mut Canvas::new(screen, w, h), false);
+        let mut fresh = vec![0u32; w * h];
+        ui.paint(&mut Canvas::new(&mut fresh, w, h), true);
+        // The status bar shows the last paint's time, so it differs
+        // between any two paints; everything above it must match.
+        let n = ui.lay.status.y.max(0) as usize * w;
+        let bad = screen[..n].iter().zip(&fresh[..n]).position(|(a, b)| a != b);
+        assert!(bad.is_none(), "after '{name}': pixel {:?} differs from a full paint", bad.map(|i| (i % w, i / w)));
     }
 
     /// Every top-bar button lies inside a range the frame treats as a

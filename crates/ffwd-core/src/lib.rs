@@ -8,6 +8,7 @@
 pub mod changes;
 pub mod conflict;
 pub mod diff;
+pub mod files;
 pub mod git;
 pub mod graph;
 pub mod log;

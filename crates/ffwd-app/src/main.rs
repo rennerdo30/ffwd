@@ -56,6 +56,9 @@ pub struct Args {
     pub hover: Option<(i32, i32)>,
     /// Snapshot of the Local Changes view.
     pub changes: bool,
+    /// Opens the Files view, optionally with this file selected.
+    pub files: Option<String>,
+    pub files_tab: Option<String>,
     /// Snapshot with the selected commit's context menu open.
     pub menu: bool,
     /// Snapshot with the "create branch" prompt open.
@@ -88,6 +91,8 @@ fn parse_args() -> Result<Args, String> {
         scope_demo: false,
         hover: None,
         changes: false,
+        files: None,
+        files_tab: None,
         menu: false,
         prompt: false,
         find: None,
@@ -127,6 +132,8 @@ fn parse_args() -> Result<Args, String> {
             "--agents-demo" => a.agents_demo = true,
             "--settings-scope-demo" => a.scope_demo = true,
             "--changes" => a.changes = true,
+            "--files" => a.files = Some(val("--files")?),
+            "--files-tab" => a.files_tab = Some(val("--files-tab")?),
             "--menu" => a.menu = true,
             "--prompt" => a.prompt = true,
             "--find" => a.find = Some(val("--find")?),

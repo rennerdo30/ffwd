@@ -15,6 +15,9 @@
   - check out (also remote branches, with tracking, and detached), create, rename and delete branches and tags;
   - merge (four modes), rebase, cherry-pick, revert, reset (soft, mixed, hard), each with a backup ref where commits could be lost;
   - double-click checkout; `Ctrl+B` and `Ctrl+Shift+G`.
+- **Files view** (FF-51, FF-43):
+  - the repository's folder tree with change marks and a type-to-filter search;
+  - the selected file's content with syntax colours, its blame, and its history (following renames), which jumps to the commit.
 - **Conflict resolver** (FF-42):
   - a banner for a stopped merge, rebase, cherry-pick or revert, with Continue and Abort (which asks first);
   - per-conflict choices (ours, theirs, both in either order), or one side for the whole file, then save and mark resolved;

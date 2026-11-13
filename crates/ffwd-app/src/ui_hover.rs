@@ -23,6 +23,8 @@ pub enum Hot {
     Agent(usize),
     /// An entry of the Local Changes view's hit list.
     Change(usize),
+    /// An entry of the Files view's hit list.
+    Files(usize),
     /// An element of the find bar.
     Find(usize),
     /// A control in the diff bar.
@@ -88,6 +90,9 @@ impl Ui {
         if let Some(&(_, a)) = self.top_buttons.iter().find(|(r, _)| r.contains(x, y)) {
             return Some(Hot::Top(a));
         }
+        if self.r.files_view {
+            return self.files_hit_at(x, y).map(Hot::Files);
+        }
         if self.r.changes_view {
             return self.change_hit_at(x, y).map(Hot::Change);
         }
@@ -133,6 +138,7 @@ impl Ui {
             Hot::DiffBar(i) => self.diff_bar_hits.get(i).map_or(self.lay.details, |h| h.0.inset(-2, -2)),
             Hot::Dialog(_) => self.dialog_rect(),
             Hot::Change(i) => self.r.changes.hits.get(i).map_or(self.lay.list, |h| h.0.inset(-2, -2)),
+            Hot::Files(i) => self.files_hit_rect(i),
         }
     }
 
@@ -172,6 +178,7 @@ impl Ui {
             Some(Hot::Row(_) | Hot::File(_)) => Cursor::Default,
             Some(Hot::Agent(i)) if self.agent_hit_is_field(i) => Cursor::Text,
             Some(Hot::Change(i)) if self.change_hit_is_text(i) => Cursor::Text,
+            Some(Hot::Files(i)) if self.files_hit_is_text(i) => Cursor::Text,
             Some(Hot::Find(i)) if self.search_hit_is_field(i) => Cursor::Text,
             Some(Hot::Setting(row, _)) if self.setting_is_text(row) => Cursor::Text,
             Some(_) => Cursor::Pointer,
