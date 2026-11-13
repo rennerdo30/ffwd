@@ -6564,6 +6564,85 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A diff line's menu (FF-41): right-click offers the editor at that
+    /// line of the new file (a removed line: where it was) and copying
+    /// it; headers and other panes get no such menu. Nothing is launched.
+    #[test]
+    fn diff_line_menu_opens_the_editor_at_the_line() {
+        use std::sync::mpsc;
+        let mut te = TextEngine::new();
+        let Some(f) = load_fonts(&mut te) else { return };
+        let dir = std::env::temp_dir().join(format!("ffwd-ui-reveal-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = Git { root: dir.clone() };
+        for a in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.name", "ffwd test"],
+            &["config", "user.email", "test@example.invalid"],
+            &["config", "commit.gpgsign", "false"],
+            &["config", "core.autocrlf", "false"],
+        ] {
+            g.output(a).unwrap();
+        }
+        std::fs::write(dir.join("a.txt"), "one\ntwo\nthree\nfour\n").unwrap();
+        g.output(&["add", "."]).unwrap();
+        g.output(&["commit", "-q", "-m", "first"]).unwrap();
+        std::fs::write(dir.join("a.txt"), "one\nthree\nfour\nfive\n").unwrap();
+        g.output(&["commit", "-q", "-am", "drop two, add five"]).unwrap();
+        let (tx, rx) = mpsc::channel::<(u64, Msg)>();
+        let tx = Arc::new(std::sync::Mutex::new(tx));
+        let sinks: SinkFactory = Arc::new(move |id| {
+            let tx = tx.clone();
+            Arc::new(move |m| {
+                if let Ok(t) = tx.lock() {
+                    let _ = t.send((id, m));
+                }
+            })
+        });
+        crate::work::start(dir.clone(), &sinks(1));
+        let empty = crate::settings::Settings::parse("");
+        let mut ui = Ui::new(te, f, empty.clone(), empty, Some((1, dir.clone())), sinks, 1280, 800, 1.0);
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while ui.r.diff.is_none() {
+            let left = until.saturating_duration_since(std::time::Instant::now());
+            assert!(!left.is_zero(), "timed out waiting for the diff");
+            if let Ok((id, m)) = rx.recv_timeout(left) {
+                ui.on_tab_msg(id, m);
+            }
+        }
+        let mut screen = vec![0u32; 1280 * 800];
+        ui.paint(&mut Canvas::new(&mut screen, 1280, 800), true);
+        let r = ui.diff_rect();
+        let lines: Vec<(ffwd_core::diff::LineKind, String)> =
+            ui.r.diff.as_ref().unwrap().lines.iter().map(|l| (l.kind, l.text.to_string())).collect();
+        let y_of = |ui: &Ui, i: usize| r.y + ui.px(32.0) + i as i32 * ui.px(20.0) + ui.px(10.0);
+        let x = r.x + r.w / 3;
+        let labels = |ui: &mut Ui, i: usize| -> Vec<String> {
+            let y = y_of(ui, i);
+            ui.diff_line_menu(x, y).map(|v| v.into_iter().map(|m| m.label).collect()).unwrap_or_default()
+        };
+        let find = |kind: ffwd_core::diff::LineKind, text: &str| {
+            lines.iter().position(|l| l.0 == kind && l.1 == text).unwrap()
+        };
+        use ffwd_core::diff::LineKind as K;
+        assert!(labels(&mut ui, 0).is_empty(), "the hunk header has no line menu");
+        assert_eq!(labels(&mut ui, find(K::Context, "three")), ["Open in editor at line 2", "Copy line"]);
+        assert_eq!(
+            labels(&mut ui, find(K::Del, "two")),
+            ["Open in editor at line 2", "Copy line"],
+            "where it was removed"
+        );
+        assert_eq!(labels(&mut ui, find(K::Add, "five"))[0], "Open in editor at line 4");
+        // A right-click there opens that menu.
+        ui.right_click(x, y_of(&ui, find(K::Add, "five")));
+        assert!(ui.menu.as_ref().is_some_and(|m| m.items[0].label == "Open in editor at line 4"));
+        ui.close_menu();
+        // Not in the commit list.
+        assert!(ui.diff_line_menu(ui.lay.list_body.x + 40, ui.lay.list_body.y + 5).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Find in the diff (FF-34): `Ctrl+F` with the diff focused searches
     /// the shown diff (case-insensitive), Enter steps through the matches
     /// and scrolls to them, the query stays for the next file, and Esc

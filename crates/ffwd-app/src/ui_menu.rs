@@ -42,6 +42,8 @@ pub enum MenuAct {
     /// Files (FF-47): open in the editor (or the default app), show in
     /// the folder, external diff and merge tools.
     OpenFile(PathBuf, bool),
+    /// Open a file in the editor at a line (FF-41).
+    OpenFileAt(PathBuf, u32),
     ShowFile(PathBuf),
     DiffTool(String, ffwd_core::tools::DiffOf),
     MergeTool(String),
@@ -518,7 +520,8 @@ impl Ui {
         self.close_menu();
         match act {
             Some(MenuAct::Run(op)) => self.run_refop(op),
-            Some(MenuAct::OpenFile(p, editor)) => self.open_external(p, editor),
+            Some(MenuAct::OpenFile(p, editor)) => self.open_external(p, editor, None),
+            Some(MenuAct::OpenFileAt(p, line)) => self.open_external(p, true, Some(line)),
             Some(MenuAct::ShowFile(p)) => crate::platform::show_file(p),
             Some(MenuAct::DiffTool(path, of)) => self.run_tool(path, Some(of)),
             Some(MenuAct::MergeTool(path)) => self.run_tool(path, None),
@@ -1084,7 +1087,7 @@ impl Ui {
     }
 
     /// Opens a file in the editor (`tools.editor`) or the default app.
-    fn open_external(&mut self, p: PathBuf, editor: bool) {
+    fn open_external(&mut self, p: PathBuf, editor: bool, line: Option<u32>) {
         let cmd = self
             .current_repo_settings()
             .and_then(|r| r.get("tools.editor"))
@@ -1094,11 +1097,10 @@ impl Ui {
             .map(str::to_string);
         match (editor, cmd) {
             (true, Some(c)) => {
-                let parts = ffwd_core::tools::split_command(&c);
-                if let Some((prog, args)) = parts.split_first() {
-                    let (prog, args) = (prog.clone(), args.to_vec());
+                let file = p.to_string_lossy().into_owned();
+                if let Some((prog, args)) = ffwd_core::tools::editor_command(&c, &file, line) {
                     std::thread::spawn(move || {
-                        let _ = std::process::Command::new(prog).args(args).arg(&p).spawn();
+                        let _ = std::process::Command::new(prog).args(args).spawn();
                     });
                 }
             }
@@ -1247,6 +1249,9 @@ impl Ui {
         if let Some(items) = self.file_menu_at(x, y) {
             return self.open_menu(x, y, items);
         }
+        if let Some(items) = self.diff_line_menu(x, y) {
+            return self.open_menu(x, y, items);
+        }
         if self.lay.side.contains(x, y)
             && let Some(i) = self.side_item_at(x, y)
         {
@@ -1255,6 +1260,49 @@ impl Ui {
             let items = self.ref_menu(&key);
             self.open_menu(x, y, items);
         }
+    }
+
+    /// The diff line under (x, y) in the history's diff (side by side:
+    /// the line on the half clicked).
+    pub(super) fn diff_line_at(&mut self, x: i32, y: i32) -> Option<usize> {
+        if self.r.changes_view || self.r.files_view || self.r.activity_view || self.r.reflog_view {
+            return None;
+        }
+        let d = self.r.diff.clone().filter(|d| !d.binary)?;
+        let r = self.diff_rect();
+        let body_y = r.y + self.px(32.0);
+        if !r.contains(x, y) || y < body_y || self.diff_strip.contains(x, y) {
+            return None;
+        }
+        let row = self.r.diff_top + ((y - body_y) / self.px(20.0).max(1)) as usize;
+        if !self.diff_split {
+            return (row < d.lines.len()).then_some(row);
+        }
+        let (p, _) = self.diff_meta(&d);
+        let (l, rr) = *diff_view::split_rows_of(&d, &p).get(row)?;
+        if x < r.x + r.w / 2 { l.or(rr) } else { rr.or(l) }
+    }
+
+    /// The right-click menu of a diff line: open the file in the editor
+    /// at that line, copy the line.
+    pub(super) fn diff_line_menu(&mut self, x: i32, y: i32) -> Option<Vec<MenuItem>> {
+        let i = self.diff_line_at(x, y)?;
+        let d = self.r.diff.clone()?;
+        let line = d.lines.get(i)?;
+        if !matches!(
+            line.kind,
+            ffwd_core::diff::LineKind::Add | ffwd_core::diff::LineKind::Del | ffwd_core::diff::LineKind::Context
+        ) {
+            return None;
+        }
+        let root = self.r.git.as_ref()?.root.clone();
+        let full = root.join(&*d.path);
+        let mut v = Vec::new();
+        if let Some(n) = ffwd_core::diff::new_line_at(&d, i) {
+            v.push(item(format!("Open in editor at line {n}"), MenuAct::OpenFileAt(full, n)));
+        }
+        v.push(item("Copy line", MenuAct::Copy(line.text.to_string())));
+        Some(v)
     }
 
     /// The menu of tab `i`.

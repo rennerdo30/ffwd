@@ -53,6 +53,24 @@ pub struct FileDiff {
     pub truncated: bool,
 }
 
+/// The line in the new file that diff line `i` stands at: its own new
+/// number, or for a removed line the next line's (where it was removed),
+/// else the line after the previous one. `None` for headers.
+pub fn new_line_at(d: &FileDiff, i: usize) -> Option<u32> {
+    let line = d.lines.get(i)?;
+    match line.kind {
+        LineKind::Add | LineKind::Context => (line.new > 0).then_some(line.new),
+        LineKind::Del => d.lines[i + 1..]
+            .iter()
+            .take_while(|l| l.kind != LineKind::Hunk)
+            .find(|l| l.new > 0)
+            .map(|l| l.new)
+            .or_else(|| d.lines[..i].iter().rev().find(|l| l.new > 0).map(|l| l.new + 1))
+            .or(Some(1)),
+        _ => None,
+    }
+}
+
 const MAX_FILES: usize = 5_000;
 const MAX_DIFF_LINES: usize = 20_000;
 const MAX_LINE_CHARS: usize = 2_000;
@@ -296,6 +314,29 @@ fn parse_hunk_header(h: &[u8]) -> (u32, u32) {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn new_line_numbers_for_every_kind() {
+        let l = |kind, old, new| DiffLine { kind, old, new, text: "x".into() };
+        let d = FileDiff {
+            path: "a".into(),
+            lines: vec![
+                l(LineKind::Hunk, 0, 0),
+                l(LineKind::Context, 4, 4),
+                l(LineKind::Del, 5, 0),
+                l(LineKind::Del, 6, 0),
+                l(LineKind::Add, 0, 5),
+                l(LineKind::Context, 7, 6),
+                l(LineKind::Del, 8, 0),
+                l(LineKind::Hunk, 0, 0),
+            ],
+            binary: false,
+            truncated: false,
+        };
+        let at: Vec<Option<u32>> = (0..d.lines.len()).map(|i| new_line_at(&d, i)).collect();
+        assert_eq!(at, [None, Some(4), Some(5), Some(5), Some(5), Some(6), Some(7), None]);
+    }
+
     use super::*;
 
     #[test]
