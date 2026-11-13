@@ -230,6 +230,7 @@ The capture above is the real PoC UI. `ffwd --snapshot` rendered it offscreen fr
 - **Side by side:** each deletion sits next to the addition that replaces it. Lines with no partner leave the other side empty.
 - **Speed:** only visible lines are tokenized; the pairing and comment state are computed once per diff.
 - **Next and previous change:** `n` and `p` in the diff jump between blocks of changes (unified or side by side), with three lines of context above; past the last one the status bar says so.
+- **Images:** a changed PNG shows before and after side by side on a checkerboard, each with its pixel size and file size (enlarged at most 2x, large ones shrunk on decoding). A new or deleted image says so on its side.
 
 ## Find bar (FF-34)
 
@@ -243,6 +244,7 @@ The capture above is the real PoC UI. `ffwd --snapshot` rendered it offscreen fr
   - Commits that don't match are dimmed; matches are marked in amber on the scroll track.
   - The first match is selected, and the bar counts "n of m".
 - **Keys:** `Enter`/`↓` go to the next match, `↑` to the previous; `Esc` closes the bar. Clicking the list gives it the keyboard back; `Ctrl+F` returns to the bar.
+- **Recent queries:** Enter and Esc remember the query (the last 10, kept in the session). In the empty field `↑` walks back through them and `↓` forward; past the newest the field is empty again.
 
 ## Branches, tags and history operations (FF-36, FF-37)
 

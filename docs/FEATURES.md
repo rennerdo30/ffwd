@@ -43,7 +43,7 @@
 | Commit search by message, author, SHA | **Built** | Find bar (`Ctrl+F`) |
 | Search by diff content and by file path, with matching files listed | Partial | Content and path search are built; the list of matching files comes later |
 | Search the current branch or the whole repository | M1 | |
-| Recent search queries | M1 | |
+| Recent search queries | **Built** | The last 10 queries (session state); `↑`/`↓` in the empty find field walk them |
 | Remove matches with Delete (a to-do list) | M2 | |
 | Inline search in the diff (`Ctrl+F`), kept when switching files | M1 | |
 | Filter fields for the sidebar and file lists | Partial | The sidebar filter is built |
@@ -157,7 +157,7 @@
 | Reveal the line in an editor | M1 | |
 | Copy as patch | M1 | |
 | Remember the scroll position per file | M1 | |
-| Image diff: PNG, JPEG, WebP, TGA, SVG, HEIC; swipe and onion; exact pixel diff, 16-bit | M2 | |
+| Image diff: PNG, JPEG, WebP, TGA, SVG, HEIC; swipe and onion; exact pixel diff, 16-bit | Partial | PNG before and after, side by side, with size and bytes; other formats, swipe, onion and pixel diff come later |
 | Binary and LFS file views | M2 | |
 | Submodule diff that lists its commits | M2 | |
 | Large diffs loaded on request | **Built** | Capped; paging in M1 |

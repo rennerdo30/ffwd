@@ -110,6 +110,29 @@ impl<'a> Canvas<'a> {
         }
     }
 
+    /// Draws an RGBA image (`w`×`h`, 8 bits per channel) scaled into `dst`
+    /// with nearest-neighbour sampling, blended over what is there.
+    pub fn draw_rgba_scaled(&mut self, dst: Rect, w: usize, h: usize, rgba: &[u8]) {
+        if w == 0 || h == 0 || rgba.len() < w * h * 4 || dst.is_empty() {
+            return;
+        }
+        let r = dst.intersect(self.clip);
+        if r.is_empty() {
+            return;
+        }
+        for y in r.y..r.bottom() {
+            let sy = ((y - dst.y) as usize * h / dst.h as usize).min(h - 1);
+            let o = y as usize * self.stride;
+            for x in r.x..r.right() {
+                let sx = ((x - dst.x) as usize * w / dst.w as usize).min(w - 1);
+                let p = (sy * w + sx) * 4;
+                let (cr, cg, cb, ca) = (rgba[p] as u32, rgba[p + 1] as u32, rgba[p + 2] as u32, rgba[p + 3] as u32);
+                let i = o + x as usize;
+                self.px[i] = blend(self.px[i], cr << 16 | cg << 8 | cb, ca);
+            }
+        }
+    }
+
     pub fn fill(&mut self, r: Rect, color: u32) {
         let r = r.intersect(self.clip);
         if r.is_empty() {
@@ -352,5 +375,18 @@ mod tests {
                 assert_eq!(px[y * 16 + x] != 0, inside, "pixel {x},{y}");
             }
         }
+    }
+
+    #[test]
+    fn images_scale_and_blend() {
+        let mut px = vec![0u32; 4 * 4];
+        let mut cv = Canvas::new(&mut px, 4, 4);
+        // 2x2: red, transparent / green, blue (half alpha).
+        let img = [255, 0, 0, 255, 0, 0, 0, 0, 0, 255, 0, 255, 0, 0, 255, 128];
+        cv.draw_rgba_scaled(Rect::new(0, 0, 4, 4), 2, 2, &img);
+        assert_eq!(cv.pixels()[0], 0xff0000);
+        assert_eq!(cv.pixels()[3], 0x000000, "transparent leaves the background");
+        assert_eq!(cv.pixels()[12], 0x00ff00);
+        assert_eq!(cv.pixels()[15] & 0xff, 0x80, "half alpha blends");
     }
 }

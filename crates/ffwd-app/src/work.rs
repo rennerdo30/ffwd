@@ -121,6 +121,12 @@ pub enum Msg {
     PrCreate(Result<String, String>),
     /// The reflog of HEAD (FF-43).
     Reflog(Result<Vec<ffwd_core::reflog::Entry>, String>),
+    /// A changed image's old and new version (FF-41), for diff `seq`.
+    DiffImages {
+        seq: u64,
+        old: Option<Result<crate::image::Img, String>>,
+        new: Option<Result<crate::image::Img, String>>,
+    },
     /// A branch, tag or history operation ended.
     RefOp(Result<String, ffwd_core::refops::OpError>),
     /// What a discard removed (for Ctrl+Z).

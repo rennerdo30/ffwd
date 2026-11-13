@@ -55,7 +55,13 @@ pub struct Search {
     /// The bar has the keyboard.
     pub typing: bool,
     hits: Vec<(Rect, FHit)>,
+    /// Browsing recent queries: the index into them (0 = newest).
+    recall: Option<usize>,
 }
+
+/// Recent queries kept in the session state (FF-34).
+const RECENT_KEY: &str = "search.recent";
+const RECENT_MAX: usize = 10;
 
 impl Ui {
     pub(super) fn search_active(&self) -> bool {
@@ -82,6 +88,7 @@ impl Ui {
                     seq: 0,
                     typing: true,
                     hits: Vec::new(),
+                    recall: None,
                 })
             }
         }
@@ -203,10 +210,39 @@ impl Ui {
         let f = &mut s.input;
         let edited = match k {
             Key::Esc => {
+                let q = f.text().trim().to_string();
+                self.remember_query(&q);
                 self.close_search();
                 return true;
             }
+            Key::Up | Key::Down if f.text().is_empty() || s.recall.is_some() => {
+                // An empty field (or one being browsed) walks recent queries.
+                let recent = self.state.get_list(RECENT_KEY);
+                let s = self.r.search.as_mut().unwrap_or_else(|| unreachable!());
+                let next = match (k, s.recall) {
+                    (Key::Up, None) => Some(0),
+                    (Key::Up, Some(i)) => Some((i + 1).min(recent.len().saturating_sub(1))),
+                    (_, Some(0)) | (_, None) => None,
+                    (_, Some(i)) => Some(i - 1),
+                };
+                match next.and_then(|i| recent.get(i).map(|q| (i, q.clone()))) {
+                    Some((i, q)) => {
+                        s.input = TextField::new(&q);
+                        s.input.end();
+                        s.recall = Some(i);
+                    }
+                    None => {
+                        s.input = TextField::default();
+                        s.recall = None;
+                    }
+                }
+                true
+            }
             Key::Enter => {
+                let q = f.text().trim().to_string();
+                self.remember_query(&q);
+                let s = self.r.search.as_mut().unwrap_or_else(|| unreachable!());
+                let f = &s.input;
                 if s.pending || (!instant && s.matches.is_empty() && s.done && !f.text().is_empty()) {
                     self.restart_search();
                 } else {
@@ -229,6 +265,7 @@ impl Ui {
             }
             Key::Char(c) => {
                 f.insert(c.encode_utf8(&mut [0; 4]));
+                s.recall = None;
                 true
             }
             Key::Backspace => {
@@ -285,6 +322,20 @@ impl Ui {
             }
         }
         true
+    }
+
+    /// Keeps `q` as the newest recent query (session state).
+    fn remember_query(&mut self, q: &str) {
+        if q.is_empty() {
+            return;
+        }
+        let mut recent = self.state.get_list(RECENT_KEY);
+        recent.retain(|x| x != q);
+        recent.insert(0, q.to_string());
+        recent.truncate(RECENT_MAX);
+        if self.state.get_list(RECENT_KEY) != recent {
+            self.state.set_list(RECENT_KEY, &recent);
+        }
     }
 
     /// A click in the list header while the bar is open.

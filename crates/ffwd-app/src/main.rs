@@ -12,6 +12,7 @@ mod fmt;
 mod frame;
 mod highlight;
 mod icon;
+mod image;
 mod platform;
 mod settings;
 mod snapshot;

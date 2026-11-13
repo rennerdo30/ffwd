@@ -428,6 +428,10 @@ pub struct RepoState {
     pub sel_file: usize,
     file_top: usize,
     pub diff: Option<Box<FileDiff>>,
+    /// The selected image file's old and new version, for diff `seq`.
+    #[allow(clippy::type_complexity)]
+    pub diff_images:
+        Option<(u64, Option<Result<crate::image::Img, String>>, Option<Result<crate::image::Img, String>>)>,
     diff_top: usize,
     worker: Option<DetailWorker>,
     /// A fetch, pull or push running for this repository.
@@ -577,6 +581,17 @@ pub struct Ui {
     cursor: Cursor,
     pointer_at: Option<(i32, i32)>,
     pub damage: Damage,
+}
+
+/// "12 KB", "1.4 MB".
+fn fmt_bytes(n: usize) -> String {
+    if n < 1024 {
+        format!("{n} B")
+    } else if n < 1024 * 1024 {
+        format!("{} KB", n.div_ceil(1024))
+    } else {
+        format!("{:.1} MB", n as f64 / (1024.0 * 1024.0))
+    }
 }
 
 fn now_secs() -> i64 {
@@ -1240,9 +1255,21 @@ impl Ui {
             Msg::Diff { seq, file, result } => {
                 if seq == self.r.seq && file == self.r.sel_file {
                     match result {
-                        Ok(d) => self.r.diff = Some(d),
+                        Ok(d) => {
+                            let image = d.binary && crate::image::is_image(&d.path);
+                            self.r.diff = Some(d);
+                            if image {
+                                self.load_diff_images(seq);
+                            }
+                        }
                         Err(e) => self.set_notice(format!("Could not load diff: {e}")),
                     }
+                    self.damage.rects.push(self.diff_rect());
+                }
+            }
+            Msg::DiffImages { seq, old, new } => {
+                if seq == self.r.seq {
+                    self.r.diff_images = Some((seq, old, new));
                     self.damage.rects.push(self.diff_rect());
                 }
             }
@@ -2078,6 +2105,82 @@ impl Ui {
             return self.settings.get("hosting.enabled") == Some("true");
         }
         self.settings.get("hosting.enabled") != Some("false") && std::env::var_os("FFWD_NO_HOSTING").is_none()
+    }
+
+    /// Loads the selected image file's old and new version on a worker.
+    fn load_diff_images(&mut self, seq: u64) {
+        let (Some(g), Some(t)) = (self.git_for_tab(), self.tabs.get(self.cur_tab)) else { return };
+        let Some(c) = self.r.commits.get(self.r.sel) else { return };
+        let Some(f) = self.r.details.as_ref().and_then(|d| d.files.get(self.r.sel_file)).cloned() else { return };
+        let sha = c.id.to_string();
+        let parent = c.parents.first().map(|p| p.to_string());
+        self.r.diff_images = None;
+        let sink = (self.sinks)(t.id);
+        crate::work::spawn("diff-images", &sink, move |sink| {
+            let old_path = f.old_path.as_deref().unwrap_or(&f.path).to_string();
+            let old = match (&parent, f.status) {
+                (Some(p), s) if s != b'A' => Some(crate::image::load(&g, p, &old_path)),
+                _ => None,
+            };
+            let new = (f.status != b'D').then(|| crate::image::load(&g, &sha, &f.path));
+            sink(Msg::DiffImages { seq, old, new });
+        });
+    }
+
+    /// The old and new image side by side, each fitted into its half on a
+    /// checkerboard, with its size.
+    fn paint_diff_images(&mut self, cv: &mut Canvas, body: Rect) {
+        let ui = self.f.ui;
+        // Only the current diff's images; anything else is still loading.
+        let Some((_, old, new)) = self.r.diff_images.clone().filter(|x| x.0 == self.r.seq) else {
+            self.te.draw(
+                cv,
+                ui,
+                self.pf(12.5),
+                body.x as f32 + self.pf(16.0),
+                body.y as f32 + self.pf(26.0),
+                "Loading the images…",
+                TEXT_3,
+                body.w as f32,
+            );
+            return;
+        };
+        let pad = self.px(14.0);
+        let half = (body.w - pad * 3) / 2;
+        for (k, (label, img)) in [("Before", old), ("After", new)].into_iter().enumerate() {
+            let x = body.x + pad + k as i32 * (half + pad);
+            let cap_y = body.y as f32 + self.pf(24.0);
+            let caption = match &img {
+                None if k == 0 => "Before: the file is new".to_string(),
+                None => "After: the file was deleted".to_string(),
+                Some(Err(e)) => format!("{label}: {e}"),
+                Some(Ok(i)) => format!("{label} · {}×{} · {}", i.orig.0, i.orig.1, fmt_bytes(i.bytes)),
+            };
+            self.te.draw(cv, ui, self.pf(12.0), x as f32, cap_y, &caption, TEXT_3, half as f32);
+            let area = Rect::new(x, body.y + self.px(36.0), half, body.h - self.px(48.0));
+            if let Some(Ok(i)) = img {
+                // Fit, never enlarge beyond 2x.
+                let s = (area.w as f32 / i.w as f32).min(area.h as f32 / i.h as f32).min(2.0);
+                let (w, h) = (((i.w as f32 * s) as i32).max(1), ((i.h as f32 * s) as i32).max(1));
+                let r = Rect::new(area.x + (area.w - w) / 2, area.y, w, h);
+                // A checkerboard shows transparency.
+                let c = self.px(8.0).max(2);
+                let old_clip = cv.set_clip(cv.clip().intersect(r));
+                let mut yy = r.y;
+                while yy < r.bottom() {
+                    let mut xx = r.x;
+                    while xx < r.right() {
+                        let dark = ((xx - r.x) / c + (yy - r.y) / c) % 2 == 0;
+                        cv.fill(Rect::new(xx, yy, c, c), if dark { BG_INPUT } else { BG_HOVER });
+                        xx += c;
+                    }
+                    yy += c;
+                }
+                cv.draw_rgba_scaled(r, i.w, i.h, &i.rgba);
+                cv.set_clip(old_clip);
+                cv.stroke_rect(r, BORDER);
+            }
+        }
     }
 
     /// A command for the selected commit (palette or shortcut).
@@ -3392,6 +3495,10 @@ impl Ui {
         // Hunks above the first painted line count too.
         let mut hunk: i64 = diff.lines.iter().take(top).filter(|l| l.kind == LineKind::Hunk).count() as i64;
         if diff.binary {
+            if crate::image::is_image(&diff.path) {
+                self.paint_diff_images(cv, body);
+                return buttons;
+            }
             self.te.draw(
                 cv,
                 ui,
@@ -5504,6 +5611,136 @@ mod tests {
         assert!(!on_hub("refs/heads/topic"));
         assert!(ui.notice.as_deref().is_some_and(|n| n.contains("git push origin ")));
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Image diffs (FF-41): a changed PNG shows its old and new version
+    /// (decoded on a worker) instead of "binary file"; repaints are right.
+    #[test]
+    fn image_diff_shows_before_and_after() {
+        use std::sync::mpsc;
+        let mut te = TextEngine::new();
+        let Some(f) = load_fonts(&mut te) else { return };
+        let dir = std::env::temp_dir().join(format!("ffwd-ui-image-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = Git { root: dir.clone() };
+        for a in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.name", "ffwd test"],
+            &["config", "user.email", "test@example.invalid"],
+            &["config", "commit.gpgsign", "false"],
+        ] {
+            g.output(a).unwrap();
+        }
+        for (n, m) in [(24usize, "small"), (40, "large")] {
+            crate::snapshot::write_rgba_png(&dir.join("logo.png"), &crate::icon::mark_rgba(n), n, n).unwrap();
+            g.output(&["add", "."]).unwrap();
+            g.output(&["commit", "-q", "-m", m]).unwrap();
+        }
+        let (tx, rx) = mpsc::channel::<(u64, Msg)>();
+        let tx = Arc::new(std::sync::Mutex::new(tx));
+        let sinks: SinkFactory = Arc::new(move |id| {
+            let tx = tx.clone();
+            Arc::new(move |m| {
+                if let Ok(t) = tx.lock() {
+                    let _ = t.send((id, m));
+                }
+            })
+        });
+        crate::work::start(dir.clone(), &sinks(1));
+        let empty = crate::settings::Settings::parse("");
+        let mut ui = Ui::new(te, f, empty.clone(), empty, Some((1, dir.clone())), sinks, 1280, 800, 1.0);
+        let pump = |ui: &mut Ui, what: &str, done: &dyn Fn(&Ui) -> bool| {
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while !done(ui) {
+                let left = until.saturating_duration_since(std::time::Instant::now());
+                assert!(!left.is_zero(), "timed out waiting for {what}; notice: {:?}", ui.notice);
+                if let Ok((id, m)) = rx.recv_timeout(left) {
+                    ui.on_tab_msg(id, m);
+                }
+            }
+        };
+        let mut screen = vec![0u32; 1280 * 800];
+        pump(&mut ui, "the diff", &|u| u.r.log_done && u.r.diff.as_ref().is_some_and(|d| d.binary));
+        ui.paint(&mut Canvas::new(&mut screen, 1280, 800), true);
+        pump(&mut ui, "the images", &|u| u.r.diff_images.as_ref().is_some_and(|x| x.0 == u.r.seq));
+        let (_, old, new) = ui.r.diff_images.clone().unwrap();
+        assert_eq!(old.unwrap().unwrap().orig, (24, 24));
+        assert_eq!(new.unwrap().unwrap().orig, (40, 40));
+        assert_partial_paint_is_full(&mut ui, &mut screen, "the images");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Recent queries (FF-34): Enter and Esc remember the query; in an
+    /// empty field ↑ walks back through them and ↓ forward, past the newest
+    /// to empty again.
+    #[test]
+    fn find_bar_recent_queries() {
+        use std::sync::mpsc;
+        let mut te = TextEngine::new();
+        let Some(f) = load_fonts(&mut te) else { return };
+        let dir = std::env::temp_dir().join(format!("ffwd-ui-recent-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = Git { root: dir.clone() };
+        for a in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.name", "ffwd test"],
+            &["config", "user.email", "test@example.invalid"],
+            &["config", "commit.gpgsign", "false"],
+        ] {
+            g.output(a).unwrap();
+        }
+        std::fs::write(dir.join("a.txt"), "a").unwrap();
+        g.output(&["add", "."]).unwrap();
+        g.output(&["commit", "-q", "-m", "first"]).unwrap();
+        let (tx, rx) = mpsc::channel::<(u64, Msg)>();
+        let tx = Arc::new(std::sync::Mutex::new(tx));
+        let sinks: SinkFactory = Arc::new(move |id| {
+            let tx = tx.clone();
+            Arc::new(move |m| {
+                if let Ok(t) = tx.lock() {
+                    let _ = t.send((id, m));
+                }
+            })
+        });
+        crate::work::start(dir.clone(), &sinks(1));
+        let empty = crate::settings::Settings::parse("");
+        let mut ui = Ui::new(te, f, empty.clone(), empty, Some((1, dir.clone())), sinks, 1280, 800, 1.0);
+        let pump = |ui: &mut Ui, what: &str, done: &dyn Fn(&Ui) -> bool| {
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while !done(ui) {
+                let left = until.saturating_duration_since(std::time::Instant::now());
+                assert!(!left.is_zero(), "timed out waiting for {what}; notice: {:?}", ui.notice);
+                if let Ok((id, m)) = rx.recv_timeout(left) {
+                    ui.on_tab_msg(id, m);
+                }
+            }
+        };
+        pump(&mut ui, "history", &|u| u.r.log_done);
+        let input = |u: &Ui| u.r.search.as_ref().map(|s| s.input.text().to_string()).unwrap_or_default();
+        for q in ["first", "second"] {
+            ui.key(Key::Ctrl('f'));
+            for c in q.chars() {
+                ui.key(Key::Char(c));
+            }
+            ui.key(Key::Enter);
+            ui.key(Key::Esc);
+        }
+        assert_eq!(ui.state.get_list("search.recent"), ["second", "first"]);
+        ui.key(Key::Ctrl('f'));
+        assert_eq!(input(&ui), "");
+        ui.key(Key::Up);
+        assert_eq!(input(&ui), "second");
+        ui.key(Key::Up);
+        assert_eq!(input(&ui), "first");
+        ui.key(Key::Up);
+        assert_eq!(input(&ui), "first", "the oldest stays");
+        ui.key(Key::Down);
+        assert_eq!(input(&ui), "second");
+        ui.key(Key::Down);
+        assert_eq!(input(&ui), "", "past the newest the field is empty again");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The find bar from the keyboard: message search selects the match,
