@@ -2994,6 +2994,43 @@ mod tests {
         assert_eq!(repo_name(Path::new("dev/ffwd")), "ffwd");
     }
 
+    /// Damage-only painting must end where a full repaint would: after
+    /// any action, the incrementally painted screen equals a fresh full
+    /// paint (FF-52: the modal backdrop stayed after Settings closed).
+    #[test]
+    fn incremental_paint_matches_full_paint() {
+        let mut te = TextEngine::new();
+        let Some(f) = load_fonts(&mut te) else { return };
+        let sinks: SinkFactory = Arc::new(|_| Arc::new(|_| {}));
+        let empty = crate::settings::Settings::parse("");
+        let (w, h) = (1280, 800);
+        let mut ui = Ui::new(te, f, empty.clone(), empty, None, sinks, w, h, 1.0);
+        let mut screen = vec![0u32; w * h];
+        ui.paint(&mut Canvas::new(&mut screen, w, h), true);
+        type Step = (&'static str, fn(&mut Ui));
+        let steps: [Step; 8] = [
+            ("open settings", |u| u.open_settings()),
+            ("hover in settings", |u| u.pointer(640, 300)),
+            ("next page", |u| u.key(Key::NextTab)),
+            ("close settings with Esc", |u| u.key(Key::Esc)),
+            ("open settings again", |u| u.key(Key::Ctrl(','))),
+            ("close by clicking outside", |u| u.click(5, 790)),
+            ("open the palette", |u| u.open_palette()),
+            ("close the palette", |u| u.key(Key::Esc)),
+        ];
+        for (name, step) in steps {
+            step(&mut ui);
+            ui.paint(&mut Canvas::new(&mut screen, w, h), false);
+            let mut fresh = vec![0u32; w * h];
+            ui.paint(&mut Canvas::new(&mut fresh, w, h), true);
+            // The status bar shows the last paint's time, so it differs
+            // between any two paints; everything above it must match.
+            let n = ui.lay.status.y.max(0) as usize * w;
+            let bad = screen[..n].iter().zip(&fresh[..n]).position(|(a, b)| a != b);
+            assert!(bad.is_none(), "after '{name}': pixel {:?} differs from a full paint", bad.map(|i| (i % w, i / w)));
+        }
+    }
+
     /// Every top-bar button lies inside a range the frame treats as a
     /// control; otherwise Windows takes its clicks as title-bar drags
     /// (FF-29: the settings gear did nothing).

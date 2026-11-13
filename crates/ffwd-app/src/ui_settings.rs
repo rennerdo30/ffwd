@@ -228,8 +228,9 @@ impl Ui {
 
     pub(super) fn close_settings(&mut self) {
         if self.settings_view.take().is_some() {
-            let r = self.settings_rect();
-            self.damage.rects.push(r);
+            // The backdrop dims the whole window, so all of it changes
+            // (FF-52: only the panel's area was repainted).
+            self.damage.full = true;
         }
     }
 
