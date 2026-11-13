@@ -1807,7 +1807,9 @@ impl Ui {
         bx = pull - self.pf(8.0);
         let fetch = self.button(cv, bx, cy, &label(Op::Fetch, "Fetch"), None, false);
         buttons.push((row(fetch, bx), TopAction::Fetch));
-        controls.push((fetch as i32, (right as f32 - self.pf(12.0)) as i32));
+        // Fetch to the gear's right edge: the gear is a control too, not
+        // part of the title bar's drag area (FF-29).
+        controls.push((fetch as i32, gear.right()));
         self.title_controls = controls;
         self.top_buttons = buttons;
         let _ = mono;
@@ -2901,5 +2903,30 @@ mod tests {
         #[cfg(windows)]
         assert_eq!(repo_name(Path::new(r"E:\Development\ffwd")), "ffwd");
         assert_eq!(repo_name(Path::new("dev/ffwd")), "ffwd");
+    }
+
+    /// Every top-bar button lies inside a range the frame treats as a
+    /// control; otherwise Windows takes its clicks as title-bar drags
+    /// (FF-29: the settings gear did nothing).
+    #[test]
+    fn top_bar_buttons_are_not_in_the_drag_area() {
+        let mut te = TextEngine::new();
+        let Some(f) = load_fonts(&mut te) else { return };
+        let sinks: SinkFactory = Arc::new(|_| Arc::new(|_| {}));
+        let empty = crate::settings::Settings::parse("");
+        let (w, h) = (1600, 1000);
+        let mut ui = Ui::new(te, f, empty.clone(), empty, None, sinks, w, h, 1.0);
+        let mut px = vec![0u32; w * h];
+        ui.paint(&mut Canvas::new(&mut px, w, h), true);
+        let g = ui.title_geometry();
+        assert!(!ui.top_buttons.is_empty());
+        for (r, a) in &ui.top_buttons {
+            let cx = r.x + r.w / 2;
+            assert!(
+                g.controls.iter().any(|&(l, rr)| l <= cx && cx <= rr),
+                "{a:?} at {cx} is in the drag area: {:?}",
+                g.controls
+            );
+        }
     }
 }
