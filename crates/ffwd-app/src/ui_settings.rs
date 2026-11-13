@@ -29,8 +29,10 @@ pub(super) enum Row {
     Network,
     GitAccess,
     HomeAccess,
-    ReadPaths,
-    WritePaths,
+    /// One path the agent may use (FF-23): the preset's own, or added.
+    Grant(u8),
+    /// Add a folder or file to the access list.
+    AddGrant,
     Setup,
     After,
     OnDone,
@@ -63,8 +65,7 @@ pub(super) const AGENT_ROWS: &[Row] = &[
     Row::Network,
     Row::GitAccess,
     Row::HomeAccess,
-    Row::ReadPaths,
-    Row::WritePaths,
+    Row::AddGrant,
     Row::Setup,
     Row::After,
     Row::OnDone,
@@ -99,8 +100,8 @@ impl Row {
             Row::Network => "Network",
             Row::GitAccess => "Git access",
             Row::HomeAccess => "Home folder",
-            Row::ReadPaths => "Extra folders, read-only",
-            Row::WritePaths => "Extra folders, writable",
+            Row::Grant(_) => "",
+            Row::AddGrant => "Add a folder or file",
             Row::Setup => "Setup script",
             Row::After => "After script",
             Row::OnDone => "On-done script",
@@ -131,9 +132,9 @@ impl Row {
             Row::AllowUnsandboxed => "Sandbox None: the agent has all your permissions",
             Row::Network => "Agents that call a hosted model need it",
             Row::GitAccess => "Read-only: ffwd commits the agent's edits at the end",
-            Row::HomeAccess => "Private: an empty home; Read: for agent logins",
-            Row::ReadPaths => "Applies from the next run (; between folders)",
-            Row::WritePaths => "For example the agent's own config folder",
+            Row::HomeAccess => "Private: an empty home, plus only the paths below",
+            Row::Grant(_) => "",
+            Row::AddGrant => "Added read-only; ~/… is the agent's home",
             Row::Setup => "Runs in the worktree before the agent, e.g. npm ci",
             Row::After => "Runs after the agent, before ffwd commits, e.g. tests",
             Row::OnDone => "On your machine when a run ends, e.g. a notification",
@@ -151,8 +152,8 @@ impl Row {
             Row::GitPath => Some("git.path"),
             Row::AiKeyEnv => Some("ai.key_env"),
             Row::AgentCommand => Some("agents.command"),
-            Row::ReadPaths => Some("agents.read_paths"),
-            Row::WritePaths => Some("agents.write_paths"),
+            // A text row; its Enter adds to the list (see commit_edit).
+            Row::AddGrant => Some(ADD_PATH_KEY),
             Row::Setup => Some("agents.setup_script"),
             Row::After => Some("agents.after_script"),
             Row::OnDone => Some("agents.on_done_script"),
@@ -171,6 +172,7 @@ impl Row {
             Row::Network => "agents.network",
             Row::GitAccess => "agents.git_access",
             Row::HomeAccess => "agents.home_access",
+            Row::AddGrant | Row::Grant(_) => return None,
             r => return r.key().filter(|k| k.starts_with("agents.")),
         })
     }
@@ -184,7 +186,7 @@ impl Row {
             Row::GitPath => "git from PATH",
             Row::AiKeyEnv => "None (local servers) · e.g. OPENAI_API_KEY",
             Row::AgentCommand => "e.g. aider --yes-always --message-file {prompt_file}",
-            Row::ReadPaths | Row::WritePaths => "None",
+            Row::AddGrant => "~/.gitconfig, /data/docs, …",
             Row::Setup | Row::After | Row::OnDone => "None",
             Row::Timeout => "60",
             _ => "",
@@ -209,11 +211,29 @@ impl Row {
     }
 }
 
+/// The pseudo-key of the "Add a folder or file" row (never saved).
+const ADD_PATH_KEY: &str = "agents.__add_path";
+
+/// One entry of the agent's access list.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct Grant {
+    pub path: String,
+    /// 0 off (preset) or remove (added), 1 read, 2 write.
+    pub level: u8,
+    /// The tool whose preset brings it, or None when the user added it.
+    pub tool: Option<&'static str>,
+}
+
+/// `a; b ;c` as a list.
+fn split_paths(s: &str) -> Vec<String> {
+    s.split(';').map(str::trim).filter(|p| !p.is_empty()).map(str::to_string).collect()
+}
+
 pub struct SettingsView {
     page: usize,
     /// First row shown (the page scrolls when it does not fit).
     scroll: usize,
-    sel: usize,
+    pub(super) sel: usize,
     /// The text row being edited and its field.
     edit: Option<(usize, TextField)>,
     /// Option hit areas from the last paint: (row, choice, rect).
@@ -236,6 +256,11 @@ impl Ui {
     /// A row's choices: fixed, or for the WSL distribution the installed
     /// ones (FF-23).
     pub(super) fn row_choices(&self, row: Row) -> Vec<String> {
+        if let Row::Grant(k) = row {
+            let preset = self.grants().get(k as usize).is_some_and(|g| g.tool.is_some());
+            let c: &[&str] = if preset { &["Off", "Read", "Write"] } else { &["Remove", "Read", "Write"] };
+            return c.iter().map(|s| s.to_string()).collect();
+        }
         if row != Row::WslDistro {
             return row.choices().iter().map(|s| s.to_string()).collect();
         }
@@ -291,8 +316,74 @@ impl Ui {
         self.rows().get(row).is_some_and(|r| r.key().is_some())
     }
 
-    fn rows(&self) -> &'static [Row] {
-        PAGES[self.settings_view.as_ref().map_or(0, |v| v.page)].1
+    /// A row's label; an access row shows its path.
+    fn row_label(&self, row: Row) -> String {
+        match row {
+            Row::Grant(k) => self.grants().get(k as usize).map_or(String::new(), |g| g.path.clone()),
+            r => r.label().to_string(),
+        }
+    }
+
+    /// The page's rows; on the agents page one per access path (FF-23).
+    pub(super) fn rows(&self) -> Vec<Row> {
+        let page = self.settings_view.as_ref().map_or(0, |v| v.page);
+        let mut v = Vec::new();
+        for &r in PAGES[page].1 {
+            if r == Row::AddGrant {
+                v.extend((0..self.grants().len().min(64)).map(|k| Row::Grant(k as u8)));
+            }
+            v.push(r);
+        }
+        v
+    }
+
+    /// The agent's access list: the preset's own paths (with their level),
+    /// then the paths added by the user (FF-23).
+    pub(super) fn grants(&self) -> Vec<Grant> {
+        let mut v = Vec::new();
+        let access = ffwd_agent::config::parse_preset_access(self.sget("agents.preset_access").unwrap_or(""));
+        if let Some(p) = self.sget("agents.preset").and_then(ffwd_agent::presets::find) {
+            for h in p.home_write {
+                let level = match access.iter().find(|(k, _)| k == h).map(|(_, v)| v.as_str()) {
+                    Some("off") => 0,
+                    Some("read") => 1,
+                    _ => 2,
+                };
+                v.push(Grant { path: h.to_string(), level, tool: Some(p.name) });
+            }
+        }
+        for (key, level) in [("agents.read_paths", 1u8), ("agents.write_paths", 2)] {
+            for p in split_paths(self.sget(key).unwrap_or("")) {
+                if !v.iter().any(|g| g.path == p) {
+                    v.push(Grant { path: p, level, tool: None });
+                }
+            }
+        }
+        v
+    }
+
+    /// Sets one access path's level: a preset path (0 off, 1 read, 2
+    /// write) or an added one (1 read, 2 write, 0 removes it).
+    fn set_grant(&mut self, k: usize, level: u8) {
+        let Some(g) = self.grants().into_iter().nth(k) else { return };
+        if g.tool.is_some() {
+            let mut access = ffwd_agent::config::parse_preset_access(self.sget("agents.preset_access").unwrap_or(""));
+            access.retain(|(p, _)| *p != g.path);
+            if level != 2 {
+                access.push((g.path.clone(), if level == 0 { "off".into() } else { "read".into() }));
+            }
+            let s = access.iter().map(|(p, l)| format!("{p}={l}")).collect::<Vec<_>>().join("; ");
+            self.sset("agents.preset_access", &s);
+            return;
+        }
+        for (key, keep) in [("agents.read_paths", level == 1), ("agents.write_paths", level == 2)] {
+            let mut list = split_paths(self.sget(key).unwrap_or(""));
+            list.retain(|p| *p != g.path);
+            if keep {
+                list.push(g.path.clone());
+            }
+            self.sset(key, &list.join("; "));
+        }
     }
 
     /// The tallest page sets the height, so switching pages keeps the box.
@@ -309,7 +400,7 @@ impl Ui {
     }
 
     /// Keeps the selected row on screen.
-    fn settings_follow(&mut self) {
+    pub(super) fn settings_follow(&mut self) {
         let fit = self.settings_rows_visible();
         if let Some(v) = &mut self.settings_view {
             if v.sel < v.scroll {
@@ -401,6 +492,7 @@ impl Ui {
                     .position(|s| Some(*s) == k.map(|k| k.as_setting()))
                     .unwrap_or(0)
             }
+            Row::Grant(k) => self.grants().get(k as usize).map_or(0, |g| g.level as usize),
             Row::WslDistro => {
                 let cur = self.sget("agents.wsl_distro").unwrap_or("").to_string();
                 if cur.is_empty() {
@@ -421,7 +513,7 @@ impl Ui {
         }
     }
 
-    fn set_choice(&mut self, row: Row, i: usize) {
+    pub(super) fn set_choice(&mut self, row: Row, i: usize) {
         match row {
             Row::Layout => self.set_layout(if i == 1 { DetailsLayout::Beside } else { DetailsLayout::Below }),
             Row::Updates => self.sset("update.check", if i == 1 { "false" } else { "true" }),
@@ -443,6 +535,7 @@ impl Ui {
                 }
             }
             Row::Sandbox => self.sset("agents.sandbox", ["auto", "bwrap", "wsl", "macos", "custom", "none"][i.min(5)]),
+            Row::Grant(k) => self.set_grant(k as usize, i.min(2) as u8),
             Row::WslDistro => {
                 let v = if i == 0 {
                     String::new()
@@ -492,6 +585,17 @@ impl Ui {
             && let Some(key) = rows.get(i).and_then(|r| r.key())
         {
             let text = f.text().trim().to_string();
+            if key == ADD_PATH_KEY {
+                // A new access path, read-only to start (FF-23).
+                if !text.is_empty() && !self.grants().iter().any(|g| g.path == text) {
+                    let mut list = split_paths(self.sget("agents.read_paths").unwrap_or(""));
+                    list.push(text);
+                    self.sset("agents.read_paths", &list.join("; "));
+                }
+                let r = self.settings_rect();
+                self.damage.rects.push(r);
+                return;
+            }
             self.sset(key, &text);
             if key == "repos.roots" {
                 self.scan_repos();
@@ -608,6 +712,7 @@ impl Ui {
     }
 
     pub(super) fn paint_settings(&mut self, cv: &mut Canvas) {
+        let rows = self.rows();
         let Some(view) = self.settings_view.take() else { return };
         let r = self.settings_rect();
         let old = cv.set_clip(cv.clip().intersect(r));
@@ -655,7 +760,6 @@ impl Ui {
         let hb = (tab_y as f32 + self.pf(21.0)).round();
         self.te.draw(cv, ui, self.pf(11.0), r.right() as f32 - pad - hw2, hb, hint2, TEXT_4, hw2 + 2.0);
         cv.fill(Rect::new(r.x + self.px(12.0), tab_y + self.px(40.0), r.w - self.px(24.0), 1), BORDER_SOFT);
-        let rows = PAGES[view.page].1;
         let fit = self.settings_rows_visible();
         let mut hits = Vec::new();
         let rh = self.px(54.0);
@@ -682,7 +786,7 @@ impl Ui {
                 self.pf(13.0),
                 x0,
                 cy - self.pf(2.0),
-                row.label(),
+                &self.row_label(*row),
                 TEXT,
                 (ctrl_x - r.x) as f32 - pad,
             );
@@ -693,6 +797,10 @@ impl Ui {
                 }
                 Row::Scope => "Values for every repository without its own".to_string(),
                 _ if over && !self.repo_scope() => format!("{repo_name} overrides this"),
+                Row::Grant(k) => match self.grants().get(k as usize).and_then(|g| g.tool) {
+                    Some(tool) => format!("{tool} needs it (its login and settings)"),
+                    None => "Added by you".to_string(),
+                },
                 r => r.hint().to_string(),
             };
             self.te.draw(

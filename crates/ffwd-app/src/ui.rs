@@ -8163,6 +8163,68 @@ mod tests {
         assert_eq!(ui.settings.get("agents.wsl_distro").unwrap_or(""), "", "Default clears it");
     }
 
+    /// Per-path access (FF-23): the Agents page lists the preset's own
+    /// paths (Off / Read / Write) and the user's (Remove / Read / Write);
+    /// a typed path is added read-only.
+    #[test]
+    fn agent_access_is_per_path() {
+        use settings_view::Row;
+        let mut te = TextEngine::new();
+        let Some(f) = load_fonts(&mut te) else { return };
+        let s = crate::settings::Settings::parse("[agents]\npreset = \"claude\"\n");
+        let empty = crate::settings::Settings::parse("");
+        let sinks: SinkFactory = Arc::new(|_| Arc::new(|_| {}));
+        let mut ui = Ui::new(te, f, s, empty, None, sinks, 1280, 900, 1.0);
+        ui.open_settings_page(1);
+        let mut screen = vec![0u32; 1280 * 900];
+        ui.paint(&mut Canvas::new(&mut screen, 1280, 900), true);
+        let g = ui.grants();
+        assert_eq!(
+            g.iter().map(|g| (g.path.as_str(), g.level)).collect::<Vec<_>>(),
+            [("~/.claude", 2), ("~/.claude.json", 2)]
+        );
+        let rows = ui.rows();
+        let row = rows.iter().position(|r| *r == Row::Grant(0)).expect("a row per path");
+        assert_eq!(ui.row_choices(Row::Grant(0)), ["Off", "Read", "Write"]);
+        // The preset's path to Read, by its button.
+        ui.settings_view.as_mut().unwrap().sel = row;
+        ui.settings_follow();
+        ui.paint(&mut Canvas::new(&mut screen, 1280, 900), true);
+        let hits = ui.settings_view.as_ref().unwrap().hits.clone();
+        let (_, _, r) = *hits
+            .iter()
+            .find(|h| h.0 == row && h.1 == 1)
+            .unwrap_or_else(|| panic!("its Read choice: row {row} rows {rows:?} hits {hits:?}"));
+        ui.click(r.x + r.w / 2, r.y + r.h / 2);
+        assert_eq!(ui.settings.get("agents.preset_access"), Some("~/.claude=read"));
+        assert_partial_paint_is_full(&mut ui, &mut screen, "preset path read");
+        // Add a file: Enter on the add row, type, Enter.
+        let add = ui.rows().iter().position(|r| *r == Row::AddGrant).unwrap();
+        ui.settings_view.as_mut().unwrap().sel = add;
+        ui.key(Key::Enter);
+        for c in "~/.gitconfig".chars() {
+            ui.key(Key::Char(c));
+        }
+        ui.key(Key::Enter);
+        assert_eq!(ui.settings.get("agents.read_paths"), Some("~/.gitconfig"));
+        assert_partial_paint_is_full(&mut ui, &mut screen, "path added");
+        let g = ui.grants();
+        assert_eq!((g[2].path.as_str(), g[2].level, g[2].tool), ("~/.gitconfig", 1, None));
+        assert_eq!(ui.row_choices(Row::Grant(2)), ["Remove", "Read", "Write"]);
+        assert!(ui.rows().contains(&Row::Grant(2)));
+        // Writable, then removed.
+        ui.set_choice(Row::Grant(2), 2);
+        assert_eq!(ui.settings.get("agents.read_paths").unwrap_or(""), "");
+        assert_eq!(ui.settings.get("agents.write_paths"), Some("~/.gitconfig"));
+        ui.set_choice(Row::Grant(2), 0);
+        assert_eq!(ui.settings.get("agents.write_paths").unwrap_or(""), "");
+        assert_eq!(ui.grants().len(), 2);
+        assert_partial_paint_is_full(&mut ui, &mut screen, "path removed");
+        // Back to Write drops the preset entry again.
+        ui.set_choice(Row::Grant(0), 2);
+        assert_eq!(ui.settings.get("agents.preset_access").unwrap_or(""), "");
+    }
+
     /// Find in the diff (FF-34): `Ctrl+F` with the diff focused searches
     /// the shown diff (case-insensitive), Enter steps through the matches
     /// and scrolls to them, the query stays for the next file, and Esc

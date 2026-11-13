@@ -303,7 +303,7 @@ The gear in the top bar (or `Ctrl+,`) opens Settings: details layout, automatic 
 - **Keys:** `↑ ↓`, `Enter` shows the branch, `m` merges, `d` discards, `c` cancels, `o` opens the folder, `l` opens the log, `PageUp`/`PageDown` scroll the log, and typing starts a new task.
 - **Tab badge:** a dot after the tab's name. Accent while an agent runs; green or red when a run ended and you have not opened the panel since.
 
-Settings has two pages, **General** and **Agents** (`Ctrl+Tab` switches between them). From the agents panel, `Ctrl+,` opens the Agents page. Its first row, **Applies to**, switches between the global values and the current repository's overrides. An overridden row carries a dot (accent in repository scope, dim in global scope), and `Delete` resets it. The **Agent** row picks a preset; while the command is empty, the command field shows the preset's command in grey.
+Settings has two pages, **General** and **Agents** (`Ctrl+Tab` switches between them). From the agents panel, `Ctrl+,` opens the Agents page. Its first row, **Applies to**, switches between the global values and the current repository's overrides. An overridden row carries a dot (accent in repository scope, dim in global scope), and `Delete` resets it. The **Agent** row picks a preset; while the command is empty, the command field shows the preset's command in grey. Below **Home folder**, the access list has one row per path the agent may use: the preset's own paths (its login and settings, hint names the tool) with **Off / Read / Write**, then the paths you added with **Remove / Read / Write**. The last row, **Add a folder or file**, adds a typed path read-only on `Enter` (files work too, for example `~/.gitconfig`).
 
 ## Repository tabs
 

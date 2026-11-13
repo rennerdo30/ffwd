@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Agents (experimental):** access per path. Settings → Agents lists every folder or file the agent may use, below **Home folder**: the tool's own paths (switch each to Off, Read or Write) and the ones you add (**Add a folder or file**, then Read, Write or Remove). The home folder itself can stay private.
+
 ## 0.2.0-beta.4
 
 A fix release for the experimental agents.

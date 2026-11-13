@@ -116,6 +116,7 @@ All settings live under `[agents]` in `settings.toml`. The most important ones a
 | `enabled` | `false` | Turns the feature on. |
 | `preset` | `custom` | `claude`, `codex`, `antigravity` (or `agy`), `opencode`, `muse` or `custom`. See "Agents (presets)". |
 | `preset_grants` | `true` | Adds the preset's config folders and key variable names. |
+| `preset_access` | — | The access each of the preset's own paths gets, `path=off|read|write` with `;` between: for example `~/.claude=read; ~/.claude.json=off`. A path not named stays writable. |
 | `command` | the preset's | The agent's command line. See "Command templates" below. |
 | `prompt_stdin` | `false` | Also writes the prompt to the agent's standard input. |
 | `prompt_template` | `"{prompt}"` | Wraps your text, for example `"Work only in src/. Task: {prompt}"`. It may use `{prompt}`, `{branch}`, `{base}`, `{repo}` and `{worktree}`. |
@@ -126,8 +127,8 @@ All settings live under `[agents]` in `settings.toml`. The most important ones a
 | `network` | `true` | Network inside the sandbox. Agents that call a hosted model need it. |
 | `git_access` | `"read"` | `read`: the agent edits files and ffwd commits them. `write`: the agent may commit (see the caveat above). |
 | `home_access` | `"private"` | `private`, `read` or `write`. |
-| `read_paths` | — | Extra folders the agent may read. `~/…` is the home where the agent runs. |
-| `write_paths` | — | Extra folders the agent may write. `~/…` as above. |
+| `read_paths` | — | Extra folders or files the agent may read, `;` between them. `~/…` is the home where the agent runs. |
+| `write_paths` | — | Extra folders or files the agent may write. `~/…` as above. |
 | `env_pass` | a short list | Host variables passed through by name (`PATH`, `HOME`, `LANG`, `TEMP`, …). Secrets are passed only if you name them here. |
 | `env_inherit` | `false` | Passes the whole host environment (`none` and `custom` only). |
 | `env` | — | Extra variables, `KEY=value|KEY2=value`. The values never appear on a command line. |
