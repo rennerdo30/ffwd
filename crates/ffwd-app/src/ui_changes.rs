@@ -305,7 +305,12 @@ impl Ui {
                     self.reload_current();
                     return;
                 }
-                self.set_notice(msg);
+                if msg.starts_with("Discarded") && !self.r.changes.undo.is_empty() {
+                    // The click twin of Ctrl+Z (FF-57).
+                    self.set_notice_with(msg, super::NoticeAct::Undo);
+                } else {
+                    self.set_notice(msg);
+                }
             }
             Err(e) => {
                 self.set_notice(format!("Failed: {e}"));
@@ -336,6 +341,11 @@ impl Ui {
     }
 
     /// Stages or unstages the selected file.
+    /// The file menu's Stage / Unstage.
+    pub(super) fn toggle_selected_change(&mut self) {
+        self.toggle_selected();
+    }
+
     fn toggle_selected(&mut self) {
         let Some(e) = self.selected_entry() else { return };
         if e.conflicted {
@@ -428,7 +438,7 @@ impl Ui {
 
     /// Delete on a file: the first press names what will be lost, the
     /// second (within 4 s) discards it; Ctrl+Z puts it back (rule 8).
-    fn discard_selected(&mut self) {
+    pub(super) fn discard_selected(&mut self) {
         if self.r.changes.side != Side::Unstaged {
             return self.set_notice("Discard works on unstaged changes; unstage first.".into());
         }
@@ -443,7 +453,24 @@ impl Ui {
         }
         let what = if e.untracked() { "delete the new file" } else { "throw away the unstaged changes of" };
         self.r.changes.armed = Some((std::time::Instant::now(), vec![path.clone()]));
-        self.set_notice(format!("Press Delete again to {what} {path}. Ctrl+Z will bring it back."));
+        self.set_notice_with(
+            format!("Discard? This will {what} {path}; Undo (Ctrl+Z) brings it back."),
+            super::NoticeAct::Discard,
+        );
+    }
+
+    /// The status bar's Discard button: confirms the armed discard.
+    pub(super) fn discard_now(&mut self) {
+        let Some((_, paths)) = self.r.changes.armed.take() else { return };
+        let list = self.side_list(Side::Unstaged);
+        let entries: Vec<_> = paths.iter().filter_map(|p| list.iter().find(|e| *e.path == **p).cloned()).collect();
+        if !entries.is_empty() {
+            self.run_change_op(crate::work::ChangeOp::Discard(entries), "Discarding");
+        }
+    }
+
+    pub(super) fn undo_discard_now(&mut self) {
+        self.undo_discard();
     }
 
     fn undo_discard(&mut self) {
@@ -453,7 +480,7 @@ impl Ui {
         }
     }
 
-    fn ignore_selected(&mut self) {
+    pub(super) fn ignore_selected(&mut self) {
         let Some(e) = self.selected_entry() else { return };
         if !e.untracked() {
             return self.set_notice("Only untracked files can be ignored; tracked files stay tracked.".into());

@@ -46,6 +46,11 @@ pub enum MenuAct {
     OpenFile(PathBuf, bool),
     /// Open a file in the editor at a line (FF-41).
     OpenFileAt(PathBuf, u32),
+    /// Local Changes, on the selected file (FF-57): stage or unstage,
+    /// discard (asks first), add to .gitignore.
+    StageToggle(bool),
+    Discard,
+    Ignore,
     ShowFile(PathBuf),
     DiffTool(String, ffwd_core::tools::DiffOf),
     MergeTool(String),
@@ -524,6 +529,9 @@ impl Ui {
             Some(MenuAct::Run(op)) => self.run_refop(op),
             Some(MenuAct::OpenFile(p, editor)) => self.open_external(p, editor, None),
             Some(MenuAct::OpenFileAt(p, line)) => self.open_external(p, true, Some(line)),
+            Some(MenuAct::StageToggle(_)) => self.toggle_selected_change(),
+            Some(MenuAct::Discard) => self.discard_selected(),
+            Some(MenuAct::Ignore) => self.ignore_selected(),
             Some(MenuAct::ShowFile(p)) => crate::platform::show_file(p),
             Some(MenuAct::DiffTool(path, of)) => self.run_tool(path, Some(of)),
             Some(MenuAct::MergeTool(path)) => self.run_tool(path, None),
@@ -1029,6 +1037,15 @@ impl Ui {
         }
     }
 
+    /// Tests: the Local Changes file menu of the selected row.
+    #[cfg(test)]
+    pub(super) fn file_menu_at_selected(&mut self) -> Option<Vec<MenuItem>> {
+        let side = self.r.changes.side;
+        let k = self.r.changes.sel;
+        let (r, _) = self.r.changes.hits.iter().find(|h| h.1 == changes_view::CHit::Row(side, k)).copied()?;
+        self.file_menu_at(r.x + 4, r.y + r.h / 2)
+    }
+
     /// The menu of the file row under (x, y): Local Changes, the Files
     /// view or a commit's file list.
     fn file_menu_at(&mut self, x: i32, y: i32) -> Option<Vec<MenuItem>> {
@@ -1052,6 +1069,20 @@ impl Ui {
             let deleted = e.unstaged == b'D' || (side == ffwd_core::changes::Side::Staged && e.staged == b'D');
             let (mut v, full) = file_items(&e.path, !deleted);
             v.push(sep());
+            if !e.conflicted {
+                let staged = side == ffwd_core::changes::Side::Staged;
+                v.push(item(if staged { "Unstage" } else { "Stage" }, MenuAct::StageToggle(!staged)));
+                if !staged {
+                    v.push(danger(
+                        if e.untracked() { "Delete the new file…" } else { "Discard changes…" },
+                        MenuAct::Discard,
+                    ));
+                }
+                if e.untracked() {
+                    v.push(item("Add to .gitignore", MenuAct::Ignore));
+                }
+                v.push(sep());
+            }
             if e.conflicted {
                 v.push(item("Resolve in the merge tool", MenuAct::MergeTool(e.path.to_string())));
             } else if !e.untracked() {
@@ -1361,6 +1392,10 @@ impl Ui {
         let old = cv.set_clip(cv.clip().intersect(r));
         cv.round_border(r, self.pf(9.0), BORDER_STRONG, BG_PANEL);
         let ui = self.f.ui;
+        // Icons from each item's action (FF-57); a gutter when any has one.
+        let icons: Vec<Option<super::Glyph>> =
+            m.items.iter().map(|it| it.act.as_ref().and_then(super::icons::for_act)).collect();
+        let gutter = if icons.iter().any(Option::is_some) { self.pf(26.0) } else { 0.0 };
         let mut y = r.y + self.px(6.0);
         for (i, it) in m.items.iter().enumerate() {
             let h = self.menu_item_h(it);
@@ -1372,15 +1407,20 @@ impl Ui {
                     cv.fill_round(ir, self.pf(6.0), BG_SELECT);
                 }
                 let c = if it.danger { DEL_TEXT } else { TEXT };
+                if let Some(g) = icons[i] {
+                    let ic = if it.danger { DEL_TEXT } else { TEXT_2 };
+                    let cy = ir.y as f32 + self.pf(15.0);
+                    self.glyph(cv, g, ir.x as f32 + self.pf(19.0), cy, self.pf(7.0), ic);
+                }
                 self.te.draw(
                     cv,
                     ui,
                     self.pf(12.5),
-                    ir.x as f32 + self.pf(10.0),
+                    ir.x as f32 + self.pf(10.0) + gutter,
                     (ir.y as f32 + self.pf(19.5)).round(),
                     &it.label,
                     c,
-                    ir.w as f32 - self.pf(20.0),
+                    ir.w as f32 - self.pf(20.0) - gutter,
                 );
             }
             y += h;

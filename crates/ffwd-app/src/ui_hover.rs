@@ -13,6 +13,10 @@ pub enum Hot {
     Search,
     /// The list title: all branches or only the current one.
     Scope,
+    /// The history header's Find button.
+    HeadFind,
+    /// The status bar's action button.
+    Notice,
     /// A commit row (absolute index).
     Row(usize),
     /// A file of the selected commit.
@@ -98,6 +102,9 @@ impl Ui {
         if let Some(&(_, a)) = self.top_buttons.iter().find(|(r, _)| r.contains(x, y)) {
             return Some(Hot::Top(a));
         }
+        if self.notice_btn.contains(x, y) {
+            return Some(Hot::Notice);
+        }
         if self.r.rebase.is_some() {
             return self.rebase_hit_at(x, y).map(Hot::Rebase);
         }
@@ -118,6 +125,9 @@ impl Ui {
         }
         if self.r.search.is_none() && self.scope_rect.contains(x, y) {
             return Some(Hot::Scope);
+        }
+        if self.r.search.is_none() && self.head_find_rect.contains(x, y) {
+            return Some(Hot::HeadFind);
         }
         if !self.r.changes_view && self.r.search.is_some() && self.lay.list_head.contains(x, y) {
             return self.search_hit_at(x, y).map(Hot::Find);
@@ -149,6 +159,8 @@ impl Ui {
             }
             Hot::Search => self.search_rect.inset(-2, -2),
             Hot::Scope => self.scope_rect.inset(-2, -2),
+            Hot::HeadFind => self.head_find_rect.inset(-2, -2),
+            Hot::Notice => self.notice_btn.inset(-2, -2),
             Hot::Row(r) => self.row_rect(r).unwrap_or_default(),
             Hot::File(k) => self.file_row_rect(k),
             Hot::Palette(_) => self.palette_rect(10),

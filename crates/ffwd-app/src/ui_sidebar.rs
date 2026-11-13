@@ -631,15 +631,8 @@ impl Ui {
                     cv.round_border(b, self.pf(2.0), icon, BG_SIDEBAR);
                 }
                 SideKind::Changes => cv.fill_circle(ix, cy, self.pf(4.0), icon),
-                SideKind::Reflog => {
-                    // A clock: where HEAD has been.
-                    cv.ring(ix, cy, self.pf(5.0), self.pf(1.4), icon);
-                    cv.stroke(
-                        &[(ix, cy - self.pf(3.0)), (ix, cy), (ix + self.pf(2.5), cy + self.pf(1.5))],
-                        self.pf(1.3),
-                        icon,
-                    );
-                }
+                // A clock: where HEAD has been.
+                SideKind::Reflog => self.glyph(cv, super::Glyph::Clock, ix, cy, self.pf(5.8), icon),
                 SideKind::Activity => {
                     // A pulse line.
                     let s = self.pf(5.0);

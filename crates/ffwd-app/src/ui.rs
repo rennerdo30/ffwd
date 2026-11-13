@@ -40,8 +40,11 @@ mod rebase_view;
 #[path = "ui_reflog.rs"]
 mod reflog_view;
 pub use files_view::{Loaded as FileLoaded, TreeResult as FilesTreeResult};
+#[path = "ui_icons.rs"]
+mod icons;
 #[path = "ui_menu.rs"]
 mod menu;
+use icons::Glyph;
 #[path = "ui_search.rs"]
 mod search_view;
 use menu::{Dialog, DialogKind, Menu, NameAct, PatchSrc};
@@ -514,8 +517,28 @@ enum TopAction {
     Fetch,
     Pull,
     Push,
+    Stash,
     Ai,
     Settings,
+}
+
+/// A button next to the status bar's notice: the click twin of a
+/// shortcut (FF-57).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum NoticeAct {
+    InstallUpdate,
+    Discard,
+    Undo,
+}
+
+impl NoticeAct {
+    fn label(self) -> (&'static str, Glyph) {
+        match self {
+            NoticeAct::InstallUpdate => ("Install update", Glyph::Update),
+            NoticeAct::Discard => ("Discard", Glyph::Trash),
+            NoticeAct::Undo => ("Undo", Glyph::Undo),
+        }
+    }
 }
 
 pub struct Ui {
@@ -598,6 +621,12 @@ pub struct Ui {
     diff_strip: Rect,
     /// The list title, which switches all branches / current branch.
     scope_rect: Rect,
+    /// The history header's Find button (FF-57).
+    head_find_rect: Rect,
+    /// The status bar's action for the notice (Install update, Discard,
+    /// Undo) and where its button is.
+    pub notice_act: Option<NoticeAct>,
+    notice_btn: Rect,
     pub win_action: Option<WinAction>,
     /// Under the pointer, held by the mouse button, the cursor to show and
     /// the last pointer position (ui_hover.rs).
@@ -739,6 +768,9 @@ impl Ui {
             search_rect: Rect::default(),
             diff_strip: Rect::default(),
             scope_rect: Rect::default(),
+            head_find_rect: Rect::default(),
+            notice_act: None,
+            notice_btn: Rect::default(),
             win_action: None,
             hot: None,
             pressed: None,
@@ -1144,6 +1176,7 @@ impl Ui {
             TopAction::Fetch => self.start_op(Op::Fetch),
             TopAction::Pull => self.start_op(Op::Pull),
             TopAction::Push => self.start_op(Op::Push),
+            TopAction::Stash => self.open_stash_dialog(),
             TopAction::Ai => self.open_palette_with("AI: "),
             TopAction::Settings => self.open_settings(),
             TopAction::Branch => self.open_palette(),
@@ -1481,12 +1514,30 @@ impl Ui {
 
     fn set_notice(&mut self, n: String) {
         self.notice = Some(n);
+        self.notice_act = None;
         self.damage.rects.push(self.lay.status);
+    }
+
+    /// A notice with a button for what it offers.
+    pub(super) fn set_notice_with(&mut self, n: String, act: NoticeAct) {
+        self.set_notice(n);
+        self.notice_act = Some(act);
+    }
+
+    /// The status bar's button was clicked.
+    fn notice_click(&mut self) {
+        let Some(a) = self.notice_act.take() else { return };
+        self.damage.rects.push(self.lay.status);
+        match a {
+            NoticeAct::InstallUpdate => self.request_update_install(),
+            NoticeAct::Discard => self.discard_now(),
+            NoticeAct::Undo => self.undo_discard_now(),
+        }
     }
 
     pub fn offer_update(&mut self, version: &ffwd_update::Version) {
         self.update_available = true;
-        self.set_notice(crate::update::notice(version));
+        self.set_notice_with(crate::update::notice(version), NoticeAct::InstallUpdate);
     }
 
     pub fn set_update_message(&mut self, message: String) {
@@ -1962,6 +2013,12 @@ impl Ui {
             && self.scope_rect.contains(x, y)
         {
             return self.toggle_scope();
+        }
+        if self.notice_btn.contains(x, y) {
+            return self.notice_click();
+        }
+        if !self.r.changes_view && self.r.search.is_none() && self.head_find_rect.contains(x, y) {
+            return self.open_search();
         }
         if !self.r.changes_view && self.r.search.is_some() && self.search_click(x, y) {
             return;
@@ -2776,7 +2833,7 @@ impl Ui {
         };
         let (row_y, row_h) = ((cy - self.pf(14.0)) as i32, self.px(28.0));
         let row = move |l: f32, r: f32| Rect::new(l as i32, row_y, (r - l) as i32, row_h);
-        let ai = self.button(cv, bx, cy, "AI", None, true, TopAction::Ai);
+        let ai = self.button(cv, bx, cy, "AI", None, true, TopAction::Ai, None);
         buttons.push((row(ai, bx), TopAction::Ai));
         bx = ai - self.pf(8.0);
         let push = self.button(
@@ -2787,6 +2844,7 @@ impl Ui {
             (ahead > 0).then(|| format!("↑{ahead}")),
             false,
             TopAction::Push,
+            Some(Glyph::Push),
         );
         buttons.push((row(push, bx), TopAction::Push));
         bx = push - self.pf(8.0);
@@ -2798,14 +2856,20 @@ impl Ui {
             (behind > 0).then(|| format!("↓{behind}")),
             false,
             TopAction::Pull,
+            Some(Glyph::Pull),
         );
         buttons.push((row(pull, bx), TopAction::Pull));
         bx = pull - self.pf(8.0);
-        let fetch = self.button(cv, bx, cy, &label(Op::Fetch, "Fetch"), None, false, TopAction::Fetch);
+        let fetch =
+            self.button(cv, bx, cy, &label(Op::Fetch, "Fetch"), None, false, TopAction::Fetch, Some(Glyph::Fetch));
         buttons.push((row(fetch, bx), TopAction::Fetch));
-        // Fetch to the gear's right edge: the gear is a control too, not
+        bx = fetch - self.pf(8.0);
+        // Stash: the working changes, with a message (also Ctrl+Shift+S).
+        let stash = self.button(cv, bx, cy, "Stash", None, false, TopAction::Stash, Some(Glyph::Stash));
+        buttons.push((row(stash, bx), TopAction::Stash));
+        // Stash to the gear's right edge: the gear is a control too, not
         // part of the title bar's drag area (FF-29).
-        controls.push((fetch as i32, gear.right()));
+        controls.push((stash as i32, gear.right()));
         self.title_controls = controls;
         self.top_buttons = buttons;
         let _ = mono;
@@ -3063,12 +3127,13 @@ impl Ui {
         badge: Option<String>,
         accent: bool,
         action: TopAction,
+        glyph: Option<Glyph>,
     ) -> f32 {
         let semi = self.f.semi;
         let size = self.pf(12.5);
         let tw = self.te.measure(semi, size, label);
         let bw_badge = badge.as_ref().map_or(0.0, |b| self.te.measure(semi, self.pf(11.5), b) + self.pf(8.0));
-        let icon = if accent { self.pf(16.0) } else { 0.0 };
+        let icon = if accent || glyph.is_some() { self.pf(18.0) } else { 0.0 };
         let w = tw + bw_badge + icon + self.pf(24.0);
         let r = Rect::new((right - w) as i32, (cy - self.pf(14.0)) as i32, w as i32, self.px(28.0));
         let h = Hot::Top(action);
@@ -3087,6 +3152,9 @@ impl Ui {
             let (bg, border) = self.control_colors(h, BG_BAR, BORDER);
             cv.round_border(r, self.pf(8.0), border, bg);
         }
+        if let Some(g) = glyph {
+            self.glyph(cv, g, r.x as f32 + self.pf(18.0), cy, self.pf(7.0), TEXT);
+        }
         let base = (cy + self.pf(4.5)).round();
         let tx = r.x as f32 + self.pf(12.0) + icon;
         let end = self.te.draw(cv, semi, size, tx, base, label, if accent { ACCENT_FG } else { TEXT }, w);
@@ -3097,13 +3165,7 @@ impl Ui {
     }
 
     fn gear_icon(&self, cv: &mut Canvas, cx: f32, cy: f32, color: u32) {
-        let (ro, ri) = (self.pf(6.5), self.pf(4.2));
-        for k in 0..8 {
-            let a = k as f32 * std::f32::consts::FRAC_PI_4;
-            let (s, c) = a.sin_cos();
-            cv.stroke(&[(cx + c * ri, cy + s * ri), (cx + c * ro, cy + s * ro)], self.pf(2.2), color);
-        }
-        cv.ring(cx, cy, self.pf(4.6), self.pf(1.6), color);
+        self.glyph(cv, Glyph::Gear, cx, cy, self.pf(7.0), color);
     }
 
     fn sparkle(&self, cv: &mut Canvas, cx: f32, cy: f32, r: f32, color: u32) {
@@ -3185,6 +3247,16 @@ impl Ui {
             let (cx, cy, s) = (e + self.pf(8.0), head.y as f32 + head.h as f32 / 2.0, self.pf(3.0));
             cv.stroke(&[(cx - s, cy - s / 2.0), (cx, cy + s / 2.0), (cx + s, cy - s / 2.0)], self.pf(1.3), tc);
             self.scope_rect = tr;
+            // Find (Ctrl+F), clickable (FF-57).
+            let fl = "Find";
+            let fw = self.te.measure(semi, self.pf(11.5), fl) + self.pf(30.0);
+            let fr = Rect::new(tr.right() + self.px(8.0), tr.y, fw as i32, tr.h);
+            if self.is_hot(Hot::HeadFind) {
+                cv.fill_round(fr, self.pf(6.0), BG_HOVER);
+            }
+            self.glyph(cv, Glyph::Search, fr.x as f32 + self.pf(11.0), cy, self.pf(4.5), TEXT_3);
+            self.te.draw(cv, semi, self.pf(11.5), fr.x as f32 + self.pf(20.0), base, fl, TEXT_3, fw);
+            self.head_find_rect = fr;
             for (x, t) in [(author_x, "Author"), (date_x, "Date"), (sha_x, "Commit")] {
                 self.te.draw(cv, semi, self.pf(11.5), x, base, t, TEXT_4, self.pf(100.0));
             }
@@ -3281,15 +3353,25 @@ impl Ui {
                 _ => (STASH_BG, STASH_FG),
             };
             let name = rf.name.to_string();
+            let glyph = match rf.kind {
+                _ if rf.is_head => Glyph::Head,
+                RefKind::Local => Glyph::Branch,
+                RefKind::Remote => Glyph::Remote,
+                RefKind::Tag => Glyph::Tag,
+                _ => Glyph::Stash,
+            };
             let tw = self.te.measure(semi, self.pf(11.0), &name).min(self.pf(160.0));
-            let cw = tw + self.pf(14.0);
+            let iw = self.pf(15.0);
+            let cw = tw + iw + self.pf(14.0);
             if x + cw > max_x - self.pf(60.0) {
                 break;
             }
             let chip =
                 Rect::new(x as i32, (r.y as f32 + r.h as f32 / 2.0 - self.pf(9.5)) as i32, cw as i32, self.px(19.0));
             cv.fill_round(chip, self.pf(5.0), cbg);
-            self.te.draw(cv, semi, self.pf(11.0), x + self.pf(7.0), base - self.pf(0.5), &name, cfg, tw + 1.0);
+            let cy = r.y as f32 + r.h as f32 / 2.0;
+            self.glyph(cv, glyph, x + self.pf(13.0), cy, self.pf(5.5), cfg);
+            self.te.draw(cv, semi, self.pf(11.0), x + self.pf(7.0) + iw, base - self.pf(0.5), &name, cfg, tw + 1.0);
             x += cw + self.pf(6.0);
         }
         // To push (↑) or to pull (↓).
@@ -3660,6 +3742,7 @@ impl Ui {
         if self.diff_find.is_some() {
             self.paint_diff_find(cv, bar, left);
         } else {
+            let maxw = (left - r.x as f32 - pad - self.pf(8.0)).max(0.0);
             self.te.draw(
                 cv,
                 semi,
@@ -3668,7 +3751,7 @@ impl Ui {
                 base,
                 &diff.path,
                 if focus { ACCENT } else { TEXT },
-                r.w as f32 - self.pf(160.0),
+                maxw,
             );
         }
         if diff.truncated {
@@ -3915,6 +3998,24 @@ impl Ui {
         cv.fill_circle(x + self.pf(3.0), cy, self.pf(3.5), dot);
         x += self.pf(14.0);
         x = self.te.draw(cv, ui, self.pf(12.0), x, base, &msg, TEXT_2, self.pf(520.0));
+        self.notice_btn = Rect::default();
+        if let Some(a) = self.notice_act.filter(|_| self.r.error.is_none() && self.notice.is_some()) {
+            let (label, g) = a.label();
+            let semi = self.f.semi;
+            let w = self.te.measure(semi, self.pf(11.5), label) + self.pf(30.0);
+            let b = Rect::new((x + self.pf(10.0)) as i32, r.y + self.px(3.0), w as i32, r.h - self.px(5.0));
+            let hot = self.is_hot(Hot::Notice);
+            cv.round_border(
+                b,
+                self.pf(5.0),
+                if hot { ACCENT } else { ACCENT_BORDER },
+                if hot { ACCENT_SOFT_HOVER } else { ACCENT_SOFT },
+            );
+            self.glyph(cv, g, b.x as f32 + self.pf(11.0), cy, self.pf(4.5), ACCENT_FG);
+            self.te.draw(cv, semi, self.pf(11.5), b.x as f32 + self.pf(20.0), base, label, ACCENT_FG, w);
+            self.notice_btn = b;
+            x = b.right() as f32;
+        }
         if self.r.log_done && self.r.error.is_none() {
             let mut facts = format!("{} commits in {:.0} ms", fmt::num(self.r.commits.len()), self.r.log_ms);
             if let Some(fb) = self.r.first_batch_ms {
@@ -6793,6 +6894,118 @@ mod tests {
         assert_eq!(ui.code_pt, 11);
         assert_partial_paint_is_full(&mut ui, &mut screen, "smaller code text");
         assert!(ui.diff_view_menu().iter().any(|i| i.label.starts_with("Larger text (12 pt)")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Clickable twins of shortcuts and menu icons (FF-57): the header's
+    /// Find, the diff bar's next-change and find buttons, the status bar's
+    /// Install update, and Discard then Undo from the file menu and the
+    /// status bar; every commit menu item has an icon. Repaints match.
+    #[test]
+    fn clickable_twins_of_shortcuts() {
+        use std::sync::mpsc;
+        let mut te = TextEngine::new();
+        let Some(f) = load_fonts(&mut te) else { return };
+        let dir = std::env::temp_dir().join(format!("ffwd-ui-twins-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = Git { root: dir.clone() };
+        for a in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.name", "ffwd test"],
+            &["config", "user.email", "test@example.invalid"],
+            &["config", "commit.gpgsign", "false"],
+            &["config", "core.autocrlf", "false"],
+        ] {
+            g.output(a).unwrap();
+        }
+        let mut lines: Vec<String> = (1..=120).map(|i| format!("line {i}")).collect();
+        std::fs::write(dir.join("a.txt"), lines.join("\n") + "\n").unwrap();
+        g.output(&["add", "."]).unwrap();
+        g.output(&["commit", "-q", "-m", "first"]).unwrap();
+        lines[5] = "changed 6".into();
+        lines[100] = "changed 101".into();
+        std::fs::write(dir.join("a.txt"), lines.join("\n") + "\n").unwrap();
+        g.output(&["commit", "-q", "-am", "two changes"]).unwrap();
+        std::fs::write(dir.join("a.txt"), "local edit\n").unwrap();
+        let (tx, rx) = mpsc::channel::<(u64, Msg)>();
+        let tx = Arc::new(std::sync::Mutex::new(tx));
+        let sinks: SinkFactory = Arc::new(move |id| {
+            let tx = tx.clone();
+            Arc::new(move |m| {
+                if let Ok(t) = tx.lock() {
+                    let _ = t.send((id, m));
+                }
+            })
+        });
+        crate::work::start(dir.clone(), &sinks(1));
+        let empty = crate::settings::Settings::parse("");
+        let mut ui = Ui::new(te, f, empty.clone(), empty, Some((1, dir.clone())), sinks, 1280, 800, 1.0);
+        let pump = |ui: &mut Ui, what: &str, done: &dyn Fn(&Ui) -> bool| {
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while !done(ui) {
+                let left = until.saturating_duration_since(std::time::Instant::now());
+                assert!(!left.is_zero(), "timed out waiting for {what}; notice: {:?}", ui.notice);
+                if let Ok((id, m)) = rx.recv_timeout(left) {
+                    ui.on_tab_msg(id, m);
+                }
+            }
+        };
+        pump(&mut ui, "history and diff", &|u| u.r.log_done && u.r.git.is_some() && u.r.diff.is_some());
+        let mut screen = vec![0u32; 1280 * 800];
+        ui.paint(&mut Canvas::new(&mut screen, 1280, 800), true);
+        let center = |r: Rect| (r.x + r.w / 2, r.y + r.h / 2);
+        // Every commit menu item has an icon.
+        for it in ui.commit_menu(0).iter().filter(|i| i.act.is_some()) {
+            assert!(icons::for_act(it.act.as_ref().unwrap()).is_some(), "no icon for {}", it.label);
+        }
+        // The header's Find opens the find bar.
+        let (x, y) = center(ui.head_find_rect);
+        ui.click(x, y);
+        assert!(ui.r.search.is_some(), "Find opens the find bar");
+        ui.key(Key::Esc);
+        assert_partial_paint_is_full(&mut ui, &mut screen, "find closed");
+        // The diff bar: next change, then find in the diff.
+        let bar = |ui: &Ui, h: diff_view::DiffBar| ui.diff_bar_hits.iter().find(|b| b.1 == h).map(|b| b.0).unwrap();
+        ui.r.diff_top = 0;
+        let (x, y) = center(bar(&ui, diff_view::DiffBar::Next));
+        ui.click(x, y);
+        assert!(ui.r.diff_top > 0, "next change scrolls: {}", ui.r.diff_top);
+        assert_partial_paint_is_full(&mut ui, &mut screen, "next change");
+        let (x, y) = center(bar(&ui, diff_view::DiffBar::Find));
+        ui.click(x, y);
+        assert!(ui.diff_find.is_some());
+        assert_partial_paint_is_full(&mut ui, &mut screen, "diff find from the bar");
+        ui.close_diff_find();
+        // An update offer: its button installs.
+        ui.update_available = true;
+        ui.set_notice_with("ffwd 9.9.9 is available".into(), NoticeAct::InstallUpdate);
+        ui.paint(&mut Canvas::new(&mut screen, 1280, 800), true);
+        assert!(!ui.notice_btn.is_empty());
+        let (x, y) = center(ui.notice_btn);
+        ui.click(x, y);
+        assert!(ui.update_requested, "the button asks for the install");
+        // Local Changes: Discard from the file menu, the status bar confirms,
+        // and Undo brings the edit back.
+        ui.enter_changes();
+        pump(&mut ui, "the changes", &|u| u.r.changes.diff.is_some());
+        ui.paint(&mut Canvas::new(&mut screen, 1280, 800), true);
+        let items = ui.file_menu_at_selected().unwrap();
+        let k = items.iter().position(|i| i.label == "Discard changes…").unwrap();
+        assert!(items.iter().any(|i| i.label == "Stage"));
+        ui.open_menu(400, 200, items);
+        ui.menu_activate(k);
+        assert_eq!(ui.notice_act, Some(NoticeAct::Discard));
+        ui.paint(&mut Canvas::new(&mut screen, 1280, 800), true);
+        let (x, y) = center(ui.notice_btn);
+        ui.click(x, y);
+        pump(&mut ui, "the discard", &|u| u.notice_act == Some(NoticeAct::Undo));
+        assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), lines.join("\n") + "\n");
+        ui.paint(&mut Canvas::new(&mut screen, 1280, 800), true);
+        let (x, y) = center(ui.notice_btn);
+        ui.click(x, y);
+        pump(&mut ui, "the undo", &|u| u.notice.as_deref() == Some("Restored the discarded changes"));
+        assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "local edit\n");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

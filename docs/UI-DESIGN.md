@@ -317,9 +317,19 @@ Like other clients: one tab per repository under the top bar.
 
 - **Fetch / Pull / Push** run `git` on a worker with the user's own config and credential helper. The button reads "Fetching…" while it runs, the status bar shows git's progress line and then the result; the history reloads and keeps the selected commit. Push of a branch without an upstream pushes to `origin` and sets it.
 - **AI** opens the AI commands; until an endpoint is configured they say how to set one.
+- **Stash** opens the stash dialog (also `Ctrl+Shift+S`).
+- Fetch, Pull, Push and Stash carry icons; so do context-menu items (chosen from the action) and ref chips (branch, remote, tag, HEAD).
 - Commands in `Ctrl+K` that are not built yet are marked **planned**.
 
-## Interaction (keyboard first)
+## Interaction (keyboard first, never keyboard only)
+
+Every shortcut has a clickable twin (owner, 2026-11-14):
+- **Install update:** a button in the status bar next to the update notice (`Ctrl+Shift+U`).
+- **Discard and undo:** *Discard changes…* in the Local Changes file menu, then **Discard** in the status bar (Delete twice). After a discard, **Undo** in the status bar (`Ctrl+Z`).
+- **Local Changes file menu:** *Stage* / *Unstage* (Space) and *Add to .gitignore* (`I`).
+- **History header:** **Find** (`Ctrl+F`).
+- **Diff bar:** previous and next change (`p`, `n`) and find in the diff (`Ctrl+F` with the diff focused).
+
 
 | Key | Action |
 |---|---|

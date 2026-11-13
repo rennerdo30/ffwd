@@ -16,6 +16,10 @@ pub enum DiffBar {
     Whitespace,
     /// The view menu (`…`): whitespace characters, tab width.
     More,
+    /// Previous and next change (`p`, `n`), find in the diff (`Ctrl+F`).
+    Prev,
+    Next,
+    Find,
 }
 
 /// The tab widths the view menu offers.
@@ -351,6 +355,25 @@ impl Ui {
         let split = self.diff_split;
         seg(self, cv, &mut x, "Side by side", split, DiffBar::Split, &mut hits);
         seg(self, cv, &mut x, "Unified", !split, DiffBar::Unified, &mut hits);
+        // Icon buttons, the click twins of p, n and Ctrl+F (FF-57).
+        x -= self.px(8.0);
+        for (g, hit) in [
+            (super::Glyph::Search, DiffBar::Find),
+            (super::Glyph::Down, DiffBar::Next),
+            (super::Glyph::Up, DiffBar::Prev),
+        ] {
+            let r = Rect::new(x - h, y, h, h);
+            let on = hit == DiffBar::Find && self.diff_find.is_some();
+            if on {
+                cv.fill_round(r, self.pf(5.0), BG_CHOSEN);
+            } else if self.is_hot(Hot::DiffBar(hits.len())) {
+                cv.fill_round(r, self.pf(5.0), CONTROL_HOVER);
+            }
+            let c = if on { TEXT } else { TEXT_3 };
+            self.glyph(cv, g, r.x as f32 + r.w as f32 / 2.0, r.y as f32 + r.h as f32 / 2.0, self.pf(5.0), c);
+            hits.push((r, hit));
+            x = r.x - self.px(2.0);
+        }
         let _ = ui;
         self.diff_bar_hits = hits;
         x as f32
@@ -478,6 +501,15 @@ impl Ui {
     pub(super) fn apply_diff_bar(&mut self, h: DiffBar) {
         match h {
             DiffBar::More => {}
+            DiffBar::Prev => self.jump_change(false),
+            DiffBar::Next => self.jump_change(true),
+            DiffBar::Find => {
+                if self.diff_find.is_some() {
+                    self.close_diff_find();
+                } else {
+                    self.open_diff_find();
+                }
+            }
             DiffBar::Unified | DiffBar::Split => {
                 self.diff_split = h == DiffBar::Split;
                 self.r.diff_top = 0;
