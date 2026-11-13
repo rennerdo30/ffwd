@@ -49,6 +49,31 @@ pub fn state_path() -> Option<PathBuf> {
     config_dir().map(|d| d.join("state.toml"))
 }
 
+/// A repository's own settings (overrides of the global ones), kept in
+/// ffwd's config folder, never in the repository: a cloned repository must
+/// not be able to set commands or weaken the agent sandbox.
+/// `<config>/repos/<name>-<hash of the path>.toml`.
+pub fn repo_settings_path(repo: &std::path::Path) -> Option<PathBuf> {
+    let norm = repo.to_string_lossy().replace('\\', "/").trim_end_matches('/').to_lowercase();
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in norm.bytes() {
+        h = (h ^ b as u64).wrapping_mul(0x0100_0000_01b3);
+    }
+    // The last folder name, whichever separator the path uses.
+    let name: String = norm
+        .rsplit('/')
+        .find(|s| !s.is_empty())
+        .unwrap_or_default()
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || "-_.".contains(*c))
+        .collect();
+    let base = match std::env::var_os("FFWD_SETTINGS") {
+        Some(p) => PathBuf::from(p).parent()?.to_path_buf(),
+        None => config_dir()?,
+    };
+    Some(base.join("repos").join(format!("{name}-{:012x}.toml", h & 0xffff_ffff_ffff)))
+}
+
 /// One writer at a time, in order: quick successive changes never race.
 static WRITER: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -59,6 +84,33 @@ impl Settings {
 
     pub fn load_state() -> Settings {
         Settings::load_from(state_path())
+    }
+
+    /// Reads `file` (missing: empty); changes are saved to it. Worker only.
+    pub fn load_file(file: PathBuf) -> Settings {
+        Settings::load_from(Some(file))
+    }
+
+    /// An empty set whose changes are saved to `file` (before it loaded).
+    pub fn for_file(file: PathBuf) -> Settings {
+        Settings { file: Some(file), ..Settings::default() }
+    }
+
+    /// Adds the values of `other` this one does not have: a load that
+    /// arrives after the user already changed something keeps the change.
+    pub fn fill_from(&mut self, other: Settings) {
+        for (k, v) in other.values {
+            self.values.entry(k).or_insert(v);
+        }
+        if self.file.is_none() {
+            self.file = other.file;
+        }
+        self.errors.extend(other.errors);
+    }
+
+    /// Keys starting with `prefix` (`agents.`) that have a value.
+    pub fn keys_with(&self, prefix: &str) -> Vec<String> {
+        self.values.keys().filter(|k| k.starts_with(prefix)).cloned().collect()
     }
 
     fn load_from(file: Option<PathBuf>) -> Settings {
@@ -103,12 +155,28 @@ impl Settings {
     /// and replaced on a worker thread, never on the UI thread.
     pub fn set_string(&mut self, key: &str, value: &str) {
         self.values.insert(key.to_string(), value.to_string());
+        let value = format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""));
+        self.save_line(key, Some(value));
+    }
+
+    /// Removes `key`: a repository override falls back to the global value.
+    pub fn remove(&mut self, key: &str) {
+        if self.values.remove(key).is_some() {
+            self.save_line(key, None);
+        }
+    }
+
+    /// Writes one key's line (or removes it) on a worker thread.
+    fn save_line(&mut self, key: &str, value: Option<String>) {
         let Some(p) = self.file.clone() else { return };
-        let (key, value) = (key.to_string(), format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\"")));
+        let key = key.to_string();
         std::thread::spawn(move || {
             let _guard = WRITER.lock();
             let old = std::fs::read_to_string(&p).unwrap_or_default();
-            let text = rewrite(&old, &key, &value);
+            let text = match &value {
+                Some(v) => rewrite(&old, &key, v),
+                None => remove_line(&old, &key),
+            };
             if let Some(dir) = p.parent() {
                 let _ = std::fs::create_dir_all(dir);
             }
@@ -131,6 +199,28 @@ impl Settings {
         self.set_string(key, &items.join("|"));
     }
 }
+/// `text` without the line of `key`; everything else is kept.
+fn remove_line(text: &str, key: &str) -> String {
+    let (section, name) = key.rsplit_once('.').unwrap_or(("", key));
+    let mut current = String::new();
+    let mut out = Vec::new();
+    for raw in text.lines() {
+        let line = strip_comment(raw).trim();
+        if let Some(s) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
+            current = s.trim().to_string();
+        } else if current == section
+            && let Some((k, _)) = line.split_once('=')
+            && k.trim() == name
+        {
+            continue;
+        }
+        out.push(raw);
+    }
+    let mut s = out.join("\n");
+    s.push('\n');
+    s
+}
+
 fn full_key(section: &str, key: &str) -> String {
     if section.is_empty() { key.to_string() } else { format!("{section}.{key}") }
 }
@@ -219,6 +309,26 @@ mod tests {
         assert_eq!(s.get("ui.zoom"), Some("2"));
         assert_eq!(s.get("ai.endpoint"), Some("http://x/#a"));
         assert_eq!(s.errors.len(), 1);
+    }
+
+    #[test]
+    fn remove_drops_only_that_key() {
+        let text = "# mine\n[agents]\ncommand = \"x\" # c\nsandbox = \"wsl\"\n[ui]\ncommand = \"keep\"\n";
+        let out = remove_line(text, "agents.command");
+        assert_eq!(out, "# mine\n[agents]\nsandbox = \"wsl\"\n[ui]\ncommand = \"keep\"\n");
+        let s = Settings::parse(&out);
+        assert_eq!(s.get("agents.command"), None);
+        assert_eq!(s.get("ui.command"), Some("keep"));
+    }
+
+    #[test]
+    fn repository_files_differ_per_path_not_per_spelling() {
+        let a = repo_settings_path(std::path::Path::new(r"E:\Development\ffwd")).unwrap();
+        let b = repo_settings_path(std::path::Path::new("e:/development/ffwd/")).unwrap();
+        let c = repo_settings_path(std::path::Path::new(r"E:\Other\ffwd")).unwrap();
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+        assert!(a.file_name().unwrap().to_string_lossy().starts_with("ffwd-"));
     }
 
     #[test]

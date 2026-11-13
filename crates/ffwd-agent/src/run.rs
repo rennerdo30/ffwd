@@ -206,10 +206,13 @@ fn execute(cfg: &Config, repo: &Path, id: &str, prompt: &str, cancel: &AtomicBoo
     send(&rec);
 
     // 1. Repository, base and folders.
-    let prep = (|| -> Result<(Git, PathBuf, PathBuf, PathBuf), String> {
+    let prep = (|| -> Result<(Git, PathBuf, PathBuf, PathBuf, Option<String>), String> {
         if let Some(why) = cfg.refusal() {
             return Err(why);
         }
+        // Is the agent installed where it will run? Checked before any
+        // Git change, so a refusal leaves nothing behind.
+        let home = preflight(cfg)?;
         let mut top = Git::discover(repo).map_err(|e| e.to_string())?;
         top.root = native(&top.root.to_string_lossy());
         let common = native(&git_text(&top, &["rev-parse", "--path-format=absolute", "--git-common-dir"])?);
@@ -228,9 +231,9 @@ fn execute(cfg: &Config, repo: &Path, id: &str, prompt: &str, cancel: &AtomicBoo
             return Err(format!("{} already exists", rec.worktree.display()));
         }
         std::fs::create_dir_all(&run_dir).map_err(|e| format!("cannot create {}: {e}", run_dir.display()))?;
-        Ok((top, common, root, run_dir))
+        Ok((top, common, root, run_dir, home))
     })();
-    let (top, common, _root, run_dir) = match prep {
+    let (top, common, _root, run_dir, home) = match prep {
         Ok(v) => v,
         Err(why) => {
             fail(&mut rec, &mut log, why);
@@ -299,8 +302,15 @@ fn execute(cfg: &Config, repo: &Path, id: &str, prompt: &str, cancel: &AtomicBoo
         ("FFWD_AGENT_TITLE".into(), rec.title.clone()),
     ];
     let wt_path = rec.worktree.clone();
-    let ctx =
-        Ctx { cfg, worktree: &wt_path, git_common: &common, git_dir: &git_dir, run_dir: &run_dir, vars: vars.clone() };
+    let ctx = Ctx {
+        cfg,
+        worktree: &wt_path,
+        git_common: &common,
+        git_dir: &git_dir,
+        run_dir: &run_dir,
+        vars: vars.clone(),
+        home,
+    };
     rec.status = Status::Running;
     save(&rec);
     send(&rec);
@@ -477,6 +487,91 @@ fn execute(cfg: &Config, repo: &Path, id: &str, prompt: &str, cancel: &AtomicBoo
     }
     log.note(format!("{} · {}", rec.status.word(), rec.detail));
     send(&rec);
+}
+
+/// Checks that the agent's program (and bubblewrap) exist where the agent
+/// will run. Returns that place's home folder. Inside WSL this matters
+/// most: tools installed on Windows are not there, and a Windows program
+/// seen through `/mnt/c` cannot run inside the sandbox.
+pub fn preflight(cfg: &Config) -> Result<Option<String>, String> {
+    let program = config::split_command(&cfg.command)
+        .map_err(|e| format!("the agent command cannot be read: {e}"))?
+        .into_iter()
+        .next()
+        .unwrap_or_default();
+    let install = cfg
+        .preset
+        .filter(|p| p.program == program && !p.install_linux.is_empty())
+        .map_or_else(|| "see the tool's install guide".to_string(), |p| p.install_linux.to_string());
+    let found = |p: &str| proc::find_program(p).is_some();
+    match cfg.sandbox.resolve() {
+        SandboxKind::Wsl => {
+            let distro =
+                if cfg.wsl_distro.is_empty() { "default distribution".to_string() } else { cfg.wsl_distro.clone() };
+            let mut args = Vec::new();
+            if !cfg.wsl_distro.is_empty() {
+                args.extend(["-d".to_string(), cfg.wsl_distro.clone()]);
+            }
+            let script = "p=$(command -v \"$1\" 2>/dev/null) || exit 3\ncase \"$p\" in /mnt/*) exit 5;; esac\ncommand -v \"$2\" >/dev/null 2>&1 || exit 4\nprintf '%s\\n' \"$HOME\"";
+            args.extend(["-e", "sh", "-c", script, "sh"].map(String::from));
+            args.extend([program.clone(), cfg.bwrap_path.clone()]);
+            let l = Launch {
+                program: "wsl.exe".into(),
+                args,
+                cwd: std::env::temp_dir(),
+                clear_env: false,
+                env: Vec::new(),
+                stdin: None,
+            };
+            let mut out = Vec::new();
+            let never = AtomicBool::new(false);
+            let exit = proc::run(&l, Duration::from_secs(60), &never, |b| out.extend(b));
+            let last = out.iter().rev().find(|l| !l.trim().is_empty()).map(|l| l.trim().replace('\0', ""));
+            match exit {
+                Exit::Code(0) => Ok(last.filter(|h| h.starts_with('/'))),
+                Exit::Code(3) => Err(format!(
+                    "{program} is not installed inside WSL ({distro}); the Windows one cannot run in the WSL sandbox. \
+                     Install it inside WSL ({install}) and log in there, or set Sandbox to None with Allow no sandbox \
+                     to run the Windows version without a sandbox."
+                )),
+                Exit::Code(5) => Err(format!(
+                    "Inside WSL ({distro}) only the Windows {program} is visible (through /mnt), and it cannot run in \
+                     the sandbox. Install the Linux version inside WSL ({install})."
+                )),
+                Exit::Code(4) => Err(format!(
+                    "bubblewrap is missing inside WSL ({distro}). Install it there: sudo apt install bubblewrap."
+                )),
+                Exit::SpawnFailed(_) => {
+                    Err("WSL is not installed. Install it (wsl --install), or pick another sandbox.".into())
+                }
+                e => Err(format!("WSL ({distro}) did not answer ({}): {}", e.describe(), last.unwrap_or_default())),
+            }
+        }
+        SandboxKind::Bubblewrap => {
+            if !found(&cfg.bwrap_path) {
+                return Err(format!(
+                    "{} is not installed: sudo apt install bubblewrap (or your distribution's package).",
+                    cfg.bwrap_path
+                ));
+            }
+            if !found(&program) {
+                return Err(format!(
+                    "{program} is not on PATH. Install it ({install}) or set the full path in the agent command."
+                ));
+            }
+            Ok(sandbox::host_home())
+        }
+        SandboxKind::MacOs | SandboxKind::None | SandboxKind::Auto => {
+            if !found(&program) {
+                return Err(format!(
+                    "{program} is not on PATH. Install it, or set the full path in the agent command."
+                ));
+            }
+            Ok(sandbox::host_home())
+        }
+        // The wrapper may bring its own tools (a container image).
+        SandboxKind::Custom => Ok(sandbox::host_home()),
+    }
 }
 
 /// Reads the recorded runs of the repository at `repo` on a worker.
@@ -695,6 +790,35 @@ mod tests {
         assert!(record::load_all(&record::root(&cfg, &rec.repo)).is_empty());
         let _ = std::fs::remove_dir_all(repo.parent().unwrap());
         let _ = std::fs::remove_dir_all(record::root(&cfg, &rec.repo).parent().unwrap());
+    }
+
+    #[test]
+    fn preflight_names_a_missing_agent() {
+        let cfg = Config {
+            enabled: true,
+            command: "ffwd-no-such-agent-xyz {prompt}".into(),
+            sandbox: SandboxKind::None,
+            allow_unsandboxed: true,
+            ..Config::default()
+        };
+        let e = preflight(&cfg).unwrap_err();
+        assert!(e.contains("ffwd-no-such-agent-xyz is not on PATH"), "{e}");
+    }
+
+    /// On a Windows PC with WSL: a tool installed only on Windows is
+    /// reported as missing inside WSL. Run by hand:
+    /// `cargo test -p ffwd-agent -- --ignored wsl_preflight`.
+    #[test]
+    #[ignore]
+    fn wsl_preflight_reports_windows_only_tools() {
+        let (cfg, _) = Config::from_lookup(|k| match k {
+            "enabled" => Some("true".into()),
+            "preset" => Some("muse".into()),
+            "sandbox" => Some("wsl".into()),
+            _ => None,
+        });
+        let e = preflight(&cfg).unwrap_err();
+        assert!(e.contains("muse is not installed inside WSL"), "{e}");
     }
 
     #[test]

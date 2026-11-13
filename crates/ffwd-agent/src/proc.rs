@@ -135,6 +135,36 @@ pub fn resolve_program(program: &str, path_var: Option<&str>) -> String {
     program.to_string()
 }
 
+/// Where `program` would be found: a path that exists, or a match on
+/// `PATH` (with `PATHEXT` on Windows).
+pub fn find_program(program: &str) -> Option<PathBuf> {
+    if program.contains(['/', '\\']) {
+        let p = PathBuf::from(program);
+        return p.is_file().then_some(p);
+    }
+    let path = std::env::var_os("PATH")?;
+    let mut exts = vec![String::new()];
+    if cfg!(windows) {
+        let pe = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into());
+        exts.extend(pe.split(';').filter(|e| !e.is_empty()).map(|e| e.to_ascii_lowercase()));
+    }
+    let bare = std::path::Path::new(program).extension().is_none();
+    for dir in std::env::split_paths(&path) {
+        for ext in &exts {
+            // On Windows an extension-less file (an npm shell shim) does not
+            // run; only PATHEXT matches count.
+            if cfg!(windows) && ext.is_empty() && bare {
+                continue;
+            }
+            let p = dir.join(format!("{program}{ext}"));
+            if p.is_file() {
+                return Some(p);
+            }
+        }
+    }
+    None
+}
+
 const MAX_LINE: usize = 4000;
 
 fn reader(mut r: impl Read + Send + 'static, tx: mpsc::Sender<String>) {

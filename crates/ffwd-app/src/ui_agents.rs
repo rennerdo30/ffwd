@@ -57,8 +57,66 @@ pub struct AgentView {
 }
 
 impl Ui {
+    /// The agent settings of the active tab: its repository's overrides
+    /// first, then the global values.
     pub(super) fn agent_config(&self) -> (AgentConfig, Vec<String>) {
-        AgentConfig::from_lookup(|k| self.settings.get(&format!("agents.{k}")).map(str::to_string))
+        let repo = self.current_repo_settings();
+        AgentConfig::from_lookup(|k| {
+            let key = format!("agents.{k}");
+            repo.and_then(|r| r.get(&key)).or_else(|| self.settings.get(&key)).map(str::to_string)
+        })
+    }
+
+    /// How many agent settings the active tab's repository overrides.
+    pub(super) fn repo_override_count(&self) -> usize {
+        self.current_repo_settings().map_or(0, |r| r.keys_with("agents.").len())
+    }
+
+    pub(super) fn current_repo_settings(&self) -> Option<&crate::settings::Settings> {
+        let t = self.tabs.get(self.cur_tab)?;
+        self.repo_settings.get(&repo_key(&t.path))
+    }
+
+    /// The active repository's overrides, created (empty, saved to its
+    /// file) when they have not loaded yet.
+    pub(super) fn current_repo_settings_mut(&mut self) -> Option<&mut crate::settings::Settings> {
+        let t = self.tabs.get(self.cur_tab)?;
+        let key = repo_key(&t.path);
+        let file = crate::settings::repo_settings_path(&t.path)?;
+        Some(self.repo_settings.entry(key).or_insert_with(|| crate::settings::Settings::for_file(file)))
+    }
+
+    /// Reads the active repository's override file on a worker, once.
+    pub(super) fn load_repo_settings(&mut self) {
+        let Some(t) = self.tabs.get(self.cur_tab) else { return };
+        let key = repo_key(&t.path);
+        if self.repo_settings_requested.contains(&key) {
+            return;
+        }
+        let Some(file) = crate::settings::repo_settings_path(&t.path) else { return };
+        self.repo_settings_requested.insert(key);
+        let path = t.path.clone();
+        crate::work::spawn("repo-settings", &(self.sinks)(0), move |sink| {
+            sink(Msg::RepoSettings(path, crate::settings::Settings::load_file(file)))
+        });
+    }
+
+    pub(super) fn on_repo_settings(&mut self, path: PathBuf, loaded: crate::settings::Settings) {
+        match self.repo_settings.entry(repo_key(&path)) {
+            std::collections::hash_map::Entry::Occupied(mut e) => e.get_mut().fill_from(loaded),
+            std::collections::hash_map::Entry::Vacant(e) => {
+                e.insert(loaded);
+            }
+        }
+        // A repository may turn agents on for itself only.
+        if self.tabs.get(self.cur_tab).is_some_and(|t| same_path(&t.path, &path)) {
+            self.load_agent_runs();
+        }
+        self.agents_dirty();
+        if self.settings_view.is_some() {
+            let r = self.settings_rect();
+            self.damage.rects.push(r);
+        }
     }
 
     fn agent_emit(&self) -> ffwd_agent::run::Emit {
@@ -582,6 +640,12 @@ impl Ui {
             (None, ffwd_agent::SandboxKind::None) => (cfg.summary(), DEL),
             (None, _) => (cfg.summary(), TEXT_3),
         };
+        let overrides = self.repo_override_count();
+        let line = if overrides > 0 {
+            format!("{line} · {overrides} setting{} for this repository", if overrides == 1 { "" } else { "s" })
+        } else {
+            line
+        };
         let line = match cfg_errors.first() {
             Some(err) => format!("{line} · settings: {err}"),
             None => line,
@@ -875,6 +939,24 @@ impl Ui {
         cv.set_clip(old);
         view.hits = hits;
         self.agent_view = Some(view);
+    }
+
+    /// Snapshot only: Settings → Agents in "This repository" scope with
+    /// example overrides held in memory (nothing is written).
+    pub fn snapshot_repo_scope_demo(&mut self) {
+        let Some(t) = self.tabs.get(self.cur_tab) else { return };
+        let key = repo_key(&t.path);
+        let demo = "[agents]
+enabled = \"true\"
+preset = \"codex\"
+sandbox = \"none\"
+allow_unsandboxed = \"true\"
+setup_script = \"cargo fetch\"
+";
+        self.repo_settings.insert(key.clone(), crate::settings::Settings::parse(demo));
+        self.repo_settings_requested.insert(key);
+        self.open_settings_page(1);
+        self.agent_scope_repo = true;
     }
 
     /// Snapshot only: example runs, so the panel can be checked offscreen.

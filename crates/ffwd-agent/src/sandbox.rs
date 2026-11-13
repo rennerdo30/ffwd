@@ -22,6 +22,35 @@ pub struct Ctx<'a> {
     pub run_dir: &'a Path,
     /// `FFWD_AGENT_*` variables for the process.
     pub vars: Vec<(String, String)>,
+    /// The home folder where the agent runs: the host's, or inside WSL the
+    /// Linux one (found by the preflight check). `~/…` grants resolve here.
+    pub home: Option<String>,
+}
+
+/// `~/rest` (or `~` + backslash + `rest`) gives `rest`; `~` alone gives "".
+pub fn home_rel(p: &Path) -> Option<String> {
+    let t = s(p);
+    if t == "~" {
+        return Some(String::new());
+    }
+    t.strip_prefix("~/").or_else(|| t.strip_prefix("~\\")).map(|r| r.replace('\\', "/"))
+}
+
+/// The user's home on this machine.
+pub fn host_home() -> Option<String> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(|h| h.to_string_lossy().into_owned())
+        .filter(|h| !h.is_empty())
+}
+
+/// A granted path on this machine (`~` resolved).
+pub fn host_path(p: &Path) -> PathBuf {
+    match (home_rel(p), host_home()) {
+        (Some(r), Some(h)) if r.is_empty() => PathBuf::from(h),
+        (Some(r), Some(h)) => Path::new(&h).join(r),
+        _ => p.to_path_buf(),
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -44,6 +73,16 @@ fn agent_env(ctx: &Ctx, from: EnvFrom) -> (bool, Vec<(String, String)>) {
         EnvFrom::Allowlist => true,
         EnvFrom::Named => false,
     };
+    if from == EnvFrom::Named
+        && let Some(p) = cfg.preset.filter(|_| cfg.preset_grants)
+    {
+        // API keys set on Windows reach the tool inside WSL (by name).
+        for name in p.env_pass {
+            if let Some(v) = std::env::var_os(name) {
+                env.push((name.to_string(), v.to_string_lossy().into_owned()));
+            }
+        }
+    }
     if clear {
         for name in &cfg.env_pass {
             if let Some(v) = std::env::var_os(name) {
@@ -109,18 +148,30 @@ fn bwrap_args(ctx: &Ctx, conv: &dyn Fn(&Path) -> Result<String, String>) -> Resu
         a.extend([flag.to_string(), w.clone(), w]);
         Ok(())
     };
-    match cfg.home_access {
-        HomeAccess::Private => {
+    let home = ctx.home.clone().map(|h| h.trim_end_matches('/').to_string());
+    // Inside, the agent's home is either an empty one or the real one.
+    let inside_home = match (cfg.home_access, &home) {
+        (HomeAccess::Private, _) | (_, None) => {
             a.extend(["--dir", "/tmp/home", "--setenv", "HOME", "/tmp/home"].map(String::from));
+            "/tmp/home".to_string()
         }
-        // The real home is bound by the caller (it is only known inside).
-        HomeAccess::Read | HomeAccess::Write => {}
-    }
-    for p in &cfg.read_paths {
-        bind(&mut a, "--ro-bind-try", p)?;
-    }
-    for p in &cfg.write_paths {
-        bind(&mut a, "--bind-try", p)?;
+        (access, Some(h)) => {
+            let flag = if access == HomeAccess::Write { "--bind" } else { "--ro-bind" };
+            a.extend([flag.to_string(), h.clone(), h.clone()]);
+            h.clone()
+        }
+    };
+    // Granted folders: `~/x` is the real `~/x`, seen at `<inside home>/x`.
+    for (flag, list) in [("--ro-bind-try", &cfg.read_paths), ("--bind-try", &cfg.write_paths)] {
+        for p in list {
+            match (home_rel(p), &home) {
+                (Some(r), Some(h)) if !r.is_empty() => {
+                    a.extend([flag.to_string(), format!("{h}/{r}"), format!("{inside_home}/{r}")])
+                }
+                (Some(_), _) => {}
+                (None, _) => bind(&mut a, flag, p)?,
+            }
+        }
     }
     bind(&mut a, if cfg.git_access == GitAccess::Write { "--bind" } else { "--ro-bind" }, ctx.git_common)?;
     // The worktree's own Git folder (index, HEAD) stays writable so that
@@ -142,12 +193,12 @@ pub fn macos_profile(ctx: &Ctx, home: Option<&Path>) -> String {
         format!("(subpath \"{}\")", s(&c).replace('\\', "\\\\").replace('"', "\\\""))
     };
     let mut writes: Vec<PathBuf> = vec![ctx.worktree.into(), ctx.git_dir.into()];
-    writes.extend(cfg.write_paths.iter().cloned());
+    writes.extend(cfg.write_paths.iter().map(|p| host_path(p)));
     if cfg.git_access == GitAccess::Write {
         writes.push(ctx.git_common.into());
     }
     let mut reads: Vec<PathBuf> = vec![ctx.run_dir.into(), ctx.git_common.into()];
-    reads.extend(cfg.read_paths.iter().cloned());
+    reads.extend(cfg.read_paths.iter().map(|p| host_path(p)));
     let mut p = String::from("(version 1)\n(allow default)\n");
     if cfg.home_access != HomeAccess::Write || home.is_none() {
         p.push_str("(deny file-write*)\n");
@@ -207,15 +258,6 @@ pub fn wrap(inner: &[String], ctx: &Ctx, stdin: Option<Vec<u8>>) -> Result<Launc
         }
         SandboxKind::Bubblewrap => {
             let mut args = bwrap_args(ctx, &|p| Ok(s(p)))?;
-            if cfg.home_access != HomeAccess::Private
-                && let Some(h) = std::env::var_os("HOME")
-            {
-                let h = h.to_string_lossy().into_owned();
-                let flag = if cfg.home_access == HomeAccess::Write { "--bind" } else { "--ro-bind" };
-                // Before the other binds, so granted folders inside the home
-                // keep their own mode.
-                args.splice(0..0, [flag.to_string(), h.clone(), h]);
-            }
             args.push("--".into());
             args.extend(inner.iter().cloned());
             let (clear_env, env) = agent_env(ctx, EnvFrom::Allowlist);
@@ -229,21 +271,7 @@ pub fn wrap(inner: &[String], ctx: &Ctx, stdin: Option<Vec<u8>>) -> Result<Launc
             if !cfg.wsl_distro.is_empty() {
                 args.extend(["-d".to_string(), cfg.wsl_distro.clone()]);
             }
-            args.extend(["--cd".to_string(), conv(ctx.worktree)?]);
-            // `sh` binds the real home, which only WSL knows, then becomes
-            // bubblewrap (exec), so killing the process tree stops it all.
-            let home = match cfg.home_access {
-                HomeAccess::Private => "",
-                HomeAccess::Read => r#"set -- --ro-bind "$HOME" "$HOME" "$@"; "#,
-                HomeAccess::Write => r#"set -- --bind "$HOME" "$HOME" "$@"; "#,
-            };
-            args.extend([
-                "-e".into(),
-                "sh".into(),
-                "-c".into(),
-                format!("{home}exec \"$0\" \"$@\""),
-                cfg.bwrap_path.clone(),
-            ]);
+            args.extend(["--cd".to_string(), conv(ctx.worktree)?, "-e".into(), cfg.bwrap_path.clone()]);
             args.extend(bw);
             args.push("--".into());
             args.extend(inner.iter().cloned());
@@ -309,6 +337,7 @@ mod tests {
             git_dir: Path::new("/r/r/.git/worktrees/fix"),
             run_dir: Path::new("/r/.ffwd-agents/r/.runs/fix"),
             vars: vec![("FFWD_AGENT_BRANCH".into(), "agent/fix".into())],
+            home: Some("/home/me".into()),
         }
     }
 
@@ -334,6 +363,32 @@ mod tests {
         assert!(l.clear_env);
         // The command comes last, after `--`, unchanged.
         assert_eq!(&a[a.len() - 3..], &["--", "agent", "--do; rm -rf ~"]);
+    }
+
+    #[test]
+    fn preset_grants_land_in_the_private_home() {
+        let get = |k: &str| match k {
+            "enabled" => Some("true".to_string()),
+            "preset" => Some("claude".to_string()),
+            "sandbox" => Some("bwrap".to_string()),
+            _ => None,
+        };
+        let (c, errors) = Config::from_lookup(get);
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(c.command, "claude -p {prompt} --permission-mode acceptEdits");
+        assert!(c.env_pass.iter().any(|e| e == "ANTHROPIC_API_KEY"));
+        let l = wrap(&["claude".into()], &ctx(&c), None).unwrap();
+        assert!(pos(&l.args, &["--bind-try", "/home/me/.claude", "/tmp/home/.claude"]).is_some(), "{:?}", l.args);
+        assert!(pos(&l.args, &["--setenv", "HOME", "/tmp/home"]).is_some());
+        // The real home itself stays out.
+        assert!(!l.args.windows(2).any(|w| w[0] == "--ro-bind" && w[1] == "/home/me"));
+        // An explicit command still wins over the preset's.
+        let (c2, _) = Config::from_lookup(|k| match k {
+            "preset" => Some("claude".into()),
+            "command" => Some("my-claude-wrapper {prompt}".into()),
+            _ => None,
+        });
+        assert_eq!(c2.command, "my-claude-wrapper {prompt}");
     }
 
     #[test]
@@ -368,7 +423,7 @@ mod tests {
         let l = wrap(&["agent".into()], &x, None).unwrap();
         assert_eq!(l.program, "wsl.exe");
         assert!(pos(&l.args, &["--bind", "/mnt/e/a/wt", "/mnt/e/a/wt"]).is_some());
-        assert!(l.args.iter().any(|a| a.contains(r#"--ro-bind "$HOME" "$HOME""#)));
+        assert!(pos(&l.args, &["--ro-bind", "/home/me", "/home/me"]).is_some(), "the Linux home");
         let wslenv = l.env.iter().find(|(k, _)| k == "WSLENV").unwrap();
         assert!(wslenv.1.starts_with("API_URL:FFWD_AGENT_BRANCH"), "{}", wslenv.1);
     }

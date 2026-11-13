@@ -390,6 +390,11 @@ pub struct Ui {
     agents: Vec<AgentRun>,
     agent_view: Option<AgentView>,
     agents_loaded: HashSet<String>,
+    /// Per-repository settings (agent overrides), by `repo_key`.
+    repo_settings: HashMap<String, crate::settings::Settings>,
+    repo_settings_requested: HashSet<String>,
+    /// Settings → Agents edits this repository's overrides.
+    agent_scope_repo: bool,
     pub notice: Option<String>,
     update_available: bool,
     update_requested: bool,
@@ -418,6 +423,11 @@ fn now_secs() -> i64 {
 
 fn repo_name(p: &Path) -> String {
     p.file_name().map_or_else(|| p.to_string_lossy().into_owned(), |n| n.to_string_lossy().into_owned())
+}
+
+/// One key per folder, whatever its spelling.
+fn repo_key(p: &Path) -> String {
+    p.to_string_lossy().replace('\\', "/").trim_end_matches('/').to_lowercase()
 }
 
 /// Two spellings of one folder (case, separators) are the same tab.
@@ -468,6 +478,9 @@ impl Ui {
             agents: Vec::new(),
             agent_view: None,
             agents_loaded: HashSet::new(),
+            repo_settings: HashMap::new(),
+            repo_settings_requested: HashSet::new(),
+            agent_scope_repo: false,
             update_available: false,
             update_requested: false,
             update_check_requested: false,
@@ -579,6 +592,7 @@ impl Ui {
         for m in pending {
             self.on_msg(m);
         }
+        self.load_repo_settings();
         self.load_agent_runs();
         self.palette = None;
         self.title_dirty = true;
@@ -695,6 +709,9 @@ impl Ui {
     pub fn on_tab_msg(&mut self, id: u64, m: Msg) {
         if let Msg::Agent(e) = m {
             return self.on_agent_event(e);
+        }
+        if let Msg::RepoSettings(p, s) = m {
+            return self.on_repo_settings(p, s);
         }
         if let Msg::Repos(list) = m {
             for p in list {
@@ -1011,6 +1028,7 @@ impl Ui {
             // Handled in on_tab_msg; repeated here so a stray one is harmless.
             Msg::Repos(_) => {}
             Msg::Agent(e) => self.on_agent_event(e),
+            Msg::RepoSettings(p, s) => self.on_repo_settings(p, s),
         }
     }
 

@@ -8,7 +8,7 @@ The design is in [decisions/0002-agent-workspaces.md](decisions/0002-agent-works
 
 ## Using it
 
-1. Turn it on: open **Settings → Agents**, set **Agents** to *On (experimental)* and set an **Agent command**.
+1. Turn it on: open **Settings → Agents**, set **Agents** to *On (experimental)*, then pick an **Agent** (Claude, Codex, agy, opencode or Muse) or choose *Custom* and set an **Agent command**. **Applies to** decides whether a change is for every repository or only for the current one (see "Per-repository settings").
 2. Press **Ctrl+Shift+A**, or choose *Agents (experimental)…* in the `Ctrl+K` palette, to open the agents panel of the current repository.
 3. Type a task and press **Enter**. The run appears in the list with its live log. The tab shows a dot while an agent runs. When the run ends, the dot turns green for success or red for failure until you open the panel. The status bar also says when a run has ended.
 4. Review it:
@@ -53,9 +53,59 @@ What the sandbox does **not** do:
 - `sandbox = "none"` gives the agent all your permissions. ffwd refuses to run that way unless you also set `allow_unsandboxed = true`.
 - The sandbox does not protect against a malicious agent binary that exploits the kernel or the sandbox itself.
 
-On **Windows** the default is WSL + bubblewrap. That needs WSL with `bubblewrap` installed in the distribution (`sudo apt install bubblewrap`), and the agent installed inside WSL. An agent that exists only on Windows needs `sandbox = "none"` plus `allow_unsandboxed = true`, or a `custom` wrapper.
+### Windows: where does the agent run?
+
+On Windows the default sandbox is WSL + bubblewrap, which means **the agent runs inside WSL, not on Windows**. A tool installed on Windows (`claude.exe`, `codex`, `agy`, `opencode`, `muse`) does not exist there, and a Windows program seen through `/mnt/c` cannot run inside the sandbox. The agents panel's top line always says where the agent runs ("runs inside WSL (Debian)", or "runs on Windows").
+
+Before it touches the repository, every run checks that the agent and bubblewrap exist in that place. If either is missing, the run stops with the fix. You have two choices:
+
+1. **Sandboxed:** install the tool inside WSL and log in there once. Inside WSL each tool has its own Linux login and config (for example `~/.claude` in the Linux home), separate from Windows. You also need `sudo apt install bubblewrap` there.
+2. **Windows version, not sandboxed:** set Sandbox to *None* and Allow no sandbox to *Yes*. The Windows tool then runs with all your permissions. ffwd still gives it its own worktree and branch, and still applies the time limit and the review step.
+
+Choice 2 can apply to one repository only (see "Per-repository settings").
+
+A `subst` drive (for example `E:` standing for `D:\`) is not mounted in WSL; map it with `wsl_path_map = "E:\=>/mnt/d"`.
 
 ffwd stops only the processes it started itself. A cancel or time-out kills that process tree (`taskkill /T` on Windows, the process group on Unix), and closing ffwd stops every run it started.
+
+## Agents (presets)
+
+**Settings → Agents → Agent** picks a built-in tool. A preset supplies three things:
+
+- the non-interactive command line;
+- the tool's login and config folders, granted writable (`preset_grants`);
+- the names of its API-key variables, passed through. ffwd never reads their values.
+
+Inside WSL the `~` folders are the Linux ones.
+
+| Preset | Command | Folders granted | Key variables passed |
+|---|---|---|---|
+| Claude (`claude`) | `claude -p {prompt} --permission-mode acceptEdits` | `~/.claude`, `~/.claude.json` | `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`, `ANTHROPIC_MODEL` |
+| Codex (`codex`) | `codex exec -s workspace-write {prompt}` | `~/.codex` | `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `CODEX_HOME` |
+| agy (`antigravity`) | `agy -p {prompt} --mode accept-edits` | `~/.gemini` | `GEMINI_API_KEY`, `GOOGLE_API_KEY`, `GOOGLE_CLOUD_PROJECT` |
+| opencode (`opencode`) | `opencode run --standalone --auto {prompt}` | `~/.config/opencode`, `~/.local/share/opencode`, `~/.local/state/opencode`, `~/.cache/opencode` | `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY` |
+| Muse (`muse`) | `muse exec --prompt-file {prompt_file} --worktree off --approval-mode never` | `~/.config/muse` | — |
+
+The flags were checked against each tool's `--help` on 2026-11-13 with these versions: Claude Code 2.1.322, Codex CLI 0.167.2, agy 1.5.8, opencode 2.2.7, Muse Code 1.4.14. A few flags are worth explaining:
+
+- opencode's `--standalone` keeps its server inside the sandbox; without it, opencode talks to a background service that runs outside the sandbox.
+- Muse's `--worktree off` stops Muse from making its own worktree, because ffwd already made one.
+
+Tools change their flags. If a preset breaks, set **Agent command** yourself; it always wins over the preset's. `preset_grants = false` drops the preset's folders and variables.
+
+## Per-repository settings
+
+Every `[agents]` setting can be set for one repository. Set **Settings → Agents → Applies to** to *This repository*: changes then go into that repository's own file and override the global value there. Rows the repository overrides carry a dot, and `Delete` returns a row to the global value. In *All repositories* the dot is dim and the hint says the repository overrides it. The agents panel's top line counts the overrides.
+
+The file is `<ffwd config folder>/repos/<name>-<hash>.toml`, in the same `[agents]` format as `settings.toml`. It can be edited by hand. Overrides are **never read from the repository itself**: a cloned repository must not be able to set a command, a script or the sandbox, because that would let any repository run code on your machine.
+
+Some uses:
+
+- Turn agents on for some repositories only (`enabled`).
+- Use another agent per project (`preset`, `command`).
+- Use a project's own `setup_script` and `after_script`.
+- Grant folders for one project only (`read_paths`, `write_paths`).
+- Give a long-running project a longer time limit.
 
 ## Settings
 
@@ -64,7 +114,9 @@ All settings live under `[agents]` in `settings.toml`. The most important ones a
 | Key | Default | Meaning |
 |---|---|---|
 | `enabled` | `false` | Turns the feature on. |
-| `command` | — | The agent's command line. See "Command templates" below. |
+| `preset` | `custom` | `claude`, `codex`, `antigravity` (or `agy`), `opencode`, `muse` or `custom`. See "Agents (presets)". |
+| `preset_grants` | `true` | Adds the preset's config folders and key variable names. |
+| `command` | the preset's | The agent's command line. See "Command templates" below. |
 | `prompt_stdin` | `false` | Also writes the prompt to the agent's standard input. |
 | `prompt_template` | `"{prompt}"` | Wraps your text, for example `"Work only in src/. Task: {prompt}"`. It may use `{prompt}`, `{branch}`, `{base}`, `{repo}` and `{worktree}`. |
 | `prompt_template_file` | — | A file whose text is the template (it wins over `prompt_template`). This is how you inject a standing context, rules or a checklist into every run. |
@@ -74,8 +126,8 @@ All settings live under `[agents]` in `settings.toml`. The most important ones a
 | `network` | `true` | Network inside the sandbox. Agents that call a hosted model need it. |
 | `git_access` | `"read"` | `read`: the agent edits files and ffwd commits them. `write`: the agent may commit (see the caveat above). |
 | `home_access` | `"private"` | `private`, `read` or `write`. |
-| `read_paths` | — | Extra folders the agent may read. |
-| `write_paths` | — | Extra folders the agent may write. |
+| `read_paths` | — | Extra folders the agent may read. `~/…` is the home where the agent runs. |
+| `write_paths` | — | Extra folders the agent may write. `~/…` as above. |
 | `env_pass` | a short list | Host variables passed through by name (`PATH`, `HOME`, `LANG`, `TEMP`, …). Secrets are passed only if you name them here. |
 | `env_inherit` | `false` | Passes the whole host environment (`none` and `custom` only). |
 | `env` | — | Extra variables, `KEY=value|KEY2=value`. The values never appear on a command line. |
@@ -130,6 +182,8 @@ on_done_script = "notify-send \"ffwd\" \"$FFWD_AGENT_TITLE: $FFWD_AGENT_STATUS\"
 ```
 
 ## Not yet
+
+Pair Desk tracks these: FF-27 (checking real runs in each sandbox) and FF-28 (the gaps and ideas below).
 
 - Native sandboxes on Windows (AppContainer or a restricted token) are not there yet; Windows uses WSL.
 - Network filtering per host, beyond on and off.

@@ -35,6 +35,8 @@ pub enum Msg {
     OpDone(ffwd_core::ops::Outcome),
     /// An agent run's progress (experimental agents).
     Agent(ffwd_agent::Event),
+    /// A repository's own settings file, read on a worker.
+    RepoSettings(PathBuf, crate::settings::Settings),
 }
 
 /// Runs a fetch, pull or push on a worker, reporting progress and the outcome.

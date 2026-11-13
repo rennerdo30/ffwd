@@ -91,6 +91,10 @@ pub enum GitAccess {
 #[derive(Clone, Debug)]
 pub struct Config {
     pub enabled: bool,
+    /// A built-in tool (`agents.preset`): its command and its grants.
+    pub preset: Option<&'static crate::presets::Preset>,
+    /// Add the preset's config folders and key variables (default on).
+    pub preset_grants: bool,
     /// The agent's command line. Placeholders: `{prompt}`, `{prompt_file}`,
     /// `{worktree}`, `{branch}`, `{base}`, `{repo}`, `{run_id}`.
     pub command: String,
@@ -108,7 +112,8 @@ pub struct Config {
     pub network: bool,
     pub git_access: GitAccess,
     pub home_access: HomeAccess,
-    /// Extra folders the agent may read.
+    /// Extra folders the agent may read. `~/…` is the home of wherever
+    /// the agent runs (inside WSL: the Linux home).
     pub read_paths: Vec<PathBuf>,
     /// Extra folders the agent may write (for example its own config).
     pub write_paths: Vec<PathBuf>,
@@ -242,10 +247,42 @@ impl Config {
                 _ => errors.push(format!("agents.env: \"{item}\" is not KEY=value")),
             }
         }
-        let paths = |k: &str| split_list(&get(k).unwrap_or_default(), ';').into_iter().map(PathBuf::from).collect();
+        let paths = |k: &str| -> Vec<PathBuf> {
+            split_list(&get(k).unwrap_or_default(), ';').into_iter().map(PathBuf::from).collect()
+        };
+        let preset = match get("preset").map(|s| s.trim().to_ascii_lowercase()) {
+            None => None,
+            Some(s) if s.is_empty() || s == "custom" || s == "none" => None,
+            Some(s) => {
+                let p = crate::presets::find(&s);
+                if p.is_none() {
+                    errors.push(format!(
+                        "agents.preset: \"{s}\" is unknown (custom, claude, codex, antigravity, opencode, muse)"
+                    ));
+                }
+                p
+            }
+        };
+        let preset_grants = flag(get("preset_grants"), true, "preset_grants", &mut errors);
+        let mut write_paths = paths("write_paths");
+        let mut env_pass = split_list(&text("env_pass", DEFAULT_ENV_PASS), ';');
+        if let (Some(p), true) = (preset, preset_grants) {
+            for h in p.home_write {
+                if !write_paths.iter().any(|w| w == &PathBuf::from(h)) {
+                    write_paths.push(PathBuf::from(h));
+                }
+            }
+            for e in p.env_pass {
+                if !env_pass.iter().any(|x| x == e) {
+                    env_pass.push(e.to_string());
+                }
+            }
+        }
         let c = Config {
             enabled: flag(get("enabled"), false, "enabled", &mut errors),
-            command: text("command", ""),
+            preset,
+            preset_grants,
+            command: text("command", preset.map_or("", |p| p.command)),
             prompt_stdin: flag(get("prompt_stdin"), false, "prompt_stdin", &mut errors),
             prompt_template: text("prompt_template", "{prompt}"),
             prompt_template_file: get("prompt_template_file").filter(|s| !s.trim().is_empty()).map(PathBuf::from),
@@ -256,8 +293,8 @@ impl Config {
             git_access,
             home_access,
             read_paths: paths("read_paths"),
-            write_paths: paths("write_paths"),
-            env_pass: split_list(&text("env_pass", DEFAULT_ENV_PASS), ';'),
+            write_paths,
+            env_pass,
             env_inherit: flag(get("env_inherit"), false, "env_inherit", &mut errors),
             env,
             worktree_root: get("worktree_root").filter(|s| !s.trim().is_empty()).map(|s| PathBuf::from(s.trim())),
@@ -322,14 +359,32 @@ impl Config {
         None
     }
 
+    /// Where the agent runs, for the agents panel: the Windows tools are
+    /// not the ones inside WSL.
+    pub fn place(&self) -> String {
+        match self.sandbox.resolve() {
+            SandboxKind::Wsl if self.wsl_distro.is_empty() => "inside WSL (default distribution)".into(),
+            SandboxKind::Wsl => format!("inside WSL ({})", self.wsl_distro),
+            SandboxKind::Custom => "through your wrapper".into(),
+            _ if cfg!(windows) => "on Windows".into(),
+            _ if cfg!(target_os = "macos") => "on macOS".into(),
+            _ => "on Linux".into(),
+        }
+    }
+
     /// One line describing the isolation, for the agents panel.
     pub fn summary(&self) -> String {
         let kind = self.sandbox.resolve();
+        let tool = self.preset.map_or_else(String::new, |p| format!("{} ", p.name));
         if kind == SandboxKind::None {
-            return "Not sandboxed: the agent can read and change everything your user can".into();
+            return format!(
+                "{tool}runs {}, not sandboxed: it can read and change everything your user can",
+                self.place()
+            );
         }
         format!(
-            "Sandbox: {} · network {} · Git {} · {} min limit",
+            "{tool}runs {} · sandbox: {} · network {} · Git {} · {} min limit",
+            self.place(),
             kind.label(),
             if self.network { "on" } else { "off" },
             match self.git_access {

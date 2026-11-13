@@ -15,7 +15,9 @@ enum Row {
     OpenFile,
     CheckUpdates,
     // Agents page (experimental).
+    Scope,
     AgentsOn,
+    Preset,
     AgentCommand,
     Sandbox,
     AllowUnsandboxed,
@@ -43,7 +45,9 @@ const GENERAL: &[Row] = &[
 ];
 
 const AGENT_ROWS: &[Row] = &[
+    Row::Scope,
     Row::AgentsOn,
+    Row::Preset,
     Row::AgentCommand,
     Row::Sandbox,
     Row::AllowUnsandboxed,
@@ -73,7 +77,9 @@ impl Row {
             Row::AiModel => "AI model",
             Row::OpenFile => "Settings file",
             Row::CheckUpdates => "Updates",
+            Row::Scope => "Applies to",
             Row::AgentsOn => "Agents",
+            Row::Preset => "Agent",
             Row::AgentCommand => "Agent command",
             Row::Sandbox => "Sandbox",
             Row::AllowUnsandboxed => "Allow no sandbox",
@@ -100,7 +106,9 @@ impl Row {
             Row::AiModel => "Model name the endpoint expects",
             Row::OpenFile => "Every setting, as text",
             Row::CheckUpdates => "",
+            Row::Scope => "Every repository, or only this one (its overrides)",
             Row::AgentsOn => "Coding agents in their own worktree and sandbox",
+            Row::Preset => "Built-in command and grants; Custom uses your command",
             Row::AgentCommand => "{prompt} {prompt_file} {worktree} {branch}, one argument each",
             Row::Sandbox => "Auto: bwrap (Linux), WSL (Windows), macOS sandbox",
             Row::AllowUnsandboxed => "Sandbox None: the agent has all your permissions",
@@ -133,6 +141,20 @@ impl Row {
         }
     }
 
+    /// The `agents.*` key a row shows (text and choice rows).
+    fn agent_key(self) -> Option<&'static str> {
+        Some(match self {
+            Row::AgentsOn => "agents.enabled",
+            Row::Preset => "agents.preset",
+            Row::Sandbox => "agents.sandbox",
+            Row::AllowUnsandboxed => "agents.allow_unsandboxed",
+            Row::Network => "agents.network",
+            Row::GitAccess => "agents.git_access",
+            Row::HomeAccess => "agents.home_access",
+            r => return r.key().filter(|k| k.starts_with("agents.")),
+        })
+    }
+
     fn placeholder(self) -> &'static str {
         match self {
             Row::Roots => "Folders next to the open repositories",
@@ -151,7 +173,9 @@ impl Row {
             Row::Layout => &["Below the history", "Beside the history"],
             Row::Updates => &["On", "Off"],
             Row::Channel => &["Automatic", "Stable", "Beta"],
+            Row::Scope => &["All repositories", "This repository"],
             Row::AgentsOn => &["Off", "On (experimental)"],
+            Row::Preset => &["Custom", "Claude", "Codex", "agy", "opencode", "Muse"],
             Row::Sandbox => &["Auto", "bwrap", "WSL", "macOS", "Custom", "None"],
             Row::AllowUnsandboxed => &["No", "Yes"],
             Row::Network => &["On", "Off"],
@@ -175,6 +199,8 @@ pub struct SettingsView {
     page_hits: Vec<(usize, Rect)>,
 }
 
+const PRESET_IDS: [&str; 6] = ["custom", "claude", "codex", "antigravity", "opencode", "muse"];
+
 const PAGE_AGENTS: usize = 1;
 
 impl Ui {
@@ -195,6 +221,7 @@ impl Ui {
             hits: Vec::new(),
             page_hits: Vec::new(),
         });
+        self.agent_scope_repo = false;
         let r = self.settings_rect();
         self.damage.rects.push(r);
     }
@@ -239,6 +266,9 @@ impl Ui {
         self.commit_edit();
         if let Some(v) = &mut self.settings_view {
             v.page = page % PAGES.len();
+            if v.page != PAGE_AGENTS {
+                self.agent_scope_repo = false;
+            }
             v.sel = 0;
             v.scroll = 0;
             v.edit = None;
@@ -247,8 +277,43 @@ impl Ui {
         self.damage.rects.push(r);
     }
 
+    /// Editing this repository's overrides (Agents page, "This repository").
+    fn repo_scope(&self) -> bool {
+        self.agent_scope_repo && !self.tabs.is_empty()
+    }
+
+    /// A value as the settings view shows it: agent keys in repository
+    /// scope come from the repository's overrides, then the global value.
+    fn sget(&self, key: &str) -> Option<&str> {
+        if key.starts_with("agents.")
+            && self.repo_scope()
+            && let Some(v) = self.current_repo_settings().and_then(|r| r.get(key))
+        {
+            return Some(v);
+        }
+        self.settings.get(key)
+    }
+
+    /// Saves a value: in repository scope, agent keys become overrides of
+    /// this repository; everything else is global.
+    fn sset(&mut self, key: &str, value: &str) {
+        if key.starts_with("agents.")
+            && self.repo_scope()
+            && let Some(r) = self.current_repo_settings_mut()
+        {
+            r.set_string(key, value);
+            return;
+        }
+        self.settings.set_string(key, value);
+    }
+
+    /// Does this repository override the row's value?
+    fn overridden(&self, row: Row) -> bool {
+        row.agent_key().is_some_and(|k| self.current_repo_settings().is_some_and(|r| r.get(k).is_some()))
+    }
+
     fn flag_now(&self, key: &str, default: bool) -> bool {
-        match self.settings.get(key) {
+        match self.sget(key) {
             Some("true" | "on" | "yes" | "1") => true,
             Some("false" | "off" | "no" | "0") => false,
             _ => default,
@@ -258,15 +323,21 @@ impl Ui {
     fn choice_now(&self, row: Row) -> usize {
         match row {
             Row::Layout => (self.layout == DetailsLayout::Beside) as usize,
-            Row::Updates => (self.settings.get("update.check") == Some("false")) as usize,
-            Row::Channel => match self.settings.get("update.channel") {
+            Row::Updates => (self.sget("update.check") == Some("false")) as usize,
+            Row::Channel => match self.sget("update.channel") {
                 Some("stable") => 1,
                 Some("beta") => 2,
                 _ => 0,
             },
+            Row::Scope => self.repo_scope() as usize,
             Row::AgentsOn => self.flag_now("agents.enabled", false) as usize,
+            Row::Preset => {
+                let v = self.sget("agents.preset").unwrap_or("custom").to_ascii_lowercase();
+                let v = if v == "agy" { "antigravity".to_string() } else { v };
+                PRESET_IDS.iter().position(|p| *p == v).unwrap_or(0)
+            }
             Row::Sandbox => {
-                let k = self.settings.get("agents.sandbox").and_then(ffwd_agent::SandboxKind::parse);
+                let k = self.sget("agents.sandbox").and_then(ffwd_agent::SandboxKind::parse);
                 ["auto", "bwrap", "wsl", "macos", "custom", "none"]
                     .iter()
                     .position(|s| Some(*s) == k.map(|k| k.as_setting()))
@@ -274,8 +345,8 @@ impl Ui {
             }
             Row::AllowUnsandboxed => self.flag_now("agents.allow_unsandboxed", false) as usize,
             Row::Network => !self.flag_now("agents.network", true) as usize,
-            Row::GitAccess => (self.settings.get("agents.git_access") == Some("write")) as usize,
-            Row::HomeAccess => match self.settings.get("agents.home_access") {
+            Row::GitAccess => (self.sget("agents.git_access") == Some("write")) as usize,
+            Row::HomeAccess => match self.sget("agents.home_access") {
                 Some("read") => 1,
                 Some("write") => 2,
                 _ => 0,
@@ -287,25 +358,29 @@ impl Ui {
     fn set_choice(&mut self, row: Row, i: usize) {
         match row {
             Row::Layout => self.set_layout(if i == 1 { DetailsLayout::Beside } else { DetailsLayout::Below }),
-            Row::Updates => self.settings.set_string("update.check", if i == 1 { "false" } else { "true" }),
-            Row::Channel => self.settings.set_string("update.channel", ["auto", "stable", "beta"][i.min(2)]),
+            Row::Updates => self.sset("update.check", if i == 1 { "false" } else { "true" }),
+            Row::Channel => self.sset("update.channel", ["auto", "stable", "beta"][i.min(2)]),
+            Row::Scope => {
+                let has_tab = !self.tabs.is_empty();
+                self.agent_scope_repo = i == 1 && has_tab;
+                if i == 1 && !has_tab {
+                    self.set_notice("Open a repository first: its overrides belong to it.".into());
+                }
+            }
+            Row::Preset => self.sset("agents.preset", PRESET_IDS[i.min(5)]),
             Row::AgentsOn => {
-                self.settings.set_string("agents.enabled", if i == 1 { "true" } else { "false" });
+                self.sset("agents.enabled", if i == 1 { "true" } else { "false" });
                 if i == 1 {
                     // Runs recorded earlier show up again.
                     self.agents_loaded.clear();
                     self.load_agent_runs();
                 }
             }
-            Row::Sandbox => self
-                .settings
-                .set_string("agents.sandbox", ["auto", "bwrap", "wsl", "macos", "custom", "none"][i.min(5)]),
-            Row::AllowUnsandboxed => {
-                self.settings.set_string("agents.allow_unsandboxed", if i == 1 { "true" } else { "false" })
-            }
-            Row::Network => self.settings.set_string("agents.network", if i == 1 { "false" } else { "true" }),
-            Row::GitAccess => self.settings.set_string("agents.git_access", if i == 1 { "write" } else { "read" }),
-            Row::HomeAccess => self.settings.set_string("agents.home_access", ["private", "read", "write"][i.min(2)]),
+            Row::Sandbox => self.sset("agents.sandbox", ["auto", "bwrap", "wsl", "macos", "custom", "none"][i.min(5)]),
+            Row::AllowUnsandboxed => self.sset("agents.allow_unsandboxed", if i == 1 { "true" } else { "false" }),
+            Row::Network => self.sset("agents.network", if i == 1 { "false" } else { "true" }),
+            Row::GitAccess => self.sset("agents.git_access", if i == 1 { "write" } else { "read" }),
+            Row::HomeAccess => self.sset("agents.home_access", ["private", "read", "write"][i.min(2)]),
             _ => {}
         }
         let r = self.settings_rect();
@@ -321,7 +396,7 @@ impl Ui {
                 self.request_update_check();
             }
             r if r.key().is_some() => {
-                let cur = self.settings.get(r.key().unwrap_or_default()).unwrap_or("").to_string();
+                let cur = self.sget(r.key().unwrap_or_default()).unwrap_or("").to_string();
                 if let Some(v) = &mut self.settings_view {
                     v.edit = Some((i, TextField::new(&cur)));
                 }
@@ -343,7 +418,7 @@ impl Ui {
             && let Some(key) = rows.get(i).and_then(|r| r.key())
         {
             let text = f.text().trim().to_string();
-            self.settings.set_string(key, &text);
+            self.sset(key, &text);
             if key == "repos.roots" {
                 self.scan_repos();
             }
@@ -388,6 +463,13 @@ impl Ui {
             }
             Key::Up | Key::BackTab => v.sel = sel.saturating_sub(1),
             Key::Down | Key::Tab => v.sel = (sel + 1).min(rows.len() - 1),
+            Key::Delete if self.agent_scope_repo && v.page == PAGE_AGENTS => {
+                if let Some(k) = rows[sel].agent_key()
+                    && let Some(r) = self.current_repo_settings_mut()
+                {
+                    r.remove(k);
+                }
+            }
             Key::PageUp | Key::Home => v.sel = 0,
             Key::PageDown | Key::End => v.sel = rows.len() - 1,
             Key::Enter | Key::Char(' ') => self.settings_act(sel),
@@ -511,6 +593,13 @@ impl Ui {
                 cv.fill_round(rr, self.pf(8.0), BG_SELECT_DIM);
             }
             let cy = y as f32 + rh as f32 / 2.0 - self.pf(2.0);
+            // This repository overrides the row: accent in its scope, dim
+            // in the global one (where the global value does not apply to it).
+            let over = view.page == PAGE_AGENTS && self.overridden(*row);
+            if over {
+                let c = if self.repo_scope() { ACCENT } else { TEXT_4 };
+                cv.fill_circle(x0 - self.pf(10.0), cy - self.pf(6.5), self.pf(3.0), c);
+            }
             self.te.draw(
                 cv,
                 semi,
@@ -521,13 +610,22 @@ impl Ui {
                 TEXT,
                 (ctrl_x - r.x) as f32 - pad,
             );
+            let repo_name = self.r.repo_name.clone();
+            let hint = match *row {
+                Row::Scope if self.repo_scope() => {
+                    format!("Overrides for {repo_name} (marked); Delete resets a row")
+                }
+                Row::Scope => "Values for every repository without its own".to_string(),
+                _ if over && !self.repo_scope() => format!("{repo_name} overrides this"),
+                r => r.hint().to_string(),
+            };
             self.te.draw(
                 cv,
                 ui,
                 self.pf(11.5),
                 x0,
                 cy + self.pf(14.0),
-                row.hint(),
+                &hint,
                 TEXT_3,
                 (ctrl_x - r.x) as f32 - pad - self.pf(8.0),
             );
@@ -575,9 +673,17 @@ impl Ui {
                             );
                         }
                         None => {
-                            let v = self.settings.get(r2.key().unwrap_or_default()).unwrap_or("").to_string();
+                            let v = self.sget(r2.key().unwrap_or_default()).unwrap_or("").to_string();
+                            // The preset's command is what runs while this is empty.
+                            let preset = (r2 == Row::AgentCommand)
+                                .then(|| self.sget("agents.preset").and_then(ffwd_agent::presets::find))
+                                .flatten();
+                            let ph = match preset {
+                                Some(p) => format!("{} preset: {}", p.name, p.command),
+                                None => r2.placeholder().to_string(),
+                            };
                             if v.is_empty() {
-                                self.te.draw(cv, ui, self.pf(12.5), tx, base, r2.placeholder(), TEXT_4, maxw);
+                                self.te.draw(cv, ui, self.pf(12.5), tx, base, &ph, TEXT_4, maxw);
                             } else {
                                 self.te.draw(cv, ui, self.pf(12.5), tx, base, &v, TEXT, maxw);
                             }

@@ -11,6 +11,7 @@
 //! `docs/AGENTS-EXPERIMENTAL.md`.
 
 pub mod config;
+pub mod presets;
 pub mod proc;
 pub mod record;
 pub mod run;

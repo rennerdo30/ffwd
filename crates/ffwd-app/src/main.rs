@@ -48,6 +48,8 @@ pub struct Args {
     pub settings_page: Option<usize>,
     /// Snapshot with the agents panel open, showing example runs.
     pub agents_demo: bool,
+    /// Snapshot of Settings → Agents for one repository (example values).
+    pub scope_demo: bool,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -67,6 +69,7 @@ fn parse_args() -> Result<Args, String> {
         side: None,
         settings_page: None,
         agents_demo: false,
+        scope_demo: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -99,6 +102,7 @@ fn parse_args() -> Result<Args, String> {
             "--settings" => a.settings = true,
             "--settings-page" => a.settings_page = Some(val("--settings-page")?.parse().map_err(|_| "bad page")?),
             "--agents-demo" => a.agents_demo = true,
+            "--settings-scope-demo" => a.scope_demo = true,
             "--side" => a.side = Some(val("--side")?),
             "--picker" => a.picker = Some(val("--picker")?),
             "--tab" => a.tabs.push(PathBuf::from(val("--tab")?)),
