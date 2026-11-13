@@ -135,6 +135,15 @@ The capture above is the real PoC UI. `ffwd --snapshot` rendered it offscreen fr
 - **Use this message** (or `Enter`) puts the subject and body into the message box to edit; nothing is committed automatically. **Try again** builds a fresh request; `Esc` closes.
 - **Transport:** `http://` uses ffwd's own small client; `https://` uses the system `curl`, configured on stdin so the key is never on a command line. All of it runs on workers.
 
+## Repositories and tabs (FF-44)
+
+- **Clone:** the palette's "Clone repository…". First the URL, then the folder, suggested as the first `repos.roots` folder (else next to the current repository) plus the name Git would pick.
+  - Progress shows in the status bar, and "Cancel the running clone" stops it.
+  - A failed or cancelled clone removes only the folder it created.
+  - The clone opens in a new tab.
+- **New repository:** "Create a new repository…" with a suggested folder. The folder is created when missing; an existing repository there is just opened.
+- **Tab menu** (right click a tab): Close, Close other tabs, Show in Explorer/Finder (or Open the folder), Open in terminal (Windows Terminal, else a console; Terminal on macOS; the desktop's terminal on Linux), Copy path. A middle click closes a tab.
+
 ## Stashes (FF-38)
 
 - **Save:** `Ctrl+Shift+S` (or the palette's "Stash changes") opens a dialog with an optional message. Untracked files are included by default; `Tab` toggles that.

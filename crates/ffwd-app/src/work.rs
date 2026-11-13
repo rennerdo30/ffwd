@@ -94,6 +94,10 @@ pub enum Msg {
         seq: u64,
         result: Result<String, String>,
     },
+    /// A clone's latest progress line (app-wide, FF-44).
+    CloneProgress(String),
+    /// A clone or a new repository is ready (its folder), or why not.
+    RepoReady(Result<PathBuf, String>),
     /// A branch, tag or history operation ended.
     RefOp(Result<String, ffwd_core::refops::OpError>),
     /// What a discard removed (for Ctrl+Z).

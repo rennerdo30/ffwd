@@ -17,6 +17,7 @@
   - double-click checkout; `Ctrl+B` and `Ctrl+Shift+G`.
 - **Interactive rebase** (FF-37): a plan view to pick, reword, squash, fixup, drop and reorder commits (`Ctrl+Shift+R`); no editor ever opens, a backup ref keeps the old tip, and conflicts stop in Local Changes.
 - **AI commit messages** (FF-50): **AI draft** in Local Changes, against any OpenAI-compatible endpoint (local servers such as Ollama first). It shows exactly what will be sent and where before anything leaves, never sends secret-looking files, streams the reply, and only fills the message box. Off until an endpoint is set.
+- **Repositories and tabs** (FF-44): clone with progress and cancel, create a new repository, and a tab menu (close others, open in the file manager or a terminal, copy path).
 - **Submodules** (FF-45, FF-54):
   - a sidebar section with each submodule's state; open one in a new tab; update one or all; add;
   - **move a submodule** to another folder (refuses while it has unsaved work);

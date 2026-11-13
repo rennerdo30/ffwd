@@ -193,13 +193,13 @@
 
 | Feature | ffwd | Notes |
 |---|---|---|
-| Tabs: close with middle click, restore closed (`Ctrl+Shift+T`), rename, colour, open in terminal or file manager | Partial | Close and restore are built |
+| Tabs: close with middle click, restore closed (`Ctrl+Shift+T`), rename, colour, open in terminal or file manager | Partial | Close (also middle click), restore, a tab menu with close others, open in the file manager or a terminal, copy path are built; rename and colour come later |
 | Vertical tabs | M2 | |
 | Repository manager: folders and subfolders, recent, rename, colour tags, rearrange | Partial | The picker and recent list are built |
 | Several source-code folders; new repositories found automatically | Partial | `repos.roots` |
 | Workspaces (groups of tabs; per window on Mac), switch from Quick Launch | M2 | |
-| Clone, init, add an existing repository; clone from a URL | M1 | |
-| Repository settings (shared between worktrees); copy the repository path | M1 | |
+| Clone, init, add an existing repository; clone from a URL | **Built** | Clone with progress and cancel (a failed clone removes only its own folder), create a new repository, open an existing one (`Ctrl+O`) |
+| Repository settings (shared between worktrees); copy the repository path | Partial | Per-repository settings and Copy path (tab menu) are built; sharing between worktrees comes later |
 | Repository manager shows the README as Markdown and the remote details | M3 | |
 | Command line tool (open a repository, a file's log), URL handlers | M1 | `ffwd <path>` works |
 

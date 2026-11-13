@@ -286,6 +286,9 @@ const CMD_PICK: &str = "Cherry-pick this commit";
 const CMD_REVERT: &str = "Revert this commit";
 const CMD_STASH: &str = "Stash changes";
 const CMD_AI_COMMIT: &str = "AI: Draft a commit message";
+const CMD_CLONE: &str = "Clone repository…";
+const CMD_INIT: &str = "Create a new repository…";
+const CMD_CANCEL_CLONE: &str = "Cancel the running clone";
 const CMD_ADD_SUBMODULE: &str = "Add submodule…";
 const CMD_ACTIVITY: &str = "Activity log";
 const CMD_REBASE_I: &str = "Interactive rebase from here";
@@ -312,6 +315,9 @@ const WORKING: &[&str] = &[
     CMD_REVERT,
     CMD_STASH,
     CMD_AI_COMMIT,
+    CMD_CLONE,
+    CMD_INIT,
+    CMD_CANCEL_CLONE,
     CMD_ADD_SUBMODULE,
     CMD_ACTIVITY,
     CMD_REBASE_I,
@@ -350,6 +356,9 @@ const COMMANDS: &[(&str, &str)] = &[
     (CMD_REBASE_I, "Ctrl Shift R"),
     (CMD_STASH, "Ctrl Shift S"),
     (CMD_AI_COMMIT, ""),
+    (CMD_CLONE, ""),
+    (CMD_INIT, ""),
+    (CMD_CANCEL_CLONE, ""),
     (CMD_ADD_SUBMODULE, ""),
     (CMD_ACTIVITY, ""),
     (CMD_ADD_REMOTE, ""),
@@ -479,6 +488,8 @@ pub struct Ui {
     /// Experimental agent runs of every tab, and the panel when open.
     agents: Vec<AgentRun>,
     agent_view: Option<AgentView>,
+    /// Set to cancel the running clone (FF-44).
+    clone_cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
     /// The activity log (FF-48), across tabs.
     activity: activity_view::Activity,
     agents_loaded: HashSet<String>,
@@ -590,6 +601,7 @@ impl Ui {
             settings_view: None,
             agents: Vec::new(),
             agent_view: None,
+            clone_cancel: None,
             activity: Default::default(),
             agents_loaded: HashSet::new(),
             repo_settings: HashMap::new(),
@@ -859,6 +871,13 @@ impl Ui {
         }
         if let Msg::RepoSettings(p, s) = m {
             return self.on_repo_settings(p, s);
+        }
+        // Clones and new repositories belong to no tab.
+        if let Msg::CloneProgress(line) = m {
+            return self.set_notice(format!("Cloning… {line} (the palette cancels it)"));
+        }
+        if let Msg::RepoReady(r) = m {
+            return self.on_repo_ready(r);
         }
         // The activity log is app-wide: background tabs log at once.
         if let Msg::Activity(e) = m {
@@ -1227,6 +1246,7 @@ impl Ui {
             Msg::AiPrepared { seq, result } => self.on_ai_prepared(seq, result),
             Msg::AiToken { seq, text } => self.on_ai_token(seq, text),
             Msg::AiDone { seq, result } => self.on_ai_done(seq, result),
+            Msg::CloneProgress(_) | Msg::RepoReady(_) => {}
             Msg::RebasePlan(r) => self.on_rebase_plan(r),
             Msg::FilesTree(r) => self.on_files_tree(r),
             Msg::FileContent { seq, result } => self.on_file_content(seq, result),
@@ -1890,6 +1910,59 @@ impl Ui {
         self.on_activity(e);
     }
 
+    /// Where new clones and repositories go: the first repository root,
+    /// else the current repository's parent folder, else the home folder.
+    pub(super) fn default_repo_folder(&self) -> PathBuf {
+        let root = self
+            .settings
+            .get("repos.roots")
+            .and_then(|s| s.split(';').map(str::trim).find(|x| !x.is_empty()).map(PathBuf::from));
+        root.or_else(|| self.tabs.get(self.cur_tab).and_then(|t| t.path.parent().map(Path::to_path_buf)))
+            .or_else(|| std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from))
+            .unwrap_or_default()
+    }
+
+    fn start_clone(&mut self, url: String, dest: PathBuf) {
+        if self.clone_cancel.is_some() {
+            return self.set_notice("A clone is already running (the palette cancels it).".into());
+        }
+        let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        self.clone_cancel = Some(cancel.clone());
+        self.set_notice(format!("Cloning {url}…"));
+        let sink = (self.sinks)(0);
+        crate::work::spawn("clone", &sink, move |sink| {
+            let s2 = sink.clone();
+            let r = ffwd_core::clone::clone(&url, &dest, &cancel, |l| s2(Msg::CloneProgress(l)));
+            sink(Msg::RepoReady(r));
+        });
+    }
+
+    fn start_init(&mut self, dir: PathBuf) {
+        let sink = (self.sinks)(0);
+        crate::work::spawn("init", &sink, move |sink| sink(Msg::RepoReady(ffwd_core::clone::init(&dir))));
+    }
+
+    fn on_repo_ready(&mut self, r: Result<PathBuf, String>) {
+        self.clone_cancel = None;
+        match r {
+            Ok(p) => {
+                self.set_notice(format!("Opened {}", p.display()));
+                self.open_tab(p);
+            }
+            Err(e) => self.set_notice(format!("Failed: {e}")),
+        }
+    }
+
+    /// Closes every tab but `keep`.
+    pub(super) fn close_other_tabs(&mut self, keep: usize) {
+        let n = self.tabs.len();
+        for i in (0..n).rev() {
+            if i != keep {
+                self.close_tab(i);
+            }
+        }
+    }
+
     /// A command for the selected commit (palette or shortcut).
     fn selected_commit_command(&mut self, c: &str) {
         let Some(sha) = self.r.commits.get(self.r.sel).map(|c| c.id.to_string()) else {
@@ -1927,6 +2000,26 @@ impl Ui {
             CMD_BRANCH | CMD_TAG | CMD_PICK | CMD_REVERT => self.selected_commit_command(c),
             CMD_STASH => self.open_stash_dialog(),
             CMD_AI_COMMIT => self.ai_draft(),
+            CMD_CLONE => self.open_dialog(DialogKind::Name {
+                act: NameAct::CloneUrl,
+                field: TextField::default(),
+                checkout: false,
+            }),
+            CMD_INIT => {
+                let dir = self.default_repo_folder().join("new-repository");
+                self.open_dialog(DialogKind::Name {
+                    act: NameAct::InitDir,
+                    field: TextField::new(&dir.to_string_lossy()),
+                    checkout: false,
+                })
+            }
+            CMD_CANCEL_CLONE => match &self.clone_cancel {
+                Some(c) => {
+                    c.store(true, std::sync::atomic::Ordering::Relaxed);
+                    self.set_notice("Cancelling the clone…".into());
+                }
+                None => self.set_notice("No clone is running.".into()),
+            },
             CMD_ADD_SUBMODULE => self.open_dialog(DialogKind::Name {
                 act: NameAct::AddSubmoduleUrl,
                 field: TextField::default(),
@@ -2325,7 +2418,7 @@ impl Ui {
         Rect::new(t.right() - s - self.px(6.0), t.y + (t.h - s) / 2, s, s)
     }
 
-    fn tab_at(&self, x: i32, y: i32) -> Option<usize> {
+    pub(super) fn tab_at(&self, x: i32, y: i32) -> Option<usize> {
         if !self.lay.tabs.contains(x, y) {
             return None;
         }
@@ -4515,6 +4608,95 @@ mod tests {
         assert_eq!(ui.r.changes.desc.text(), "So the app says hello.");
         assert_partial_paint_is_full(&mut ui, &mut screen, "use the message");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Repositories (FF-44): clone from the palette (URL, then a suggested
+    /// folder under the first root), create a new repository, and the tab
+    /// menu (its file manager and terminal entries are listed, not run).
+    #[test]
+    fn clone_init_and_tab_menu() {
+        use std::sync::mpsc;
+        let mut te = TextEngine::new();
+        let Some(f) = load_fonts(&mut te) else { return };
+        let base = std::env::temp_dir().join(format!("ffwd-ui-repos-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let src = base.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        let g = Git { root: src.clone() };
+        for a in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.name", "ffwd test"],
+            &["config", "user.email", "test@example.invalid"],
+            &["config", "commit.gpgsign", "false"],
+        ] {
+            g.output(a).unwrap();
+        }
+        std::fs::write(src.join("a.txt"), "a").unwrap();
+        g.output(&["add", "."]).unwrap();
+        g.output(&["commit", "-q", "-m", "first"]).unwrap();
+        let (tx, rx) = mpsc::channel::<(u64, Msg)>();
+        let tx = Arc::new(std::sync::Mutex::new(tx));
+        let sinks: SinkFactory = Arc::new(move |id| {
+            let tx = tx.clone();
+            Arc::new(move |m| {
+                if let Ok(t) = tx.lock() {
+                    let _ = t.send((id, m));
+                }
+            })
+        });
+        crate::work::start(src.clone(), &sinks(1));
+        let mut settings = crate::settings::Settings::parse("");
+        settings.set_string("repos.roots", &base.join("work").to_string_lossy());
+        let empty = crate::settings::Settings::parse("");
+        let mut ui = Ui::new(te, f, settings, empty, Some((1, src.clone())), sinks, 1280, 800, 1.0);
+        let pump = |ui: &mut Ui, what: &str, done: &dyn Fn(&Ui) -> bool| {
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while !done(ui) {
+                let left = until.saturating_duration_since(std::time::Instant::now());
+                assert!(!left.is_zero(), "timed out waiting for {what}; notice: {:?}", ui.notice);
+                if let Ok((id, m)) = rx.recv_timeout(left) {
+                    ui.on_tab_msg(id, m);
+                }
+            }
+        };
+        pump(&mut ui, "history", &|u| u.r.log_done);
+        // Clone: URL, then the folder under the first root.
+        ui.run_command(CMD_CLONE);
+        for c in src.to_string_lossy().replace('\\', "/").chars() {
+            ui.key(Key::Char(c));
+        }
+        ui.key(Key::Enter);
+        let dest = match &ui.dialog.as_ref().unwrap().kind {
+            DialogKind::Name { act: NameAct::CloneDest { .. }, field, .. } => PathBuf::from(field.text()),
+            _ => panic!("the folder step follows the URL"),
+        };
+        assert_eq!(dest, base.join("work").join("src"));
+        ui.key(Key::Enter);
+        pump(&mut ui, "the clone", &|u| u.tabs.len() == 2);
+        assert!(dest.join("a.txt").exists());
+        // A new repository.
+        ui.run_command(CMD_INIT);
+        let dir = match &ui.dialog.as_ref().unwrap().kind {
+            DialogKind::Name { act: NameAct::InitDir, field, .. } => PathBuf::from(field.text()),
+            _ => panic!("the init dialog"),
+        };
+        assert_eq!(dir, base.join("work").join("new-repository"));
+        ui.key(Key::Enter);
+        pump(&mut ui, "the new repository", &|u| u.tabs.len() == 3);
+        assert!(dir.join(".git").exists());
+        // The tab menu; "Close other tabs" keeps the first.
+        let labels: Vec<String> = ui.tab_menu(0).iter().map(|i| i.label.clone()).collect();
+        assert!(
+            labels.iter().any(|l| l == "Open in terminal") && labels.iter().any(|l| l == "Copy path"),
+            "{labels:?}"
+        );
+        let items = ui.tab_menu(0);
+        let k = items.iter().position(|i| i.label == "Close other tabs").unwrap();
+        ui.open_menu(100, 60, items);
+        ui.menu_activate(k);
+        assert_eq!(ui.tabs.len(), 1);
+        assert!(same_path(&ui.tabs[0].path, &src));
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     /// The find bar from the keyboard: message search selects the match,

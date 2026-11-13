@@ -19,6 +19,11 @@ pub enum MenuAct {
     RebaseFrom(String),
     /// Open a submodule (by name) in a new tab.
     OpenSubmodule(String),
+    /// Tab actions (FF-44).
+    CloseTab(usize),
+    CloseOtherTabs(usize),
+    OpenFolder(PathBuf),
+    OpenTerminal(PathBuf),
 }
 
 #[derive(Clone, Debug)]
@@ -74,6 +79,13 @@ pub enum NameAct {
     MoveSubmodule {
         path: String,
     },
+    /// Clone: the URL, then the folder.
+    CloneUrl,
+    CloneDest {
+        url: String,
+    },
+    /// A new repository in this folder.
+    InitDir,
 }
 
 /// A choice dialog: a title, what will happen, and buttons.
@@ -390,11 +402,15 @@ impl Ui {
         v
     }
 
-    fn menu_activate(&mut self, i: usize) {
+    pub(super) fn menu_activate(&mut self, i: usize) {
         let act = self.menu.as_ref().and_then(|m| m.items.get(i)).and_then(|it| it.act.clone());
         self.close_menu();
         match act {
             Some(MenuAct::Run(op)) => self.run_refop(op),
+            Some(MenuAct::CloseTab(i)) => self.close_tab(i),
+            Some(MenuAct::CloseOtherTabs(i)) => self.close_other_tabs(i),
+            Some(MenuAct::OpenFolder(p)) => crate::platform::open_folder(p),
+            Some(MenuAct::OpenTerminal(p)) => crate::platform::open_terminal(p),
             Some(MenuAct::RebaseFrom(sha)) => self.open_rebase(sha),
             Some(MenuAct::OpenSubmodule(name)) => self.open_submodule(&name),
             Some(MenuAct::Ask(a)) => self.open_dialog(DialogKind::Ask(*a)),
@@ -468,7 +484,12 @@ impl Ui {
             // The stash dialog has a line of text above its field.
             Some(DialogKind::Name {
                 act:
-                    NameAct::StashSave | NameAct::AddRemoteUrl | NameAct::AddSubmoduleUrl | NameAct::MoveSubmodule { .. },
+                    NameAct::StashSave
+                    | NameAct::AddRemoteUrl
+                    | NameAct::AddSubmoduleUrl
+                    | NameAct::MoveSubmodule { .. }
+                    | NameAct::CloneUrl
+                    | NameAct::InitDir,
                 ..
             }) => self.px(250.0),
             Some(DialogKind::Name { .. }) => self.px(210.0),
@@ -510,6 +531,33 @@ impl Ui {
             let (url, path) = (url.clone(), field.text().trim().to_string());
             return self.add_submodule(url, path);
         }
+        // Cloning asks for the URL, then the folder (suggested).
+        if let DialogKind::Name { act: NameAct::CloneUrl, field, .. } = &d.kind {
+            let url = field.text().trim().to_string();
+            if url.is_empty() {
+                d.error = Some("Type the URL first.".into());
+                let r = self.dialog_rect();
+                self.damage.rects.push(r);
+                return;
+            }
+            let dest = self.default_repo_folder().join(ffwd_core::clone::folder_for(&url));
+            self.open_dialog(DialogKind::Name {
+                act: NameAct::CloneDest { url },
+                field: TextField::new(&dest.to_string_lossy()),
+                checkout: false,
+            });
+            return;
+        }
+        if let DialogKind::Name { act: NameAct::CloneDest { url }, field, .. } = &d.kind {
+            let (url, dest) = (url.clone(), PathBuf::from(field.text().trim()));
+            self.close_dialog();
+            return self.start_clone(url, dest);
+        }
+        if let DialogKind::Name { act: NameAct::InitDir, field, .. } = &d.kind {
+            let dir = PathBuf::from(field.text().trim());
+            self.close_dialog();
+            return self.start_init(dir);
+        }
         // Adding a remote asks for the URL first, then a name it suggests.
         if let DialogKind::Name { act: NameAct::AddRemoteUrl, field, .. } = &d.kind {
             let url = field.text().trim().to_string();
@@ -548,6 +596,9 @@ impl Ui {
                         NameAct::AddRemoteName { url } => RefOp::RemoteAdd(n, url.clone()),
                         NameAct::RemoteUrl { name, .. } => RefOp::RemoteSetUrl(name.clone(), n),
                         NameAct::RenameRemote { old } => RefOp::RemoteRename(old.clone(), n),
+                        NameAct::CloneUrl | NameAct::CloneDest { .. } | NameAct::InitDir => {
+                            unreachable!("handled above")
+                        }
                         NameAct::AddSubmoduleUrl | NameAct::AddSubmodulePath { .. } => unreachable!("handled above"),
                         NameAct::MoveSubmodule { path } => RefOp::SubMove(path.clone(), n),
                     })
@@ -732,6 +783,10 @@ impl Ui {
             return;
         }
         self.close_menu();
+        if let Some(i) = self.tab_at(x, y) {
+            let items = self.tab_menu(i);
+            return self.open_menu(x, y, items);
+        }
         let b = self.lay.list_body;
         if !self.r.changes_view && b.contains(x, y) {
             let row = self.r.top + ((y - b.y) / self.lay.row_h.max(1)) as usize;
@@ -749,6 +804,21 @@ impl Ui {
             let items = self.ref_menu(&key);
             self.open_menu(x, y, items);
         }
+    }
+
+    /// The menu of tab `i`.
+    pub(super) fn tab_menu(&self, i: usize) -> Vec<MenuItem> {
+        let Some(t) = self.tabs.get(i) else { return Vec::new() };
+        let p = t.path.clone();
+        let mut v = vec![item("Close", MenuAct::CloseTab(i))];
+        if self.tabs.len() > 1 {
+            v.push(item("Close other tabs", MenuAct::CloseOtherTabs(i)));
+        }
+        v.push(sep());
+        v.push(item(open_folder_label(), MenuAct::OpenFolder(p.clone())));
+        v.push(item("Open in terminal", MenuAct::OpenTerminal(p.clone())));
+        v.push(item("Copy path", MenuAct::Copy(p.to_string_lossy().into_owned())));
+        v
     }
 
     /// `Ctrl+.`: the menu for the selected commit (or sidebar ref).
@@ -833,6 +903,15 @@ impl Ui {
                 NameAct::AddRemoteName { url } => (format!("Name the remote for {url}"), String::new()),
                 NameAct::RemoteUrl { name, .. } => (format!("URL of {name}"), String::new()),
                 NameAct::RenameRemote { old } => (format!("Rename the remote {old}"), String::new()),
+                NameAct::CloneUrl => (
+                    "Clone a repository".to_string(),
+                    "Its URL (https or ssh) or a path. ffwd opens it in a new tab when the clone is done.".to_string(),
+                ),
+                NameAct::CloneDest { url } => (format!("Clone {url} into"), String::new()),
+                NameAct::InitDir => (
+                    "Create a new repository".to_string(),
+                    "The folder (created when missing). An existing repository there is just opened.".to_string(),
+                ),
                 NameAct::AddSubmoduleUrl => (
                     "Add a submodule".to_string(),
                     "The URL of the repository to include. When it lives next to this one, ffwd offers a relative URL."
@@ -869,6 +948,8 @@ impl Ui {
                     NameAct::StashRename { .. } => "Stash message",
                     NameAct::AddRemoteUrl | NameAct::RemoteUrl { .. } => "https://github.com/owner/repo.git",
                     NameAct::AddRemoteName { .. } | NameAct::RenameRemote { .. } => "origin",
+                    NameAct::CloneUrl => "https://github.com/owner/repo.git",
+                    NameAct::CloneDest { .. } | NameAct::InitDir => "Folder",
                     NameAct::AddSubmoduleUrl => "https://github.com/owner/library.git",
                     NameAct::AddSubmodulePath { .. } | NameAct::MoveSubmodule { .. } => "vendor/library",
                     _ => "feature/my-change",
@@ -926,6 +1007,9 @@ impl Ui {
                     NameAct::AddRemoteName { .. } => "Add and fetch".into(),
                     NameAct::RemoteUrl { .. } => "Save URL".into(),
                     NameAct::RenameRemote { .. } => "Rename".into(),
+                    NameAct::CloneUrl => "Next".into(),
+                    NameAct::CloneDest { .. } => "Clone".into(),
+                    NameAct::InitDir => "Create".into(),
                     NameAct::AddSubmoduleUrl => "Next".into(),
                     NameAct::AddSubmodulePath { .. } => "Add submodule".into(),
                     NameAct::MoveSubmodule { .. } => "Move".into(),
@@ -1024,4 +1108,14 @@ impl Ui {
 /// A SHA shortened; branch and tag names as they are.
 fn short_ref(s: &str) -> String {
     if s.len() == 40 && s.chars().all(|c| c.is_ascii_hexdigit()) { s[..8].to_string() } else { s.to_string() }
+}
+
+fn open_folder_label() -> &'static str {
+    if cfg!(windows) {
+        "Show in Explorer"
+    } else if cfg!(target_os = "macos") {
+        "Show in Finder"
+    } else {
+        "Open the folder"
+    }
 }

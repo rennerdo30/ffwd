@@ -165,3 +165,48 @@ pub fn dark_title_bar(hwnd: isize) {
 
 #[cfg(not(windows))]
 pub fn dark_title_bar(_hwnd: isize) {}
+
+/// Opens `dir` in the file manager. Runs on its own thread; the path is
+/// passed as one argument, never through a shell.
+pub fn open_folder(dir: std::path::PathBuf) {
+    std::thread::spawn(move || {
+        #[cfg(windows)]
+        let _ = std::process::Command::new("explorer.exe").arg(&dir).spawn();
+        #[cfg(target_os = "macos")]
+        let _ = std::process::Command::new("open").arg(&dir).spawn();
+        #[cfg(not(any(windows, target_os = "macos")))]
+        let _ = std::process::Command::new("xdg-open").arg(&dir).spawn();
+    });
+}
+
+/// Opens a terminal in `dir`: Windows Terminal, else a console; Terminal
+/// on macOS; the desktop's terminal on Linux.
+pub fn open_terminal(dir: std::path::PathBuf) {
+    std::thread::spawn(move || {
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            if std::process::Command::new("wt.exe").arg("-d").arg(&dir).spawn().is_err() {
+                // A new console in the folder (the path is the working
+                // directory, not part of a command line).
+                const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
+                let _ = std::process::Command::new("cmd.exe")
+                    .arg("/K")
+                    .current_dir(&dir)
+                    .creation_flags(CREATE_NEW_CONSOLE)
+                    .spawn();
+            }
+        }
+        #[cfg(target_os = "macos")]
+        let _ = std::process::Command::new("open").args(["-a", "Terminal"]).arg(&dir).spawn();
+        #[cfg(not(any(windows, target_os = "macos")))]
+        {
+            let tried = ["x-terminal-emulator", "gnome-terminal", "konsole", "xfce4-terminal", "xterm"];
+            for t in tried {
+                if std::process::Command::new(t).current_dir(&dir).spawn().is_ok() {
+                    break;
+                }
+            }
+        }
+    });
+}
