@@ -312,9 +312,32 @@ pub fn dark_title_bar(hwnd: isize, dark: bool) {
 #[cfg(not(windows))]
 pub fn dark_title_bar(_hwnd: isize, _dark: bool) {}
 
+/// The path as Windows Explorer accepts it. Git reports the repository
+/// root with forward slashes (`E:/repo`), the file part is joined on, and
+/// Explorer silently opens Documents for any path it cannot parse, mixed
+/// slashes included. A verbatim prefix (`\\?\`) goes for the same reason.
+/// Other systems get the path unchanged.
+pub fn shell_path(p: &std::path::Path) -> std::path::PathBuf {
+    // Not Windows, or a name that isn't valid Unicode: passed on unchanged
+    // rather than altered.
+    let Some(s) = p.to_str().filter(|_| cfg!(windows)) else {
+        return p.to_path_buf();
+    };
+    let s = s.replace('/', r"\");
+    let s = if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{rest}")
+    } else if let Some(rest) = s.strip_prefix(r"\\?\") {
+        rest.to_string()
+    } else {
+        s
+    };
+    std::path::PathBuf::from(s)
+}
+
 /// Opens `dir` in the file manager. Runs on its own thread; the path is
 /// passed as one argument, never through a shell.
 pub fn open_folder(dir: std::path::PathBuf) {
+    let dir = shell_path(&dir);
     std::thread::spawn(move || {
         #[cfg(windows)]
         let _ = std::process::Command::new("explorer.exe").arg(&dir).spawn();
@@ -375,6 +398,7 @@ pub fn open_url(url: String) {
 /// Opens a file with its default app (as one argument, no shell parsing
 /// of the path).
 pub fn open_path(p: std::path::PathBuf) {
+    let p = shell_path(&p);
     std::thread::spawn(move || {
         #[cfg(windows)]
         {
@@ -390,6 +414,7 @@ pub fn open_path(p: std::path::PathBuf) {
 
 /// Shows a file selected in the file manager (its folder elsewhere).
 pub fn show_file(p: std::path::PathBuf) {
+    let p = shell_path(&p);
     std::thread::spawn(move || {
         #[cfg(windows)]
         {
@@ -415,5 +440,21 @@ mod wsl_tests {
         assert_eq!(super::parse_wsl_list(&utf16), ["Ubuntu-24.04", "Debian"]);
         assert_eq!(super::parse_wsl_list(b"Ubuntu\nkali-linux\n"), ["Ubuntu", "kali-linux"]);
         assert!(super::parse_wsl_list(b"").is_empty());
+    }
+
+    /// Explorer opens Documents for a path it cannot parse, so every path
+    /// handed to it uses backslashes only.
+    #[cfg(windows)]
+    #[test]
+    fn shell_paths_use_backslashes_only() {
+        use std::path::Path;
+        let joined = Path::new("E:/Development/repo").join("src/main.rs");
+        assert_eq!(super::shell_path(&joined), Path::new(r"E:\Development\repo\src\main.rs"));
+        assert_eq!(super::shell_path(Path::new(r"\\?\E:\repo\a b.txt")), Path::new(r"E:\repo\a b.txt"));
+        assert_eq!(
+            super::shell_path(Path::new(r"\\?\UNC\wsl.localhost\Ubuntu\x")),
+            Path::new(r"\\wsl.localhost\Ubuntu\x")
+        );
+        assert_eq!(super::shell_path(Path::new(r"\\wsl.localhost\Ubuntu\x")), Path::new(r"\\wsl.localhost\Ubuntu\x"));
     }
 }
