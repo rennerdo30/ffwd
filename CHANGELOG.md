@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.2.0-beta.9
+
+Local Changes catches up with the History diff: a switch to hide whitespace changes, and a scrollbar you can drag.
+
 - **Local Changes, whitespace:** the diff bar has the History's **Whitespace shown / ignored** switch (one setting for both). While whitespace is ignored, staging single hunks or lines is off, because the hunks shown are not the ones Git would apply; whole files still stage.
 - **Scrollbars:** the Local Changes diff gets the overview strip that the History diff has, and both strips now work as scrollbars: click to jump, hold and drag to scroll. The part in view stands out more, and the Unstaged and Staged lists show a scroll thumb when they are longer than their pane.
 
