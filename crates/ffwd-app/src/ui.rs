@@ -1512,10 +1512,12 @@ impl Ui {
             }
             Msg::WorkerPanic(e) => self.set_notice(format!("Internal error (window kept alive): {e}")),
             Msg::OpProgress(line) => {
-                if let Some(op) = self.r.op {
+                // The automatic fetch stays quiet (FF-39).
+                if let Some(op) = self.r.op.filter(|o| *o != Op::AutoFetch) {
                     self.set_notice(format!("{}… {line}", op.verb()));
                 }
             }
+            Msg::RefProgress(text) => self.set_notice(text),
             Msg::OpDone(out) => {
                 self.log_sync(&out);
                 let quiet = self.r.op == Some(Op::AutoFetch);

@@ -236,7 +236,7 @@ What a complete desktop Git client offers, grouped in 18 areas, with ffwd's stat
 |---|---|---|
 | Activity manager: every operation with its output and result, sections so auto-fetch doesn't flood it | **Built** | Every user operation with the exact git commands, exit codes, times and output; sections for auto-fetch come with auto-fetch |
 | Verbose Git output option; highlighted Git output | Partial | Errors are highlighted; a verbose option comes later |
-| Progress for long checkouts | M1 | |
+| Progress for long checkouts | **Built** | Git's own progress ("Updating files: 45% (…)") shows in the status bar while a checkout runs; any branch or history operation passes its progress lines the same way |
 | Repository benchmark | M2 | ffwd measures more: `FFWD_TRACE`, snapshots |
 
 ## 17. Statistics (FF-49)

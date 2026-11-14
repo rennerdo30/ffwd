@@ -173,11 +173,17 @@ impl Git {
             }
             _ => None,
         };
+        // With a progress hook on this thread, stderr's progress lines
+        // ("Updating files:  45% (…)\r") go to it as they arrive (FF-48).
+        let hook = PROGRESS.with(|p| p.borrow().clone());
         let err_reader = child.stderr.take().map(|se| {
-            std::thread::spawn(move || {
-                let mut err = Vec::new();
-                let _ = se.take(64 * 1024).read_to_end(&mut err);
-                err
+            std::thread::spawn(move || match hook {
+                Some(h) => read_progress(se, &*h),
+                None => {
+                    let mut err = Vec::new();
+                    let _ = se.take(64 * 1024).read_to_end(&mut err);
+                    err
+                }
             })
         });
         let mut out = Vec::new();
@@ -217,6 +223,49 @@ pub struct Ran {
 
 thread_local! {
     static RECORD: std::cell::RefCell<Option<Vec<Ran>>> = const { std::cell::RefCell::new(None) };
+    static PROGRESS: std::cell::RefCell<Option<ProgressHook>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Receives git's progress lines (called from a reader thread).
+pub type ProgressHook = std::sync::Arc<dyn Fn(String) + Send + Sync>;
+
+/// Runs `f` with `hook` receiving the progress lines of every git command
+/// it runs on this thread, at most one every 150 ms (FF-48).
+pub fn with_progress<T>(hook: ProgressHook, f: impl FnOnce() -> T) -> T {
+    let outer = PROGRESS.with(|p| p.replace(Some(hook)));
+    let out = f();
+    PROGRESS.with(|p| p.replace(outer));
+    out
+}
+
+/// Reads stderr to the end (keeping 64 KiB), passing each progress line
+/// (ended by `\r` or `\n`) to `hook`, throttled.
+fn read_progress(mut se: impl Read, hook: &(dyn Fn(String) + Send + Sync)) -> Vec<u8> {
+    let mut err = Vec::new();
+    let mut line = Vec::new();
+    let mut last: Option<std::time::Instant> = None;
+    let mut buf = [0u8; 4096];
+    while let Ok(n) = se.read(&mut buf) {
+        if n == 0 {
+            break;
+        }
+        for &b in &buf[..n] {
+            if err.len() < 64 * 1024 {
+                err.push(b);
+            }
+            if b == b'\r' || b == b'\n' {
+                let due = last.is_none_or(|t| t.elapsed().as_millis() >= 150);
+                if !line.is_empty() && due {
+                    hook(String::from_utf8_lossy(&line).trim().to_string());
+                    last = Some(std::time::Instant::now());
+                }
+                line.clear();
+            } else if line.len() < 512 {
+                line.push(b);
+            }
+        }
+    }
+    err
 }
 
 /// At most this many commands and this much stderr per command are kept.
@@ -337,6 +386,30 @@ impl Drop for Killable {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn progress_lines_reach_the_hook_throttled() {
+        let got = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let g2 = got.clone();
+        let hook = move |l: String| g2.lock().unwrap().push(l);
+        let input = b"Updating files:  50% (1/2)\rUpdating files: 100% (2/2), done.\nerror: x\n";
+        let err = read_progress(&input[..], &hook);
+        assert_eq!(err, input, "stderr is kept whole");
+        assert_eq!(*got.lock().unwrap(), ["Updating files:  50% (1/2)"], "then throttled for 150 ms");
+        // A real command: its stderr lines reach the hook set on this thread.
+        let dir = std::env::temp_dir().join(format!("ffwd-git-progress-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = Git { root: dir.clone() };
+        g.output(&["init", "-q", "-b", "main"]).unwrap();
+        let got = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let g3 = got.clone();
+        let hook: ProgressHook = std::sync::Arc::new(move |l| g3.lock().unwrap().push(l));
+        let _ = with_progress(hook, || g.run_with(&["switch", "-c", "other"], None, &[], 1024));
+        assert!(got.lock().unwrap().iter().any(|l| l.contains("other")), "{:?}", got.lock().unwrap());
+        assert!(PROGRESS.with(|p| p.borrow().is_none()), "the hook ends with the call");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn recording_collects_the_commands_of_this_thread() {
