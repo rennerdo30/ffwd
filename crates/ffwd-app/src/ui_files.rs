@@ -635,29 +635,29 @@ impl Ui {
         let mut hits: Vec<(Rect, FHit)> = Vec::new();
         let (ui, semi) = (self.f.ui, self.f.semi);
         // Filter field.
-        cv.fill(Rect::new(l.filter.x, l.filter.y, l.filter.w, l.filter.h + l.tree.h), BG_SIDEBAR);
-        cv.fill(Rect::new(l.tree.right() - 1, l.area.y, 1, l.area.h), BORDER);
+        cv.fill(Rect::new(l.filter.x, l.filter.y, l.filter.w, l.filter.h + l.tree.h), BG_SIDEBAR());
+        cv.fill(Rect::new(l.tree.right() - 1, l.area.y, 1, l.area.h), BORDER());
         let ff = l.filter.inset(self.px(10.0), self.px(6.0));
         let typing = self.r.files.focus == FFocus::Filter;
         let border = if typing {
-            ACCENT
+            ACCENT()
         } else if self.is_hot(Hot::Files(hits.len())) {
-            BORDER_HOVER
+            BORDER_HOVER()
         } else {
-            BORDER
+            BORDER()
         };
-        cv.round_border(ff, self.pf(7.0), border, BG_INPUT);
+        cv.round_border(ff, self.pf(7.0), border, BG_INPUT());
         let fb = (ff.y as f32 + ff.h as f32 / 2.0 + self.pf(4.5)).round();
         let ft = self.r.files.filter.clone();
         let tx = ff.x as f32 + self.pf(10.0);
         if ft.text().is_empty() {
-            self.te.draw(cv, ui, self.pf(12.5), tx, fb, "Filter files (type to search)", TEXT_4, ff.w as f32);
+            self.te.draw(cv, ui, self.pf(12.5), tx, fb, "Filter files (type to search)", TEXT_4(), ff.w as f32);
         } else {
-            self.te.draw(cv, ui, self.pf(12.5), tx, fb, ft.text(), TEXT, ff.w as f32 - self.pf(20.0));
+            self.te.draw(cv, ui, self.pf(12.5), tx, fb, ft.text(), TEXT(), ff.w as f32 - self.pf(20.0));
         }
         if typing {
             let cx = tx + self.te.measure(ui, self.pf(12.5), &ft.text()[..ft.cursor()]);
-            cv.fill(Rect::new(cx as i32 + 1, ff.y + self.px(6.0), self.px(1.5).max(1), ff.h - self.px(12.0)), ACCENT);
+            cv.fill(Rect::new(cx as i32 + 1, ff.y + self.px(6.0), self.px(1.5).max(1), ff.h - self.px(12.0)), ACCENT());
         }
         hits.push((ff, FHit::Filter));
         // Tree rows.
@@ -679,7 +679,7 @@ impl Ui {
                 l.tree.x as f32 + self.pf(16.0),
                 l.tree.y as f32 + self.pf(22.0),
                 &t,
-                TEXT_3,
+                TEXT_3(),
                 l.tree.w as f32,
             );
         }
@@ -692,11 +692,11 @@ impl Ui {
             let (name, dir, mark) = (n.name.to_string(), n.dir, n.mark);
             let open = self.r.files.open.contains(&id) || !self.r.files.filter.text().is_empty();
             if i == sel {
-                cv.fill_round(row, self.pf(6.0), if tree_focus { BG_SELECT } else { BG_SELECT_DIM });
+                cv.fill_round(row, self.pf(6.0), if tree_focus { BG_SELECT() } else { BG_SELECT_DIM() });
             } else if Some(id) == open_file {
-                cv.fill_round(row, self.pf(6.0), BG_SELECT_DIM);
+                cv.fill_round(row, self.pf(6.0), BG_SELECT_DIM());
             } else if self.is_hot(Hot::Files(hits.len())) {
-                cv.fill_round(row, self.pf(6.0), BG_HOVER);
+                cv.fill_round(row, self.pf(6.0), BG_HOVER());
             }
             let cy = y as f32 + rh as f32 / 2.0;
             let b = (cy + self.pf(4.5)).round();
@@ -706,24 +706,24 @@ impl Ui {
                 let s = self.pf(3.0);
                 let w = self.pf(1.4);
                 if open {
-                    cv.stroke(&[(ix - s, cy - s / 2.0), (ix, cy + s / 2.0), (ix + s, cy - s / 2.0)], w, TEXT_3);
+                    cv.stroke(&[(ix - s, cy - s / 2.0), (ix, cy + s / 2.0), (ix + s, cy - s / 2.0)], w, TEXT_3());
                 } else {
-                    cv.stroke(&[(ix - s / 2.0, cy - s), (ix + s / 2.0, cy), (ix - s / 2.0, cy + s)], w, TEXT_3);
+                    cv.stroke(&[(ix - s / 2.0, cy - s), (ix + s / 2.0, cy), (ix - s / 2.0, cy + s)], w, TEXT_3());
                 }
             }
             let nx = ix + self.pf(12.0);
             let color = match mark {
-                b'?' | b'A' => ADD,
-                b'D' => DEL,
-                b'U' => DEL,
+                b'?' | b'A' => ADD(),
+                b'D' => DEL(),
+                b'U' => DEL(),
                 0 => {
                     if dir {
-                        TEXT_2
+                        TEXT_2()
                     } else {
-                        TEXT
+                        TEXT()
                     }
                 }
-                _ => MOD,
+                _ => MOD(),
             };
             let font = if dir { semi } else { ui };
             self.te.draw(cv, font, self.pf(12.5), nx, b, &name, color, row.right() as f32 - nx - self.pf(24.0));
@@ -736,8 +736,8 @@ impl Ui {
         }
         cv.set_clip(old);
         // Tabs.
-        cv.fill(l.tabs, BG_BAR);
-        cv.fill(Rect::new(l.tabs.x, l.tabs.bottom() - 1, l.tabs.w, 1), BORDER_SOFT);
+        cv.fill(l.tabs, BG_BAR());
+        cv.fill(Rect::new(l.tabs.x, l.tabs.bottom() - 1, l.tabs.w, 1), BORDER_SOFT());
         let tb = (l.tabs.y as f32 + l.tabs.h as f32 / 2.0 + self.pf(4.5)).round();
         let path = self.r.files.file.as_ref().map(|x| x.1.clone());
         let title = path.clone().unwrap_or_else(|| "Select a file".into());
@@ -748,7 +748,7 @@ impl Ui {
             l.tabs.x as f32 + self.pf(16.0),
             tb,
             &title,
-            if path.is_some() { TEXT } else { TEXT_4 },
+            if path.is_some() { TEXT() } else { TEXT_4() },
             l.tabs.w as f32 * 0.5,
         );
         let mut x = e + self.pf(18.0);
@@ -759,18 +759,18 @@ impl Ui {
                 let w = self.te.measure(semi, self.pf(11.5), label) + self.pf(18.0);
                 let r = Rect::new(x as i32, l.tabs.y + self.px(5.0), w as i32, l.tabs.h - self.px(10.0));
                 if self.r.files.tab == t {
-                    cv.fill_round(r, self.pf(6.0), BG_CHOSEN);
+                    cv.fill_round(r, self.pf(6.0), BG_CHOSEN());
                 } else if self.is_hot(Hot::Files(hits.len())) {
-                    cv.fill_round(r, self.pf(6.0), CONTROL_HOVER);
+                    cv.fill_round(r, self.pf(6.0), CONTROL_HOVER());
                 }
-                let c = if self.r.files.tab == t { TEXT } else { TEXT_3 };
+                let c = if self.r.files.tab == t { TEXT() } else { TEXT_3() };
                 self.te.draw(cv, semi, self.pf(11.5), r.x as f32 + self.pf(9.0), tb, label, c, w);
                 hits.push((r, FHit::Tab(t)));
                 x += w + self.pf(4.0);
             }
         }
         // Pane.
-        cv.fill(l.pane, BG);
+        cv.fill(l.pane, BG());
         if path.is_some() {
             match self.r.files.tab {
                 FTab::History => self.paint_file_history(cv, l.pane, &mut hits),
@@ -785,7 +785,7 @@ impl Ui {
                 l.pane.x as f32 + self.pf(16.0),
                 l.pane.y as f32 + self.pf(26.0),
                 t,
-                TEXT_3,
+                TEXT_3(),
                 l.pane.w as f32,
             );
         }
@@ -803,7 +803,7 @@ impl Ui {
                 r.x as f32 + self.pf(16.0),
                 r.y as f32 + self.pf(26.0),
                 &t,
-                TEXT_3,
+                TEXT_3(),
                 r.w as f32,
             );
             return;
@@ -817,7 +817,7 @@ impl Ui {
                 r.x as f32 + self.pf(16.0),
                 r.y as f32 + self.pf(26.0),
                 &t,
-                TEXT_3,
+                TEXT_3(),
                 r.w as f32,
             );
             self.r.files.content = Some(loaded);
@@ -834,7 +834,7 @@ impl Ui {
         let num_w = self.code_px(52.0);
         let blame_w = if blame { self.pf(300.0).min(r.w as f32 * 0.4) } else { 0.0 };
         let gut = Rect::new(r.x, r.y, (num_w + blame_w) as i32, r.h);
-        cv.fill(gut, BG_SIDEBAR);
+        cv.fill(gut, BG_SIDEBAR());
         let clip = cv.clip();
         for (k, line) in loaded.content.lines.iter().enumerate().skip(top).take(fit) {
             let y = r.y + (k - top) as i32 * lh;
@@ -852,23 +852,23 @@ impl Ui {
                 let starts = |j: usize| j == 0 || b.lines.get(j - 1) != Some(&b.lines[j]);
                 let first = k == top || starts(k);
                 let second = !first && (k - 1 == top || starts(k - 1));
-                let band = if ci % 2 == 0 { BG_SIDEBAR } else { BG_PANEL };
+                let band = if ci % 2 == 0 { BG_SIDEBAR() } else { BG_PANEL() };
                 cv.fill(Rect::new(r.x, y, blame_w as i32, lh), band);
                 if k > 0 && starts(k) {
-                    cv.fill(Rect::new(r.x, y, blame_w as i32, 1), BORDER_SOFT);
+                    cv.fill(Rect::new(r.x, y, blame_w as i32, 1), BORDER_SOFT());
                 }
                 let (font, text, color) = if first {
                     let when = fmt::relative(c.time, now_secs(), self.r.tz);
                     let sha = c.id.short(7);
                     if sha.bytes().all(|b| b == b'0') {
-                        (ui, "Not committed yet".to_string(), MOD)
+                        (ui, "Not committed yet".to_string(), MOD())
                     } else {
-                        (mono, format!("{sha} · {} · {when}", c.author), TEXT_3)
+                        (mono, format!("{sha} · {} · {when}", c.author), TEXT_3())
                     }
                 } else if second {
-                    (ui, c.summary.to_string(), TEXT_3)
+                    (ui, c.summary.to_string(), TEXT_3())
                 } else {
-                    (ui, String::new(), TEXT_3)
+                    (ui, String::new(), TEXT_3())
                 };
                 if !text.is_empty() {
                     let x = r.x as f32 + self.pf(10.0);
@@ -884,13 +884,13 @@ impl Ui {
                 r.x as f32 + blame_w + num_w - w - self.pf(8.0),
                 lb,
                 &s,
-                TEXT_4,
+                TEXT_4(),
                 num_w,
             );
             let text = line.replace('\t', "    ");
             let st = loaded.blocks.get(k).copied().unwrap_or(false);
             let tx = r.x as f32 + blame_w + num_w + self.pf(10.0);
-            self.draw_code(cv, tx, lb, row, &text, TEXT_2, r.right() as f32 - tx - self.pf(12.0), lang, st, &[]);
+            self.draw_code(cv, tx, lb, row, &text, TEXT_2(), r.right() as f32 - tx - self.pf(12.0), lang, st, &[]);
         }
         if blame && blame_data.is_none() {
             self.te.draw(
@@ -900,7 +900,7 @@ impl Ui {
                 r.x as f32 + self.pf(10.0),
                 r.y as f32 + self.pf(16.0),
                 "Blame is loading…",
-                TEXT_4,
+                TEXT_4(),
                 blame_w,
             );
         }
@@ -914,7 +914,7 @@ impl Ui {
                 r.right() as f32 - w - self.pf(16.0),
                 r.bottom() as f32 - self.pf(10.0),
                 t,
-                MOD,
+                MOD(),
                 w + 2.0,
             );
         }
@@ -932,7 +932,7 @@ impl Ui {
                 r.x as f32 + self.pf(16.0),
                 r.y as f32 + self.pf(26.0),
                 "Reading the history…",
-                TEXT_3,
+                TEXT_3(),
                 r.w as f32,
             );
             return;
@@ -945,7 +945,7 @@ impl Ui {
                 r.x as f32 + self.pf(16.0),
                 r.y as f32 + self.pf(26.0),
                 "No commits touch this file yet (untracked?)",
-                TEXT_3,
+                TEXT_3(),
                 r.w as f32,
             );
             return;
@@ -959,14 +959,14 @@ impl Ui {
             let y = r.y + (k - top) as i32 * rh;
             let row = Rect::new(r.x + self.px(8.0), y + self.px(2.0), r.w - self.px(16.0), rh - self.px(4.0));
             if k == sel {
-                cv.fill_round(row, self.pf(6.0), if focus { BG_SELECT } else { BG_SELECT_DIM });
+                cv.fill_round(row, self.pf(6.0), if focus { BG_SELECT() } else { BG_SELECT_DIM() });
             } else if self.is_hot(Hot::Files(hits.len())) {
-                cv.fill_round(row, self.pf(6.0), BG_HOVER);
+                cv.fill_round(row, self.pf(6.0), BG_HOVER());
             }
             let b = (row.y as f32 + row.h as f32 / 2.0 + self.pf(4.5)).round();
             let c = self.r.by_id.get(id).and_then(|&i| self.r.commits.get(i as usize)).cloned();
             let x0 = row.x as f32 + self.pf(10.0);
-            self.te.draw(cv, mono, self.pf(11.5), x0, b, &id.short(8), TEXT_3, self.pf(70.0));
+            self.te.draw(cv, mono, self.pf(11.5), x0, b, &id.short(8), TEXT_3(), self.pf(70.0));
             match c {
                 Some(c) => {
                     let when = fmt::relative(c.time, now_secs(), self.r.tz);
@@ -979,7 +979,7 @@ impl Ui {
                         row.right() as f32 - rw - self.pf(10.0),
                         b,
                         &right,
-                        TEXT_3,
+                        TEXT_3(),
                         rw + 2.0,
                     );
                     self.te.draw(
@@ -989,7 +989,7 @@ impl Ui {
                         x0 + self.pf(76.0),
                         b,
                         &c.subject,
-                        TEXT,
+                        TEXT(),
                         row.right() as f32 - rw - x0 - self.pf(100.0),
                     );
                 }
@@ -1001,7 +1001,7 @@ impl Ui {
                         x0 + self.pf(76.0),
                         b,
                         "not in the loaded history",
-                        TEXT_4,
+                        TEXT_4(),
                         row.w as f32,
                     );
                 }
@@ -1017,7 +1017,7 @@ impl Ui {
             r.right() as f32 - hw - self.pf(16.0),
             r.bottom() as f32 - self.pf(10.0),
             hint,
-            TEXT_4,
+            TEXT_4(),
             hw + 2.0,
         );
     }

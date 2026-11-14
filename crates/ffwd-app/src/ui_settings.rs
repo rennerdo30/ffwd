@@ -12,6 +12,8 @@ use super::*;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Row {
+    /// System, dark or light (FF-57).
+    Theme,
     Layout,
     Updates,
     Channel,
@@ -74,10 +76,10 @@ struct Section {
 const SECTIONS: &[Section] = &[
     Section {
         nav: "Appearance",
-        about: "How the history and the commit details are laid out.",
+        about: "How ffwd looks: its theme, and where the commit details go.",
         glyph: Glyph::Expand,
         agents: false,
-        rows: &[Row::Layout],
+        rows: &[Row::Theme, Row::Layout],
     },
     Section {
         nav: "Updates",
@@ -190,6 +192,7 @@ enum Ctl {
 impl Row {
     fn label(self) -> &'static str {
         match self {
+            Row::Theme => "Theme",
             Row::Layout => "Commit details",
             Row::Updates => "Automatic updates",
             Row::AutoFetch => "Fetch automatically",
@@ -234,6 +237,7 @@ impl Row {
 
     fn hint(self) -> &'static str {
         match self {
+            Row::Theme => "System follows your computer's light or dark mode, also when it changes.",
             Row::Layout => "Where the selected commit's details and diff go.",
             Row::Updates => "Check for new versions once a day and offer to install them.",
             Row::AutoFetch => {
@@ -355,6 +359,7 @@ impl Row {
 
     fn choices(self) -> &'static [&'static str] {
         match self {
+            Row::Theme => &["System", "Dark", "Light"],
             Row::Layout => &["Below the history", "Beside the history"],
             Row::Updates => &["On", "Off"],
             Row::AutoFetch => &["Off", "5 min", "10 min", "30 min"],
@@ -836,6 +841,11 @@ impl Ui {
 
     fn choice_now(&self, row: Row) -> usize {
         match row {
+            Row::Theme => match self.sget("ui.theme") {
+                Some("dark") => 1,
+                Some("light") => 2,
+                _ => 0,
+            },
             Row::Layout => (self.layout == DetailsLayout::Beside) as usize,
             Row::Updates => (self.sget("update.check") == Some("false")) as usize,
             Row::SslVerify => (self.sget("git:global:http.sslVerify") == Some("false")) as usize,
@@ -888,6 +898,10 @@ impl Ui {
 
     pub(super) fn set_choice(&mut self, row: Row, i: usize) {
         match row {
+            Row::Theme => {
+                self.sset("ui.theme", ["system", "dark", "light"][i.min(2)]);
+                self.apply_theme();
+            }
             Row::Layout => self.set_layout(if i == 1 { DetailsLayout::Beside } else { DetailsLayout::Below }),
             Row::Updates => self.sset("update.check", if i == 1 { "false" } else { "true" }),
             // On is Git's default: the key goes.
@@ -1435,12 +1449,12 @@ impl Ui {
         let old = cv.set_clip(cv.clip().intersect(r));
         let (ui, semi, mono) = (self.f.ui, self.f.semi, self.f.mono);
         let mut hits: Vec<(Rect, SHit)> = Vec::new();
-        cv.fill(r, BG);
+        cv.fill(r, BG());
 
         // Sidebar: groups and sections.
         let nav = Rect::new(r.x, r.y, self.settings_nav_w(), r.h);
-        cv.fill(nav, BG_SIDEBAR);
-        cv.fill(Rect::new(nav.right() - 1, nav.y, 1, nav.h), BORDER_SOFT);
+        cv.fill(nav, BG_SIDEBAR());
+        cv.fill(Rect::new(nav.right() - 1, nav.y, 1, nav.h), BORDER_SOFT());
         let mut y = nav.y + self.px(20.0);
         let nx = nav.x + self.px(14.0);
         let searching = !view.search.text().trim().is_empty();
@@ -1452,7 +1466,7 @@ impl Ui {
             nx as f32 + self.pf(6.0),
             y as f32 + self.pf(16.0),
             "Settings",
-            TEXT,
+            TEXT(),
             200.0,
         );
         y += self.px(40.0);
@@ -1468,14 +1482,14 @@ impl Ui {
                 nx as f32 + self.pf(6.0),
                 gy,
                 &title.to_uppercase(),
-                TEXT_4,
+                TEXT_4(),
                 200.0,
             );
             if from == FIRST_AGENT_SECTION {
                 let label = "EXPERIMENTAL";
                 let pw = self.te.measure(semi, self.pf(9.0), label) + self.pf(10.0);
                 let pr = Rect::new((e + self.pf(8.0)) as i32, y + self.px(3.0), pw as i32, self.px(15.0));
-                cv.fill_round(pr, self.pf(7.0), TAG_BG);
+                cv.fill_round(pr, self.pf(7.0), TAG_BG());
                 self.te.draw(
                     cv,
                     semi,
@@ -1483,7 +1497,7 @@ impl Ui {
                     pr.x as f32 + self.pf(5.0),
                     pr.y as f32 + self.pf(11.0),
                     label,
-                    TAG_FG,
+                    TAG_FG(),
                     pw,
                 );
             }
@@ -1493,22 +1507,22 @@ impl Ui {
                 let on = !searching && si == view.section;
                 let hot = self.is_hot(Hot::Setting(hits.len(), 0));
                 if on {
-                    cv.fill_round(item, self.pf(7.0), BG_SELECT_DIM);
+                    cv.fill_round(item, self.pf(7.0), BG_SELECT_DIM());
                     cv.fill_round(
                         Rect::new(item.x, item.y + self.px(8.0), self.px(3.0), item.h - self.px(16.0)),
                         self.pf(1.5),
-                        ACCENT,
+                        ACCENT(),
                     );
                 } else if hot {
-                    cv.fill_round(item, self.pf(7.0), BG_HOVER);
+                    cv.fill_round(item, self.pf(7.0), BG_HOVER());
                 }
                 let dim = searching && !shown.contains(&si);
                 let color = if on {
-                    TEXT
+                    TEXT()
                 } else if dim {
-                    TEXT_4
+                    TEXT_4()
                 } else {
-                    TEXT_2
+                    TEXT_2()
                 };
                 let cy = item.y as f32 + item.h as f32 / 2.0;
                 self.glyph(
@@ -1517,7 +1531,7 @@ impl Ui {
                     item.x as f32 + self.pf(18.0),
                     cy,
                     self.pf(6.0),
-                    if on { ACCENT } else { TEXT_3 },
+                    if on { ACCENT() } else { TEXT_3() },
                 );
                 let font = if on { semi } else { ui };
                 self.te.draw(
@@ -1542,38 +1556,38 @@ impl Ui {
             nx as f32 + self.pf(6.0),
             (nav.bottom() - self.px(16.0)) as f32,
             &ver,
-            TEXT_4,
+            TEXT_4(),
             200.0,
         );
 
         // Header: search, the scope picker on agent pages, Done.
         let head = Rect::new(nav.right(), r.y, r.w - nav.w, self.px(64.0));
-        cv.fill(Rect::new(head.x, head.bottom() - 1, head.w, 1), BORDER_SOFT);
+        cv.fill(Rect::new(head.x, head.bottom() - 1, head.w, 1), BORDER_SOFT());
         let (col_x, col_w) = self.settings_column();
         let sr = Rect::new(col_x, head.y + self.px(14.0), (col_w / 2).min(self.px(380.0)), self.px(36.0));
         let focus = view.search_focus;
-        cv.round_border(sr, self.pf(8.0), if focus { ACCENT } else { BORDER }, BG_INPUT);
+        cv.round_border(sr, self.pf(8.0), if focus { ACCENT() } else { BORDER() }, BG_INPUT());
         let scy = sr.y as f32 + sr.h as f32 / 2.0;
-        self.glyph(cv, Glyph::Search, sr.x as f32 + self.pf(18.0), scy, self.pf(6.0), TEXT_3);
+        self.glyph(cv, Glyph::Search, sr.x as f32 + self.pf(18.0), scy, self.pf(6.0), TEXT_3());
         let tx = sr.x as f32 + self.pf(34.0);
         let base = (scy + self.pf(4.5)).round();
         if view.search.text().is_empty() {
-            self.te.draw(cv, ui, self.pf(13.0), tx, base, "Search settings", TEXT_4, sr.w as f32 - self.pf(44.0));
+            self.te.draw(cv, ui, self.pf(13.0), tx, base, "Search settings", TEXT_4(), sr.w as f32 - self.pf(44.0));
         } else {
-            self.te.draw(cv, ui, self.pf(13.0), tx, base, view.search.text(), TEXT, sr.w as f32 - self.pf(44.0));
+            self.te.draw(cv, ui, self.pf(13.0), tx, base, view.search.text(), TEXT(), sr.w as f32 - self.pf(44.0));
         }
         if focus {
             let cx = tx + self.te.measure(ui, self.pf(13.0), &view.search.text()[..view.search.cursor()]);
-            cv.fill(Rect::new(cx as i32 + 1, sr.y + self.px(9.0), self.px(1.5).max(1), sr.h - self.px(18.0)), ACCENT);
+            cv.fill(Rect::new(cx as i32 + 1, sr.y + self.px(9.0), self.px(1.5).max(1), sr.h - self.px(18.0)), ACCENT());
         }
         hits.push((sr, SHit::Search));
         // Done (Esc).
         let dl = "Done";
         let dw = self.te.measure(semi, self.pf(12.5), dl) + self.pf(28.0);
         let dr = Rect::new(head.right() - self.px(24.0) - dw as i32, sr.y, dw as i32, sr.h);
-        let (dbg, dborder) = self.control_colors(Hot::Setting(hits.len(), 0), ACCENT_SOFT_HOVER, ACCENT_BORDER);
+        let (dbg, dborder) = self.control_colors(Hot::Setting(hits.len(), 0), ACCENT_SOFT_HOVER(), ACCENT_BORDER());
         cv.round_border(dr, self.pf(8.0), dborder, dbg);
-        self.te.draw(cv, semi, self.pf(12.5), dr.x as f32 + self.pf(14.0), base, dl, ACCENT_FG, dw);
+        self.te.draw(cv, semi, self.pf(12.5), dr.x as f32 + self.pf(14.0), base, dl, ACCENT_FG(), dw);
         hits.push((dr, SHit::Close));
         // The scope picker: agent settings apply everywhere or here.
         let agents_on_screen =
@@ -1586,8 +1600,8 @@ impl Ui {
             let pr = Rect::new(dr.x - self.px(12.0) - lw as i32, sr.y, lw as i32, sr.h);
             let (pbg, pborder) = self.control_colors(
                 Hot::Setting(hits.len(), 0),
-                if repo { ACCENT_SOFT } else { BG_INPUT },
-                if repo { ACCENT_BORDER } else { BORDER },
+                if repo { ACCENT_SOFT() } else { BG_INPUT() },
+                if repo { ACCENT_BORDER() } else { BORDER() },
             );
             cv.round_border(pr, self.pf(8.0), pborder, pbg);
             self.te.draw(
@@ -1597,10 +1611,10 @@ impl Ui {
                 pr.x as f32 + self.pf(14.0),
                 base,
                 &label,
-                if repo { ACCENT_FG } else { TEXT },
+                if repo { ACCENT_FG() } else { TEXT() },
                 lw,
             );
-            self.chevron_down(cv, pr.right() as f32 - self.pf(16.0), scy, TEXT_3);
+            self.chevron_down(cv, pr.right() as f32 - self.pf(16.0), scy, TEXT_3());
             hits.push((pr, SHit::Scope));
         }
 
@@ -1624,7 +1638,7 @@ impl Ui {
         }
         for (_, c) in &cards {
             if !c.intersect(content).is_empty() {
-                cv.round_border(*c, self.pf(10.0), BORDER, BG_PANEL);
+                cv.round_border(*c, self.pf(10.0), BORDER(), BG_PANEL());
             }
         }
         let repo_name = self.r.repo_name.clone();
@@ -1645,12 +1659,12 @@ impl Ui {
                         col_x as f32,
                         hy as f32 + self.pf(20.0),
                         s.nav,
-                        TEXT,
+                        TEXT(),
                         col_w as f32,
                     );
                     let mut ay = hy as f32 + self.pf(42.0);
                     for line in self.settings_wrap(s.about, self.pf(12.5), col_w as f32, 3) {
-                        self.te.draw(cv, ui, self.pf(12.5), col_x as f32, ay, &line, TEXT_3, col_w as f32);
+                        self.te.draw(cv, ui, self.pf(12.5), col_x as f32, ay, &line, TEXT_3(), col_w as f32);
                         ay += self.pf(18.0);
                     }
                     if s.agents {
@@ -1668,30 +1682,30 @@ impl Ui {
                 continue;
             }
             if i == view.sel && view.keys && !view.search_focus {
-                cv.fill_round(rr.inset(self.px(4.0), self.px(4.0)), self.pf(7.0), BG_SELECT_DIM);
+                cv.fill_round(rr.inset(self.px(4.0), self.px(4.0)), self.pf(7.0), BG_SELECT_DIM());
             }
             // A line between rows of a card.
             if i > 0 && visible[i - 1].0 == si {
-                cv.fill(Rect::new(rr.x + self.px(16.0), rr.y, rr.w - self.px(32.0), 1), BORDER_SOFT);
+                cv.fill(Rect::new(rr.x + self.px(16.0), rr.y, rr.w - self.px(32.0), 1), BORDER_SOFT());
             }
             let lx = rr.x as f32 + self.pf(20.0);
             let label_y = rr.y as f32 + self.pf(26.0);
             let label = self.row_label(row);
             let lfont = if matches!(row, Row::Grant(_)) { mono } else { semi };
-            self.te.draw(cv, lfont, self.pf(13.5), lx, label_y, &label, TEXT, text_w);
+            self.te.draw(cv, lfont, self.pf(13.5), lx, label_y, &label, TEXT(), text_w);
             let mut hy = label_y + self.pf(19.0);
             let hint = self.row_hint(row);
             for line in self.settings_wrap(&hint, self.pf(12.0), text_w, 3) {
-                self.te.draw(cv, ui, self.pf(12.0), lx, hy, &line, TEXT_3, text_w);
+                self.te.draw(cv, ui, self.pf(12.0), lx, hy, &line, TEXT_3(), text_w);
                 hy += self.pf(17.0);
             }
             // Where the value comes from (agent settings).
             if row.agent_key().is_some() && (self.overridden(row) || self.repo_scope()) {
                 let over = self.overridden(row);
                 let (text, color, link) = match (self.repo_scope(), over) {
-                    (true, true) => (format!("Set for {repo_name}"), ACCENT_FG, Some(("Reset", SHit::Reset(i)))),
-                    (true, false) => ("From all repositories".to_string(), TEXT_4, None),
-                    (false, _) => (format!("{repo_name} has its own value"), MOD, Some(("Show it", SHit::EditThere))),
+                    (true, true) => (format!("Set for {repo_name}"), ACCENT_FG(), Some(("Reset", SHit::Reset(i)))),
+                    (true, false) => ("From all repositories".to_string(), TEXT_4(), None),
+                    (false, _) => (format!("{repo_name} has its own value"), MOD(), Some(("Show it", SHit::EditThere))),
                 };
                 let by = hy + self.pf(3.0);
                 cv.fill_circle(lx + self.pf(3.0), by - self.pf(4.0), self.pf(3.0), color);
@@ -1704,7 +1718,7 @@ impl Ui {
                         lw as i32 + 4,
                         self.px(18.0),
                     );
-                    let lc = if self.is_hot(Hot::Setting(hits.len(), 0)) { TEXT } else { ACCENT };
+                    let lc = if self.is_hot(Hot::Setting(hits.len(), 0)) { TEXT() } else { ACCENT() };
                     self.te.draw(cv, semi, self.pf(11.5), lr.x as f32 + 2.0, by, l, lc, lw + 4.0);
                     hits.push((lr, h));
                 }
@@ -1726,9 +1740,9 @@ impl Ui {
                     let t = Rect::new(ctl.right() - tw, ctl.y + (ctl.h - th) / 2, tw, th);
                     let hot = self.is_hot(Hot::Setting(hits.len(), 0));
                     let (bg, knob) = match (on, hot) {
-                        (true, _) => (ACCENT, ACCENT_TEXT),
-                        (false, true) => (BORDER_HOVER, TEXT),
-                        (false, false) => (BORDER_STRONG, TEXT_2),
+                        (true, _) => (ACCENT(), ACCENT_TEXT()),
+                        (false, true) => (BORDER_HOVER(), TEXT()),
+                        (false, false) => (BORDER_STRONG(), TEXT_2()),
                     };
                     cv.fill_round(t, th as f32 / 2.0, bg);
                     let kr = th as f32 / 2.0 - self.pf(3.5);
@@ -1743,7 +1757,7 @@ impl Ui {
                         t.x as f32 - self.pf(10.0) - sw,
                         cbase,
                         state,
-                        if on { TEXT } else { TEXT_3 },
+                        if on { TEXT() } else { TEXT_3() },
                         sw + 2.0,
                     );
                     // The whole row's right part toggles.
@@ -1753,7 +1767,7 @@ impl Ui {
                     let now = self.choice_now(row);
                     let choices = self.row_choices(row);
                     let label = choices.get(now).map(|v| self.choice_label(row, now, v)).unwrap_or_default();
-                    let (bg, border) = self.control_colors(Hot::Setting(hits.len(), 0), BG_INPUT, BORDER);
+                    let (bg, border) = self.control_colors(Hot::Setting(hits.len(), 0), BG_INPUT(), BORDER());
                     cv.round_border(ctl, self.pf(7.0), border, bg);
                     self.te.draw(
                         cv,
@@ -1762,14 +1776,14 @@ impl Ui {
                         ctl.x as f32 + self.pf(12.0),
                         cbase,
                         &label,
-                        TEXT,
+                        TEXT(),
                         ctl.w as f32 - self.pf(40.0),
                     );
                     self.chevron_down(
                         cv,
                         ctl.right() as f32 - self.pf(16.0),
                         ctl.y as f32 + ctl.h as f32 / 2.0,
-                        TEXT_3,
+                        TEXT_3(),
                     );
                     hits.push((ctl, SHit::Drop(i)));
                 }
@@ -1777,13 +1791,13 @@ impl Ui {
                     let choices = self.row_choices(row);
                     let now = self.choice_now(row);
                     let seg_w = ctl.w / choices.len().max(1) as i32;
-                    cv.round_border(ctl, self.pf(7.0), BORDER, BG_INPUT);
+                    cv.round_border(ctl, self.pf(7.0), BORDER(), BG_INPUT());
                     for (c, name) in choices.iter().enumerate() {
                         let s = Rect::new(ctl.x + c as i32 * seg_w, ctl.y, seg_w, ctl.h);
                         if c == now {
-                            cv.fill_round(s.inset(self.px(3.0), self.px(3.0)), self.pf(5.0), BG_CHOSEN);
+                            cv.fill_round(s.inset(self.px(3.0), self.px(3.0)), self.pf(5.0), BG_CHOSEN());
                         } else if self.is_hot(Hot::Setting(hits.len(), 0)) {
-                            cv.fill_round(s.inset(self.px(3.0), self.px(3.0)), self.pf(5.0), CONTROL_HOVER);
+                            cv.fill_round(s.inset(self.px(3.0), self.px(3.0)), self.pf(5.0), CONTROL_HOVER());
                         }
                         let f = if c == now { semi } else { ui };
                         let tw = self.te.measure(f, self.pf(12.5), name).min(s.w as f32 - 8.0);
@@ -1794,7 +1808,7 @@ impl Ui {
                             s.x as f32 + (s.w as f32 - tw) / 2.0,
                             cbase,
                             name,
-                            if c == now { TEXT } else { TEXT_3 },
+                            if c == now { TEXT() } else { TEXT_3() },
                             s.w as f32 - 8.0,
                         );
                         hits.push((s, SHit::Seg(i, c)));
@@ -1803,7 +1817,7 @@ impl Ui {
                 Ctl::Info => {
                     let v = self.sget("git:version").unwrap_or("…").to_string();
                     let tw = self.te.measure(mono, self.pf(12.5), &v).min(ctl.w as f32);
-                    self.te.draw(cv, mono, self.pf(12.5), ctl.right() as f32 - tw, cbase, &v, TEXT_2, ctl.w as f32);
+                    self.te.draw(cv, mono, self.pf(12.5), ctl.right() as f32 - tw, cbase, &v, TEXT_2(), ctl.w as f32);
                 }
                 Ctl::Text => {
                     // Path rows get Browse… beside their field.
@@ -1812,7 +1826,7 @@ impl Ui {
                             let bl = "Browse…";
                             let bw = (self.te.measure(semi, self.pf(12.5), bl) + self.pf(24.0)) as i32;
                             let b = Rect::new(ctl.right() - bw, ctl.y, bw, ctl.h);
-                            let (bg, border) = self.control_colors(Hot::Setting(hits.len(), 0), BG_BAR, BORDER);
+                            let (bg, border) = self.control_colors(Hot::Setting(hits.len(), 0), BG_BAR(), BORDER());
                             cv.round_border(b, self.pf(7.0), border, bg);
                             self.te.draw(
                                 cv,
@@ -1821,7 +1835,7 @@ impl Ui {
                                 b.x as f32 + self.pf(12.0),
                                 cbase,
                                 bl,
-                                TEXT,
+                                TEXT(),
                                 bw as f32,
                             );
                             hits.push((b, SHit::Browse(i)));
@@ -1832,13 +1846,13 @@ impl Ui {
                     let editing = view.edit.as_ref().filter(|(j, _)| *j == i).map(|(_, f)| f.clone());
                     let hot = self.is_hot(Hot::Setting(hits.len(), 0));
                     let border = if editing.is_some() {
-                        ACCENT
+                        ACCENT()
                     } else if hot {
-                        BORDER_HOVER
+                        BORDER_HOVER()
                     } else {
-                        BORDER
+                        BORDER()
                     };
-                    cv.round_border(ctl, self.pf(7.0), border, BG_INPUT);
+                    cv.round_border(ctl, self.pf(7.0), border, BG_INPUT());
                     let tx = ctl.x as f32 + self.pf(12.0);
                     let maxw = ctl.w as f32 - self.pf(24.0);
                     match editing {
@@ -1848,10 +1862,10 @@ impl Ui {
                                 cv.fill_round(
                                     Rect::new(tx as i32 - 2, ctl.y + self.px(6.0), w as i32 + 4, ctl.h - self.px(12.0)),
                                     self.pf(3.0),
-                                    BG_TEXT_SELECT,
+                                    BG_TEXT_SELECT(),
                                 );
                             }
-                            self.te.draw(cv, ui, self.pf(12.5), tx, cbase, f.text(), TEXT, maxw);
+                            self.te.draw(cv, ui, self.pf(12.5), tx, cbase, f.text(), TEXT(), maxw);
                             let cx = tx + self.te.measure(ui, self.pf(12.5), &f.text()[..f.cursor()]);
                             cv.fill(
                                 Rect::new(
@@ -1860,7 +1874,7 @@ impl Ui {
                                     self.px(1.5).max(1),
                                     ctl.h - self.px(14.0),
                                 ),
-                                ACCENT,
+                                ACCENT(),
                             );
                         }
                         None => {
@@ -1878,9 +1892,9 @@ impl Ui {
                                 None => self.row_placeholder(row),
                             };
                             if v.is_empty() {
-                                self.te.draw(cv, ui, self.pf(12.5), tx, cbase, &ph, TEXT_4, maxw);
+                                self.te.draw(cv, ui, self.pf(12.5), tx, cbase, &ph, TEXT_4(), maxw);
                             } else {
-                                self.te.draw(cv, ui, self.pf(12.5), tx, cbase, &v, TEXT, maxw);
+                                self.te.draw(cv, ui, self.pf(12.5), tx, cbase, &v, TEXT(), maxw);
                             }
                         }
                     }
@@ -1893,9 +1907,9 @@ impl Ui {
                     };
                     let w = self.te.measure(semi, self.pf(12.5), label) + self.pf(28.0);
                     let b = Rect::new(ctl.right() - w as i32, ctl.y, w as i32, ctl.h);
-                    let (bg, border) = self.control_colors(Hot::Setting(hits.len(), 0), BG_BAR, BORDER);
+                    let (bg, border) = self.control_colors(Hot::Setting(hits.len(), 0), BG_BAR(), BORDER());
                     cv.round_border(b, self.pf(8.0), border, bg);
-                    self.te.draw(cv, semi, self.pf(12.5), b.x as f32 + self.pf(14.0), cbase, label, TEXT, w);
+                    self.te.draw(cv, semi, self.pf(12.5), b.x as f32 + self.pf(14.0), cbase, label, TEXT(), w);
                     hits.push((b, SHit::Button(i)));
                 }
             }
@@ -1909,7 +1923,7 @@ impl Ui {
                 col_x as f32,
                 content.y as f32 + self.pf(40.0),
                 msg,
-                TEXT_3,
+                TEXT_3(),
                 col_w as f32,
             );
         }
@@ -1924,7 +1938,7 @@ impl Ui {
             let th = (track.h as f32 * content.h as f32 / view.content_h as f32) as i32;
             let ty = track.y
                 + ((track.h - th) as f32 * view.scroll as f32 / (view.content_h - content.h).max(1) as f32) as i32;
-            cv.fill_round(Rect::new(track.x, ty, track.w, th.max(self.px(20.0))), self.pf(1.5), BORDER_STRONG);
+            cv.fill_round(Rect::new(track.x, ty, track.w, th.max(self.px(20.0))), self.pf(1.5), BORDER_STRONG());
         }
         cv.set_clip(old_c);
         cv.set_clip(old);
@@ -1957,11 +1971,11 @@ impl Ui {
         let name = self.r.repo_name.clone();
         let refusal = cfg.refusal();
         let (dot, head) = match (&refusal, cfg.enabled) {
-            (_, false) => (TEXT_4, format!("Agents are off for {name}")),
-            (Some(_), true) => (MOD, format!("Agents are on for {name}, but cannot run yet")),
-            (None, true) => (ADD, format!("Agents are on for {name}")),
+            (_, false) => (TEXT_4(), format!("Agents are off for {name}")),
+            (Some(_), true) => (MOD(), format!("Agents are on for {name}, but cannot run yet")),
+            (None, true) => (ADD(), format!("Agents are on for {name}")),
         };
-        cv.round_border(r, self.pf(8.0), BORDER_SOFT, BG_SIDEBAR);
+        cv.round_border(r, self.pf(8.0), BORDER_SOFT(), BG_SIDEBAR());
         let cy = r.y as f32 + self.pf(18.0);
         cv.fill_circle(r.x as f32 + self.pf(16.0), cy - self.pf(4.0), self.pf(4.0), dot);
         let mut text_w = r.w as f32 - self.pf(40.0);
@@ -1976,14 +1990,14 @@ impl Ui {
                 w as i32,
                 self.px(30.0),
             );
-            let (bg, border) = self.control_colors(Hot::Setting(hits.len(), 0), ACCENT_SOFT_HOVER, ACCENT_BORDER);
+            let (bg, border) = self.control_colors(Hot::Setting(hits.len(), 0), ACCENT_SOFT_HOVER(), ACCENT_BORDER());
             cv.round_border(b, self.pf(7.0), border, bg);
             let bb = (b.y as f32 + b.h as f32 / 2.0 + self.pf(4.5)).round();
-            self.te.draw(cv, semi, self.pf(12.5), b.x as f32 + self.pf(12.0), bb, l, ACCENT_FG, w);
+            self.te.draw(cv, semi, self.pf(12.5), b.x as f32 + self.pf(12.0), bb, l, ACCENT_FG(), w);
             hits.push((b, SHit::TurnOn));
             text_w -= w + self.pf(16.0);
         }
-        self.te.draw(cv, semi, self.pf(12.5), r.x as f32 + self.pf(28.0), cy, &head, TEXT, text_w);
+        self.te.draw(cv, semi, self.pf(12.5), r.x as f32 + self.pf(28.0), cy, &head, TEXT(), text_w);
         let detail = match (refusal, errors.first()) {
             _ if !cfg.enabled => {
                 "An agent works on a task in its own worktree and sandbox; you review and merge.".into()
@@ -1992,7 +2006,7 @@ impl Ui {
             (None, Some(e)) => format!("Settings: {e}"),
             (None, None) => cfg.summary(),
         };
-        self.te.draw(cv, ui, self.pf(12.0), r.x as f32 + self.pf(28.0), cy + self.pf(19.0), &detail, TEXT_3, text_w);
+        self.te.draw(cv, ui, self.pf(12.0), r.x as f32 + self.pf(28.0), cy + self.pf(19.0), &detail, TEXT_3(), text_w);
     }
 
     /// A small downward chevron (dropdowns).

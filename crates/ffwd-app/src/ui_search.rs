@@ -424,21 +424,21 @@ impl Ui {
     pub(super) fn paint_search_head(&mut self, cv: &mut Canvas, head: Rect) {
         let Some(mut s) = self.r.search.take() else { return };
         let (ui, semi) = (self.f.ui, self.f.semi);
-        cv.fill(head, BG_BAR);
-        cv.fill(Rect::new(head.x, head.bottom() - 1, head.w, 1), BORDER_SOFT);
+        cv.fill(head, BG_BAR());
+        cv.fill(Rect::new(head.x, head.bottom() - 1, head.w, 1), BORDER_SOFT());
         let mut hits = Vec::new();
         let fy = head.y + self.px(3.0);
         let fh = head.h - self.px(6.0);
         let fw = (head.w as f32 * 0.36) as i32;
         let field = Rect::new(head.x + self.px(10.0), fy, fw.max(self.px(220.0)), fh);
         let border = if s.typing {
-            ACCENT
+            ACCENT()
         } else if self.is_hot(Hot::Find(hits.len())) {
-            BORDER_HOVER
+            BORDER_HOVER()
         } else {
-            BORDER
+            BORDER()
         };
-        cv.round_border(field, self.pf(6.0), border, BG_INPUT);
+        cv.round_border(field, self.pf(6.0), border, BG_INPUT());
         let base = (field.y as f32 + field.h as f32 / 2.0 + self.pf(4.5)).round();
         let tx = field.x as f32 + self.pf(10.0);
         let mode = MODES[s.mode];
@@ -450,23 +450,23 @@ impl Ui {
                 Mode::Git(Field::Author) => "Author name or e-mail",
                 Mode::Git(Field::Message) => "Search commit messages",
             };
-            self.te.draw(cv, ui, self.pf(12.5), tx, base, ph, TEXT_4, field.w as f32 - self.pf(20.0));
+            self.te.draw(cv, ui, self.pf(12.5), tx, base, ph, TEXT_4(), field.w as f32 - self.pf(20.0));
         } else {
             if s.input.all_selected() {
                 let w = self.te.measure(ui, self.pf(12.5), s.input.text());
                 cv.fill_round(
                     Rect::new(tx as i32 - 2, field.y + self.px(4.0), w as i32 + 4, field.h - self.px(8.0)),
                     self.pf(3.0),
-                    BG_TEXT_SELECT,
+                    BG_TEXT_SELECT(),
                 );
             }
-            self.te.draw(cv, ui, self.pf(12.5), tx, base, s.input.text(), TEXT, field.w as f32 - self.pf(20.0));
+            self.te.draw(cv, ui, self.pf(12.5), tx, base, s.input.text(), TEXT(), field.w as f32 - self.pf(20.0));
         }
         if s.typing {
             let cx = tx + self.te.measure(ui, self.pf(12.5), &s.input.text()[..s.input.cursor()]);
             cv.fill(
                 Rect::new(cx as i32 + 1, field.y + self.px(5.0), self.px(1.5).max(1), field.h - self.px(10.0)),
-                ACCENT,
+                ACCENT(),
             );
         }
         hits.push((field, FHit::Field));
@@ -494,16 +494,25 @@ impl Ui {
             x,
             base,
             &count,
-            if count == "No matches" { MOD } else { TEXT_2 },
+            if count == "No matches" { MOD() } else { TEXT_2() },
             cw + 2.0,
         );
         x += cw.max(self.pf(90.0)) + self.pf(8.0);
         for (glyph, hit) in [("↑", FHit::Prev), ("↓", FHit::Next)] {
             let b = Rect::new(x as i32, fy, self.px(26.0), fh);
-            let (bg, bd) = self.control_colors(Hot::Find(hits.len()), BG_BAR, BORDER);
+            let (bg, bd) = self.control_colors(Hot::Find(hits.len()), BG_BAR(), BORDER());
             cv.round_border(b, self.pf(5.0), bd, bg);
             let gw = self.te.measure(semi, self.pf(12.0), glyph);
-            self.te.draw(cv, semi, self.pf(12.0), b.x as f32 + (b.w as f32 - gw) / 2.0, base, glyph, TEXT_2, gw + 2.0);
+            self.te.draw(
+                cv,
+                semi,
+                self.pf(12.0),
+                b.x as f32 + (b.w as f32 - gw) / 2.0,
+                base,
+                glyph,
+                TEXT_2(),
+                gw + 2.0,
+            );
             hits.push((b, hit));
             x = b.right() as f32 + self.pf(4.0);
         }
@@ -513,9 +522,9 @@ impl Ui {
             let w = self.te.measure(semi, self.pf(11.5), m.label()) + self.pf(18.0);
             let b = Rect::new(x as i32, fy, w as i32, fh);
             if i == s.mode {
-                cv.fill_round(b, self.pf(5.0), BG_CHOSEN);
+                cv.fill_round(b, self.pf(5.0), BG_CHOSEN());
             } else if self.is_hot(Hot::Find(hits.len())) {
-                cv.fill_round(b, self.pf(5.0), CONTROL_HOVER);
+                cv.fill_round(b, self.pf(5.0), CONTROL_HOVER());
             }
             self.te.draw(
                 cv,
@@ -524,7 +533,7 @@ impl Ui {
                 b.x as f32 + self.pf(9.0),
                 base,
                 m.label(),
-                if i == s.mode { TEXT } else { TEXT_3 },
+                if i == s.mode { TEXT() } else { TEXT_3() },
                 w,
             );
             hits.push((b, FHit::Mode(i)));
@@ -533,16 +542,16 @@ impl Ui {
         // Close.
         let cb = Rect::new(head.right() - self.px(34.0), fy, self.px(26.0), fh);
         if self.is_hot(Hot::Find(hits.len())) {
-            cv.fill_round(cb, self.pf(5.0), CONTROL_HOVER);
+            cv.fill_round(cb, self.pf(5.0), CONTROL_HOVER());
         }
         let (cx, cy, k) = (cb.x as f32 + cb.w as f32 / 2.0, cb.y as f32 + cb.h as f32 / 2.0, self.pf(4.0));
-        cv.stroke(&[(cx - k, cy - k), (cx + k, cy + k)], self.pf(1.4), TEXT_3);
-        cv.stroke(&[(cx - k, cy + k), (cx + k, cy - k)], self.pf(1.4), TEXT_3);
+        cv.stroke(&[(cx - k, cy - k), (cx + k, cy + k)], self.pf(1.4), TEXT_3());
+        cv.stroke(&[(cx - k, cy + k), (cx + k, cy - k)], self.pf(1.4), TEXT_3());
         hits.push((cb, FHit::Close));
         let hint = "Tab: next field · ↑↓: matches · Esc";
         let hw = self.te.measure(ui, self.pf(11.0), hint);
         if x + hw + self.pf(20.0) < cb.x as f32 {
-            self.te.draw(cv, ui, self.pf(11.0), cb.x as f32 - hw - self.pf(12.0), base, hint, TEXT_4, hw + 2.0);
+            self.te.draw(cv, ui, self.pf(11.0), cb.x as f32 - hw - self.pf(12.0), base, hint, TEXT_4(), hw + 2.0);
         }
         s.hits = hits;
         self.r.search = Some(s);
@@ -559,7 +568,7 @@ impl Ui {
                 continue; // one mark per pixel row is enough
             }
             last = y;
-            cv.fill(Rect::new(sb.x + self.px(2.0), y, sb.w - self.px(4.0), self.px(2.0).max(1)), MOD);
+            cv.fill(Rect::new(sb.x + self.px(2.0), y, sb.w - self.px(4.0), self.px(2.0).max(1)), MOD());
         }
     }
 }

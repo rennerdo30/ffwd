@@ -176,8 +176,8 @@ impl Ui {
         cv.round_border(
             r,
             self.pf(9.0),
-            if hot { BORDER_HOVER } else { BORDER_SOFT },
-            if hot { BG_HOVER } else { BG_PANEL },
+            if hot { BORDER_HOVER() } else { BORDER_SOFT() },
+            if hot { BG_HOVER() } else { BG_PANEL() },
         );
         let head = self.r.refs.refs.iter().find(|x| x.kind == RefKind::Local && x.is_head).cloned();
         let x0 = r.x as f32 + self.pf(12.0);
@@ -187,15 +187,15 @@ impl Ui {
         // Line one: branch, then the sync chips from the right.
         let mut chips: Vec<(String, u32, u32)> = Vec::new();
         match &head {
-            Some(h) if h.upstream_gone => chips.push(("upstream gone".into(), DEL_BG, DEL_TEXT)),
-            Some(h) if h.upstream.is_none() => chips.push(("no upstream".into(), BG_HOVER, TEXT_3)),
-            Some(h) if h.ahead == 0 && h.behind == 0 => chips.push(("in sync".into(), ADD_BG, ADD_TEXT)),
+            Some(h) if h.upstream_gone => chips.push(("upstream gone".into(), DEL_BG(), DEL_TEXT())),
+            Some(h) if h.upstream.is_none() => chips.push(("no upstream".into(), BG_HOVER(), TEXT_3())),
+            Some(h) if h.ahead == 0 && h.behind == 0 => chips.push(("in sync".into(), ADD_BG(), ADD_TEXT())),
             Some(h) => {
                 if h.behind > 0 {
-                    chips.push((format!("↓{}", h.behind), REMOTE_BG, REMOTE_FG));
+                    chips.push((format!("↓{}", h.behind), REMOTE_BG(), REMOTE_FG()));
                 }
                 if h.ahead > 0 {
-                    chips.push((format!("↑{}", h.ahead), ACCENT_SOFT, ACCENT_FG));
+                    chips.push((format!("↑{}", h.ahead), ACCENT_SOFT(), ACCENT_FG()));
                 }
             }
             None => {}
@@ -212,15 +212,15 @@ impl Ui {
         let name_w = cx - x0 - self.pf(20.0);
         match &head {
             Some(h) => {
-                self.branch_icon(cv, x0 + self.pf(5.0), b1 - self.pf(4.5), ACCENT);
+                self.branch_icon(cv, x0 + self.pf(5.0), b1 - self.pf(4.5), ACCENT());
                 let fs = self.pf(14.0);
                 let name = super::fit_middle(&mut self.te, semi, fs, &h.name, name_w);
-                self.te.draw(cv, semi, self.pf(14.0), x0 + self.pf(18.0), b1, &name, TEXT, name_w + 2.0);
+                self.te.draw(cv, semi, self.pf(14.0), x0 + self.pf(18.0), b1, &name, TEXT(), name_w + 2.0);
             }
             None => {
                 let at = self.r.refs.head.map(|h| h.short(8)).unwrap_or_default();
                 let t = if at.is_empty() { "No commit yet".to_string() } else { format!("Detached at {at}") };
-                self.te.draw(cv, semi, self.pf(14.0), x0, b1, &t, MOD, name_w + 20.0);
+                self.te.draw(cv, semi, self.pf(14.0), x0, b1, &t, MOD(), name_w + 20.0);
             }
         }
         // Line two: a stopped operation first; else upstream and changes.
@@ -235,19 +235,19 @@ impl Ui {
             } else {
                 format!("{op} in progress")
             };
-            cv.fill_circle(x + self.pf(3.5), b2 - self.pf(4.0), self.pf(3.5), DEL);
-            self.te.draw(cv, semi, self.pf(12.0), x + self.pf(12.0), b2, &t, DEL_TEXT, w2);
+            cv.fill_circle(x + self.pf(3.5), b2 - self.pf(4.0), self.pf(3.5), DEL());
+            self.te.draw(cv, semi, self.pf(12.0), x + self.pf(12.0), b2, &t, DEL_TEXT(), w2);
             return;
         }
         if let Some(up) = head.as_ref().and_then(|h| h.upstream.clone()) {
-            x = self.te.draw(cv, mono, self.pf(11.5), x, b2, &format!("→ {up}"), TEXT_3, w2 * 0.6) + self.pf(10.0);
+            x = self.te.draw(cv, mono, self.pf(11.5), x, b2, &format!("→ {up}"), TEXT_3(), w2 * 0.6) + self.pf(10.0);
         }
         let (t, c) = match changed {
-            0 => ("clean".to_string(), TEXT_4),
-            n => (format!("{n} changed"), MOD),
+            0 => ("clean".to_string(), TEXT_4()),
+            n => (format!("{n} changed"), MOD()),
         };
         if changed > 0 {
-            cv.fill_circle(x + self.pf(3.0), b2 - self.pf(4.0), self.pf(3.0), MOD);
+            cv.fill_circle(x + self.pf(3.0), b2 - self.pf(4.0), self.pf(3.0), MOD());
             x += self.pf(10.0);
         }
         self.te.draw(cv, if changed > 0 { semi } else { ui }, self.pf(12.0), x, b2, &t, c, right - x);
@@ -714,21 +714,21 @@ impl Ui {
 
     pub(super) fn paint_side(&mut self, cv: &mut Canvas) {
         let r = self.lay.side;
-        cv.fill(r, BG_SIDEBAR);
-        cv.fill(Rect::new(r.right() - 1, r.y, 1, r.h), BORDER);
+        cv.fill(r, BG_SIDEBAR());
+        cv.fill(Rect::new(r.right() - 1, r.y, 1, r.h), BORDER());
         self.paint_side_here(cv);
         let (ui, semi) = (self.f.ui, self.f.semi);
         // Filter field.
         let fr = self.side_filter_rect();
         let typing = self.focus == Focus::SideFilter;
-        cv.round_border(fr, self.pf(6.0), if typing { ACCENT } else { BORDER }, BG_INPUT);
+        cv.round_border(fr, self.pf(6.0), if typing { ACCENT() } else { BORDER() }, BG_INPUT());
         let fcy = fr.y as f32 + fr.h as f32 / 2.0;
         let fx = fr.x as f32 + self.pf(12.0);
-        cv.ring(fx + self.pf(3.5), fcy - self.pf(1.0), self.pf(4.0), self.pf(1.4), TEXT_3);
+        cv.ring(fx + self.pf(3.5), fcy - self.pf(1.0), self.pf(4.0), self.pf(1.4), TEXT_3());
         cv.stroke(
             &[(fx + self.pf(6.5), fcy + self.pf(2.0)), (fx + self.pf(9.0), fcy + self.pf(4.5))],
             self.pf(1.4),
-            TEXT_3,
+            TEXT_3(),
         );
         let fb = (fcy + self.pf(4.5)).round();
         let tx = fx + self.pf(16.0);
@@ -740,16 +740,16 @@ impl Ui {
                 tx,
                 fb,
                 "Filter branches and tags",
-                TEXT_4,
+                TEXT_4(),
                 fr.w as f32 - self.pf(40.0),
             );
         } else {
             let filt = self.side_filter.clone();
-            let end = self.te.draw(cv, ui, self.pf(12.5), tx, fb, &filt, TEXT, fr.w as f32 - self.pf(40.0));
+            let end = self.te.draw(cv, ui, self.pf(12.5), tx, fb, &filt, TEXT(), fr.w as f32 - self.pf(40.0));
             if typing {
                 cv.fill(
                     Rect::new(end as i32 + 1, fr.y + self.px(6.0), self.px(1.5).max(1), fr.h - self.px(12.0)),
-                    ACCENT,
+                    ACCENT(),
                 );
             }
         }
@@ -771,18 +771,18 @@ impl Ui {
             let selected = it.key == self.r.side_sel;
             let picked = self.r.side_multi.contains(&it.key);
             if selected {
-                cv.fill_round(row, self.pf(6.0), if focus { BG_SELECT } else { BG_SELECT_DIM });
+                cv.fill_round(row, self.pf(6.0), if focus { BG_SELECT() } else { BG_SELECT_DIM() });
             } else if picked {
-                cv.fill_round(row, self.pf(6.0), BG_SELECT_DIM);
+                cv.fill_round(row, self.pf(6.0), BG_SELECT_DIM());
             } else if self.side_hover == Some(k) {
-                cv.fill_round(row, self.pf(6.0), BG_HOVER);
+                cv.fill_round(row, self.pf(6.0), BG_HOVER());
             }
             if picked {
                 // Picked for a batch: an accent bar on the left edge.
                 cv.fill_round(
                     Rect::new(row.x, row.y + self.px(5.0), self.px(3.0).max(2), row.h - self.px(10.0)),
                     self.pf(1.5),
-                    ACCENT,
+                    ACCENT(),
                 );
             }
             let cy = y as f32 + rh as f32 / 2.0;
@@ -790,7 +790,7 @@ impl Ui {
             let indent = it.depth as f32 * self.pf(14.0);
             let cx = row.x as f32 + self.pf(12.0) + indent;
             if let Some(open) = it.expander {
-                self.chevron(cv, cx, cy, open, TEXT_3);
+                self.chevron(cv, cx, cy, open, TEXT_3());
             }
             if it.kind == SideKind::Header {
                 self.te.draw(
@@ -800,7 +800,7 @@ impl Ui {
                     cx + self.pf(10.0),
                     base - self.pf(0.5),
                     &it.label.to_uppercase(),
-                    TEXT_3,
+                    TEXT_3(),
                     row.w as f32,
                 );
                 if !it.badge.is_empty() {
@@ -812,7 +812,7 @@ impl Ui {
                         row.right() as f32 - bw - self.pf(10.0),
                         base - self.pf(0.5),
                         &it.badge,
-                        TEXT_4,
+                        TEXT_4(),
                         bw + 2.0,
                     );
                 }
@@ -820,22 +820,22 @@ impl Ui {
             }
             let ix = cx + if it.expander.is_some() { self.pf(16.0) } else { self.pf(4.0) };
             let (icon, text) = match it.kind {
-                SideKind::Branch if it.current => (ACCENT, TEXT),
-                SideKind::Branch => (LOCAL_FG, TEXT_2),
-                SideKind::Folder => (TEXT_3, TEXT_2),
-                SideKind::Remote => (REMOTE_FG, TEXT_2),
-                SideKind::RemoteBranch => (REMOTE_FG, TEXT_3),
-                SideKind::Tag => (TAG_FG, TEXT_2),
-                SideKind::Stash => (STASH_FG, TEXT_2),
-                SideKind::Changes => (MOD, TEXT),
-                SideKind::Worktree | SideKind::Submodule | SideKind::PullRequest => (TEXT_3, TEXT_2),
+                SideKind::Branch if it.current => (ACCENT(), TEXT()),
+                SideKind::Branch => (LOCAL_FG(), TEXT_2()),
+                SideKind::Folder => (TEXT_3(), TEXT_2()),
+                SideKind::Remote => (REMOTE_FG(), TEXT_2()),
+                SideKind::RemoteBranch => (REMOTE_FG(), TEXT_3()),
+                SideKind::Tag => (TAG_FG(), TEXT_2()),
+                SideKind::Stash => (STASH_FG(), TEXT_2()),
+                SideKind::Changes => (MOD(), TEXT()),
+                SideKind::Worktree | SideKind::Submodule | SideKind::PullRequest => (TEXT_3(), TEXT_2()),
                 SideKind::All | SideKind::Files | SideKind::Activity | SideKind::Reflog | SideKind::Agents => {
-                    (TEXT_2, TEXT)
+                    (TEXT_2(), TEXT())
                 }
-                SideKind::Header => (TEXT_3, TEXT_3),
-                SideKind::AddRemote => (ACCENT, TEXT_3),
+                SideKind::Header => (TEXT_3(), TEXT_3()),
+                SideKind::AddRemote => (ACCENT(), TEXT_3()),
             };
-            let text = if selected { TEXT } else { text };
+            let text = if selected { TEXT() } else { text };
             match it.kind {
                 SideKind::Branch if it.current => self.check(cv, ix, cy, icon),
                 SideKind::Branch | SideKind::RemoteBranch => self.branch_icon(cv, ix, cy, icon),
@@ -855,7 +855,7 @@ impl Ui {
                 SideKind::Stash => {
                     let b =
                         Rect::new((ix - self.pf(5.0)) as i32, (cy - self.pf(4.0)) as i32, self.px(10.0), self.px(8.0));
-                    cv.round_border(b, self.pf(2.0), icon, BG_SIDEBAR);
+                    cv.round_border(b, self.pf(2.0), icon, BG_SIDEBAR());
                 }
                 SideKind::Changes => cv.fill_circle(ix, cy, self.pf(4.0), icon),
                 // A clock: where HEAD has been.
@@ -887,7 +887,7 @@ impl Ui {
                     // A box inside a box: a repository in the repository.
                     let o =
                         Rect::new((ix - self.pf(5.0)) as i32, (cy - self.pf(5.0)) as i32, self.px(10.0), self.px(10.0));
-                    cv.round_border(o, self.pf(2.0), icon, BG_SIDEBAR);
+                    cv.round_border(o, self.pf(2.0), icon, BG_SIDEBAR());
                     cv.fill(
                         Rect::new((ix - self.pf(1.5)) as i32, (cy - self.pf(1.5)) as i32, self.px(3.0), self.px(3.0)),
                         icon,
@@ -908,7 +908,7 @@ impl Ui {
                         icon,
                     );
                 }
-                SideKind::Worktree if it.current => self.check(cv, ix, cy, ACCENT),
+                SideKind::Worktree if it.current => self.check(cv, ix, cy, ACCENT()),
                 SideKind::Worktree if it.key.contains(".ffwd-agents") => {
                     self.glyph(cv, super::Glyph::Terminal, ix, cy, self.pf(5.5), icon)
                 }
@@ -947,7 +947,7 @@ impl Ui {
                     row.right() as f32 - tw - self.pf(10.0),
                     base - self.pf(0.5),
                     &shown,
-                    TEXT_4,
+                    TEXT_4(),
                     nw + 2.0,
                 );
             }
@@ -955,14 +955,14 @@ impl Ui {
                 let bw = badge_w - self.pf(14.0);
                 let bx = row.right() as f32 - bw - self.pf(10.0);
                 let color = match it.kind {
-                    SideKind::Changes => MOD,
-                    SideKind::Activity => DEL,
-                    SideKind::Agents if it.badge.ends_with("running") => ACCENT,
-                    SideKind::Agents => ADD,
+                    SideKind::Changes => MOD(),
+                    SideKind::Activity => DEL(),
+                    SideKind::Agents if it.badge.ends_with("running") => ACCENT(),
+                    SideKind::Agents => ADD(),
                     // A gone upstream reads as a warning.
-                    SideKind::Branch if it.badge.starts_with("gone") => DEL,
-                    SideKind::Branch => ACCENT,
-                    _ => TEXT_4,
+                    SideKind::Branch if it.badge.starts_with("gone") => DEL(),
+                    SideKind::Branch => ACCENT(),
+                    _ => TEXT_4(),
                 };
                 if it.kind == SideKind::Changes {
                     let b = Rect::new(
@@ -971,7 +971,7 @@ impl Ui {
                         (bw + self.pf(12.0)) as i32,
                         self.px(18.0),
                     );
-                    cv.fill_round(b, self.pf(9.0), ACCENT_SOFT);
+                    cv.fill_round(b, self.pf(9.0), ACCENT_SOFT());
                 }
                 self.te.draw(cv, semi, self.pf(11.0), bx, base - self.pf(0.5), &it.badge, color, bw + 8.0);
             }
@@ -981,7 +981,7 @@ impl Ui {
         if items.len() > vis {
             let th = ((l.h as f32 * vis as f32 / items.len() as f32) as i32).max(self.px(20.0));
             let ty = l.y + ((l.h - th) as f32 * self.r.side_top as f32 / (items.len() - vis) as f32) as i32;
-            cv.fill_round(Rect::new(l.right() - self.px(5.0), ty, self.px(3.0), th), self.pf(1.5), BORDER_HOVER);
+            cv.fill_round(Rect::new(l.right() - self.px(5.0), ty, self.px(3.0), th), self.pf(1.5), BORDER_HOVER());
         }
         self.r.side = items;
         cv.set_clip(old);
@@ -1030,7 +1030,7 @@ impl Ui {
         let (w, h) = (self.pf(12.0), self.pf(9.0));
         let body = Rect::new((cx - w / 2.0) as i32, (cy - h / 2.0 + self.pf(1.0)) as i32, w as i32, h as i32);
         cv.fill(Rect::new(body.x, body.y - self.px(2.0), (w * 0.45) as i32, self.px(3.0)), color);
-        cv.round_border(body, self.pf(2.0), color, BG_SIDEBAR);
+        cv.round_border(body, self.pf(2.0), color, BG_SIDEBAR());
     }
 }
 

@@ -231,7 +231,7 @@ impl Ui {
             .enumerate()
             .map(|(k, a)| {
                 let on = cur == Some((i as u32, k as u32));
-                (a, a + q.len(), if on { ffwd_render::mix(BG_PANEL, MOD, 120) } else { tint(MOD) })
+                (a, a + q.len(), if on { ffwd_render::mix(BG_PANEL(), MOD(), 120) } else { tint(MOD()) })
             })
             .collect()
     }
@@ -247,29 +247,29 @@ impl Ui {
         let field = Rect::new(x0, bar.y + self.px(4.0), fw, fh);
         s.field = field;
         let typing = s.typing && self.focus == Focus::Diff;
-        cv.round_border(field, self.pf(6.0), if typing { ACCENT } else { BORDER }, BG_INPUT);
+        cv.round_border(field, self.pf(6.0), if typing { ACCENT() } else { BORDER() }, BG_INPUT());
         let base = (field.y as f32 + field.h as f32 / 2.0 + self.pf(4.0)).round();
         let tx = field.x as f32 + self.pf(8.0);
         let fs = self.pf(12.0);
         let maxw = field.w as f32 - self.pf(16.0);
         if s.input.text().is_empty() {
-            self.te.draw(cv, ui, fs, tx, base, "Find in diff", TEXT_4, maxw);
+            self.te.draw(cv, ui, fs, tx, base, "Find in diff", TEXT_4(), maxw);
         } else {
             if s.input.all_selected() {
                 let w = self.te.measure(ui, fs, s.input.text()).min(maxw);
                 cv.fill_round(
                     Rect::new(tx as i32 - 2, field.y + self.px(3.0), w as i32 + 4, field.h - self.px(6.0)),
                     self.pf(3.0),
-                    BG_TEXT_SELECT,
+                    BG_TEXT_SELECT(),
                 );
             }
-            self.te.draw(cv, ui, fs, tx, base, s.input.text(), TEXT, maxw);
+            self.te.draw(cv, ui, fs, tx, base, s.input.text(), TEXT(), maxw);
         }
         if typing {
             let cx = tx + self.te.measure(ui, fs, &s.input.text()[..s.input.cursor()]);
             cv.fill(
                 Rect::new(cx as i32 + 1, field.y + self.px(4.0), self.px(1.5).max(1), field.h - self.px(8.0)),
-                ACCENT,
+                ACCENT(),
             );
         }
         let count = match (s.input.text().is_empty(), s.hits.len()) {
@@ -277,7 +277,7 @@ impl Ui {
             (false, 0) => "No matches".into(),
             (false, n) => format!("{} of {}", fmt::num(s.cur + 1), fmt::num(n)),
         };
-        let c = if s.hits.is_empty() { MOD } else { TEXT_2 };
+        let c = if s.hits.is_empty() { MOD() } else { TEXT_2() };
         self.te.draw(cv, ui, self.pf(11.5), field.right() as f32 + self.pf(10.0), base, &count, c, self.pf(100.0));
         self.diff_find = Some(s);
     }

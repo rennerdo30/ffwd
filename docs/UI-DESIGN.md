@@ -36,6 +36,12 @@ The capture above is the real PoC UI. `ffwd --snapshot` rendered it offscreen fr
 - **The details pane has three layers that arrive at different times.** The header (subject, author, date, SHA, parents) paints in the same frame as the selection, from the history row. The body, the files and the diff fill in behind it. Placeholders are solid, still bars, never spinners.
 - **The status bar tells the truth:** what is loading, real measured timings, the session type (local or remote) and the renderer.
 
+## Themes and pane borders (FF-57)
+
+- **Themes:** dark ("graphite and amber") and light ("paper and amber") keep the same roles and contrast steps. Settings → Appearance → Theme: **System** (default; follows the computer's light or dark mode, also when it changes), **Dark**, **Light** (`ui.theme`). The Windows title bar follows.
+- **Pane borders move:** sidebar | content, history / details, details header | diff, Local Changes' column | diff, unstaged / staged, lists / commit box, the Files tree and the agents rail. The pointer shows a resize cursor and the border an accent line; drag to move, double click to reset. Sizes are kept in `state.toml` (`ui.split.*`).
+- **The sidebar's "here" card** (top): the branch (or the detached commit), its sync as chips (↑ ahead, ↓ behind, in sync, no upstream, upstream gone), the upstream, and changed files or a stopped merge or rebase with its conflicts; a click opens Local Changes. Branches show their age, worktrees their branch; empty Stashes is hidden and Remotes without a remote offers Add remote….
+
 ## Window frame
 
 - **Windows 11:** the top bar is the title row, the way Explorer, Settings and Terminal look. ffwd draws minimise, maximise/restore and close with Windows 11 metrics (46 px wide, red close hover). The maximise button reports itself as `HTMAXBUTTON`, so hovering it opens Snap Layouts. The empty parts of the bar drag the window and double-click maximises; side, bottom and top resize edges stay native (`crates/ffwd-app/src/frame.rs`, the same approach as Ferrow).
@@ -306,7 +312,7 @@ The capture above is the real PoC UI. `ffwd --snapshot` rendered it offscreen fr
 
 The gear in the top bar (or `Ctrl+,`) opens Settings as a page of its own: the whole window below the top bar. Changes save at once; the file keeps your comments.
 
-- **Sidebar:** sections in two groups. General: Appearance, Updates, Repositories, Git & tools, Remotes, AI, Advanced. Agents (experimental): Agent, Sandbox, Access, Scripts & limits. `Ctrl+Tab` goes to the next section.
+- **Sidebar:** sections in two groups. General: Appearance (theme: System, Dark, Light; commit details), Updates, Repositories, Git (name and email for every repository and for the open one, the Git program and its version, credential helper, certificate checks, CA file, TLS backend: Git's own settings, read and written on a worker), Tools (editor, merge and diff tools), Remotes, AI, Advanced. Path rows have **Browse…** (the system's picker). Agents (experimental): Agent, Sandbox, Access, Scripts & limits. `Ctrl+Tab` goes to the next section.
 - **Cards:** each section has a heading, a sentence on what it is for, and a card of rows. Every row has its label, a full description (up to three lines, never cut mid-word) and its control on the right.
 - **Controls:** on/off settings are switches with their state written next to them; long lists (agent, sandbox, WSL distribution, merge and diff tools, fetch interval) are dropdowns with readable names; only two or three short choices are segmented; text settings are fields.
 - **Search:** the field at the top, or just typing, finds any setting across every section; `Esc` clears it.

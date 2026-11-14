@@ -188,7 +188,7 @@ impl Ui {
             } else {
                 Rect::new(r.x, r.y - w / 2, r.w, w)
             };
-            cv.fill(line, ACCENT);
+            cv.fill(line, ACCENT());
         }
     }
 

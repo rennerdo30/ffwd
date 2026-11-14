@@ -297,11 +297,12 @@ pub fn parse_wsl_list(out: &[u8]) -> Vec<String> {
         .collect()
 }
 
-/// Dark title bar on Windows 10/11 so the native caption matches the theme.
+/// A dark (or light) title bar on Windows 10/11, so the native caption
+/// matches the theme.
 #[cfg(windows)]
-pub fn dark_title_bar(hwnd: isize) {
+pub fn dark_title_bar(hwnd: isize, dark: bool) {
     use windows_sys::Win32::Graphics::Dwm::{DWMWA_USE_IMMERSIVE_DARK_MODE, DwmSetWindowAttribute};
-    let on: i32 = 1;
+    let on: i32 = dark as i32;
     unsafe {
         let hwnd = hwnd as windows_sys::Win32::Foundation::HWND;
         DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE as u32, (&on as *const i32).cast(), 4);
@@ -309,7 +310,7 @@ pub fn dark_title_bar(hwnd: isize) {
 }
 
 #[cfg(not(windows))]
-pub fn dark_title_bar(_hwnd: isize) {}
+pub fn dark_title_bar(_hwnd: isize, _dark: bool) {}
 
 /// Opens `dir` in the file manager. Runs on its own thread; the path is
 /// passed as one argument, never through a shell.

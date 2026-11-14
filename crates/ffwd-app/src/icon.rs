@@ -3,7 +3,8 @@
 //! amber tile. The same code draws the window icon, the installer icon
 //! (`--icon-png`) and the mark in the top bar, so they can never differ.
 
-use crate::theme::{ACCENT, ACCENT_TEXT};
+const ACCENT: u32 = 0xe8a33e;
+const ACCENT_TEXT: u32 = 0x1d1608;
 use ffwd_render::{Canvas, Rect, mix};
 
 /// The glyph of an `n`-pixel mark whose top-left corner is at (`x0`, `y0`).

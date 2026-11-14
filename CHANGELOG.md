@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Light theme:** Settings → Appearance → Theme: System (follows your computer, also when it changes), Dark or Light.
+- **Pane borders move:** drag any border between panes (sidebar, history and details, the diff, Local Changes, Files, agents); double click resets it; sizes are kept.
+- **Sidebar:** a card at the top says where you are: branch, ahead/behind or in sync, upstream, changed files or a stopped merge or rebase. Branches show their age, worktrees their branch, and empty sections stay out of the way.
+- **Settings → Git:** your name and email (for every repository and for the open one), the Git program and version, credential helper and certificates; **Browse…** beside every path.
+- **Local Changes:** the commit controls no longer overlap in a narrow column.
 - **Agents (experimental), redesigned:** a page of its own (and **Agents** in the sidebar, with a live badge). A composer with the agent to use, runs as cards grouped by state, and for each run the actions that fit: **Review changes** opens the branch's diff in the history, then Merge, Continue in terminal, Run again or Discard. Empty and off states explain how it works and turn agents on in one click.
 - **Settings, redesigned:** a page of its own with sections in a sidebar, cards with full descriptions, switches and dropdowns instead of rows of buttons, search, and a clear **Applies to** picker for agent settings: every row set for one repository says so and can be reset. The agent sections show what is in effect for the open repository.
 ## 0.2.0-beta.6

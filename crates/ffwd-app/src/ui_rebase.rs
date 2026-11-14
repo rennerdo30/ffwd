@@ -293,7 +293,7 @@ impl Ui {
     pub(super) fn paint_rebase(&mut self, cv: &mut Canvas) {
         let area = self.rebase_area();
         let (ui, semi, mono) = (self.f.ui, self.f.semi, self.f.mono);
-        cv.fill(area, BG);
+        cv.fill(area, BG());
         let x0 = area.x as f32 + self.pf(24.0);
         let Some(RebaseState::Ready(plan)) = &self.r.rebase else {
             self.te.draw(
@@ -303,7 +303,7 @@ impl Ui {
                 x0,
                 area.y as f32 + self.pf(34.0),
                 "Reading the commits…",
-                TEXT_3,
+                TEXT_3(),
                 area.w as f32,
             );
             return;
@@ -319,7 +319,7 @@ impl Ui {
             x0,
             area.y as f32 + self.pf(32.0),
             &title,
-            TEXT,
+            TEXT(),
             area.w as f32 - self.pf(48.0),
         );
         let hint = "p pick · r reword · s squash · f fixup · d drop · Shift+K/J move · Ctrl+Enter start · Esc cancel";
@@ -330,7 +330,7 @@ impl Ui {
             x0,
             area.y as f32 + self.pf(54.0),
             hint,
-            TEXT_3,
+            TEXT_3(),
             area.w as f32 - self.pf(48.0),
         );
         let list =
@@ -348,22 +348,22 @@ impl Ui {
             let r = Rect::new(list.x, y + self.px(2.0), list.w, rh - self.px(4.0));
             let hot = |ui: &Self, k: usize| ui.is_hot(Hot::Rebase(k));
             if row == sel {
-                cv.fill_round(r, self.pf(7.0), BG_SELECT);
+                cv.fill_round(r, self.pf(7.0), BG_SELECT());
             } else if hot(self, hits.len()) {
-                cv.fill_round(r, self.pf(7.0), BG_HOVER);
+                cv.fill_round(r, self.pf(7.0), BG_HOVER());
             }
             hits.push((r, RHit::Row(row)));
             let b = (r.y as f32 + r.h as f32 / 2.0 + self.pf(4.5)).round();
             // The action as a pill (click cycles it).
             let (label, fg, bg) = match &s.action {
-                Action::Pick => ("pick", TEXT_2, BG_BAR),
-                Action::Reword(_) => ("reword", ACCENT_TEXT, ACCENT),
-                Action::Squash => ("squash", TAG_FG, TAG_BG),
-                Action::Fixup => ("fixup", TAG_FG, TAG_BG),
-                Action::Drop => ("drop", DEL_TEXT, DEL_BG),
+                Action::Pick => ("pick", TEXT_2(), BG_BAR()),
+                Action::Reword(_) => ("reword", ACCENT_TEXT(), ACCENT()),
+                Action::Squash => ("squash", TAG_FG(), TAG_BG()),
+                Action::Fixup => ("fixup", TAG_FG(), TAG_BG()),
+                Action::Drop => ("drop", DEL_TEXT(), DEL_BG()),
             };
             let pill = Rect::new(r.x + self.px(10.0), r.y + self.px(6.0), self.px(68.0), r.h - self.px(12.0));
-            let pbg = if hot(self, hits.len()) { CONTROL_HOVER } else { bg };
+            let pbg = if hot(self, hits.len()) { CONTROL_HOVER() } else { bg };
             cv.fill_round(pill, self.pf(6.0), pbg);
             let lw = self.te.measure(semi, self.pf(11.5), label);
             self.te.draw(
@@ -378,7 +378,7 @@ impl Ui {
             );
             hits.push((pill, RHit::Action(row)));
             let sx = pill.right() as f32 + self.pf(14.0);
-            self.te.draw(cv, mono, self.pf(11.5), sx, b, &s.sha[..s.sha.len().min(8)], TEXT_3, self.pf(70.0));
+            self.te.draw(cv, mono, self.pf(11.5), sx, b, &s.sha[..s.sha.len().min(8)], TEXT_3(), self.pf(70.0));
             let tx = sx + self.pf(78.0);
             let right = r.right() as f32 - self.pf(70.0);
             let dropped = s.action == Action::Drop;
@@ -387,22 +387,22 @@ impl Ui {
             {
                 let fr =
                     Rect::new(tx as i32 - self.px(6.0), r.y + self.px(4.0), (right - tx) as i32, r.h - self.px(8.0));
-                cv.round_border(fr, self.pf(6.0), ACCENT, BG_INPUT);
-                self.te.draw(cv, ui, self.pf(13.0), tx, b, f.text(), TEXT, right - tx - self.pf(8.0));
+                cv.round_border(fr, self.pf(6.0), ACCENT(), BG_INPUT());
+                self.te.draw(cv, ui, self.pf(13.0), tx, b, f.text(), TEXT(), right - tx - self.pf(8.0));
                 let cx = tx + self.te.measure(ui, self.pf(13.0), &f.text()[..f.cursor()]);
                 cv.fill(
                     Rect::new(cx as i32 + 1, fr.y + self.px(6.0), self.px(1.5).max(1), fr.h - self.px(12.0)),
-                    ACCENT,
+                    ACCENT(),
                 );
             } else {
                 let (text, color) = match &s.action {
-                    Action::Reword(m) => (m.clone(), TEXT),
-                    _ if dropped => (s.subject.clone(), TEXT_4),
-                    _ => (s.subject.clone(), TEXT),
+                    Action::Reword(m) => (m.clone(), TEXT()),
+                    _ if dropped => (s.subject.clone(), TEXT_4()),
+                    _ => (s.subject.clone(), TEXT()),
                 };
                 let e = self.te.draw(cv, ui, self.pf(13.0), tx, b, &text, color, right - tx - self.pf(8.0));
                 if dropped {
-                    cv.fill(Rect::new(tx as i32, (b - self.pf(4.5)) as i32, (e - tx) as i32, 1), TEXT_4);
+                    cv.fill(Rect::new(tx as i32, (b - self.pf(4.5)) as i32, (e - tx) as i32, 1), TEXT_4());
                 }
                 let note = match &s.action {
                     Action::Squash => Some("↓ into the commit below, both messages"),
@@ -412,7 +412,7 @@ impl Ui {
                 };
                 if let Some(nt) = note {
                     let nx = (e + self.pf(14.0)).min(right - self.pf(10.0));
-                    self.te.draw(cv, ui, self.pf(11.0), nx, b, nt, TEXT_4, right - nx);
+                    self.te.draw(cv, ui, self.pf(11.0), nx, b, nt, TEXT_4(), right - nx);
                 }
             }
             // Move arrows on the selected row.
@@ -424,7 +424,7 @@ impl Ui {
                         self.px(24.0),
                         r.h - self.px(12.0),
                     );
-                    let (bg, _) = self.control_colors(Hot::Rebase(hits.len()), BG_BAR, BORDER);
+                    let (bg, _) = self.control_colors(Hot::Rebase(hits.len()), BG_BAR(), BORDER());
                     cv.fill_round(ar, self.pf(5.0), bg);
                     let (cx, cy, s) = (ar.x as f32 + ar.w as f32 / 2.0, ar.y as f32 + ar.h as f32 / 2.0, self.pf(4.0));
                     let pts = if up {
@@ -432,7 +432,7 @@ impl Ui {
                     } else {
                         [(cx - s, cy - s / 2.0), (cx, cy + s / 2.0), (cx + s, cy - s / 2.0)]
                     };
-                    cv.stroke(&pts, self.pf(1.5), TEXT_2);
+                    cv.stroke(&pts, self.pf(1.5), TEXT_2());
                     hits.push((ar, if up { RHit::Up(row) } else { RHit::Down(row) }));
                 }
             }
@@ -440,7 +440,7 @@ impl Ui {
         cv.set_clip(old);
         // Footer: what is wrong (if anything), Cancel and Start.
         let fy = area.bottom() - self.px(52.0);
-        cv.fill(Rect::new(area.x, fy - self.px(8.0), area.w, 1), BORDER_SOFT);
+        cv.fill(Rect::new(area.x, fy - self.px(8.0), area.w, 1), BORDER_SOFT());
         let problem = ffwd_core::rebase::check(&steps);
         let bh = self.px(32.0);
         let mut bx = area.right() - self.px(24.0);
@@ -451,14 +451,14 @@ impl Ui {
             if primary {
                 let enabled = problem.is_none();
                 let bg = if !enabled {
-                    BG_BAR
+                    BG_BAR()
                 } else if self.is_hot(h) {
-                    ACCENT_FG
+                    ACCENT_FG()
                 } else {
-                    ACCENT
+                    ACCENT()
                 };
                 cv.fill_round(r, self.pf(7.0), bg);
-                let c = if enabled { ACCENT_TEXT } else { TEXT_4 };
+                let c = if enabled { ACCENT_TEXT() } else { TEXT_4() };
                 self.te.draw(
                     cv,
                     semi,
@@ -470,7 +470,7 @@ impl Ui {
                     w as f32,
                 );
             } else {
-                let (bg, border) = self.control_colors(h, BG_BAR, BORDER);
+                let (bg, border) = self.control_colors(h, BG_BAR(), BORDER());
                 cv.round_border(r, self.pf(7.0), border, bg);
                 self.te.draw(
                     cv,
@@ -479,7 +479,7 @@ impl Ui {
                     r.x as f32 + self.pf(14.0),
                     (fy as f32 + self.pf(21.0)).round(),
                     label,
-                    TEXT,
+                    TEXT(),
                     w as f32,
                 );
             }
@@ -489,7 +489,7 @@ impl Ui {
         let msg = problem.unwrap_or_else(|| {
             "ffwd keeps the current tip as a backup ref; conflicts stop the rebase in Local Changes.".to_string()
         });
-        let c = if ffwd_core::rebase::check(&steps).is_some() { DEL } else { TEXT_3 };
+        let c = if ffwd_core::rebase::check(&steps).is_some() { DEL() } else { TEXT_3() };
         self.te.draw(
             cv,
             ui,

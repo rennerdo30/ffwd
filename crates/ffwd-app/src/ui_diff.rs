@@ -133,11 +133,11 @@ impl Ui {
             }
             let c = match k {
                 Kind::Plain => fg,
-                Kind::Keyword => SYN_KEYWORD,
-                Kind::Type => SYN_TYPE,
-                Kind::String => SYN_STRING,
-                Kind::Number => SYN_NUMBER,
-                Kind::Comment => SYN_COMMENT,
+                Kind::Keyword => SYN_KEYWORD(),
+                Kind::Type => SYN_TYPE(),
+                Kind::String => SYN_STRING(),
+                Kind::Number => SYN_NUMBER(),
+                Kind::Comment => SYN_COMMENT(),
             };
             pen = self.te.draw(cv, mono, fs, pen, base, &text[a..b], c, end - pen);
         }
@@ -149,7 +149,7 @@ impl Ui {
         let line = d.lines.get(i)?;
         let other = d.lines.get(p)?;
         let (a, b) = ffwd_core::diff::changed_range(&line.text, &other.text);
-        let c = if line.kind == LineKind::Add { ADD_WORD } else { DEL_WORD };
+        let c = if line.kind == LineKind::Add { ADD_WORD() } else { DEL_WORD() };
         // Only a small change inside a line gets a word highlight; when
         // most of the line differs, the line colour says it all.
         let len = line.text.trim().len().max(1);
@@ -202,7 +202,7 @@ impl Ui {
         let clip = cv.clip();
         let fit = (body.h / lh + 1) as usize;
         // Divider between the sides.
-        cv.fill(Rect::new(body.x + half, body.y, 1, body.h), BORDER);
+        cv.fill(Rect::new(body.x + half, body.y, 1, body.h), BORDER());
         for (k, &(l, r)) in rows.iter().enumerate().skip(top).take(fit) {
             let y = body.y + (k - top) as i32 * lh;
             let row = Rect::new(body.x, y, body.w, lh);
@@ -213,7 +213,7 @@ impl Ui {
             if let Some(i) = l
                 && diff.lines[i].kind == LineKind::Hunk
             {
-                cv.fill(row, HUNK_BG);
+                cv.fill(row, HUNK_BG());
                 hunk += 1;
                 let mut text_w = body.w as f32 - self.pf(20.0);
                 if let Some(label) = hunk_label {
@@ -225,14 +225,14 @@ impl Ui {
                         lh - self.px(4.0),
                     );
                     let hot = Hot::Change(hit_base + buttons.len());
-                    let (bg, border) = self.control_colors(hot, BG_BAR, HUNK_BORDER);
+                    let (bg, border) = self.control_colors(hot, BG_BAR(), HUNK_BORDER());
                     cv.round_border(b, self.pf(5.0), border, bg);
-                    self.te.draw(cv, semi, self.pf(11.0), b.x as f32 + self.pf(9.0), lb, label, HUNK_TEXT, w);
+                    self.te.draw(cv, semi, self.pf(11.0), b.x as f32 + self.pf(9.0), lb, label, HUNK_TEXT(), w);
                     buttons.push((hunk - 1, b));
                     text_w -= w + self.pf(12.0);
                 }
                 let t = diff.lines[i].text.clone();
-                self.te.draw(cv, mono, self.code_px(11.5), body.x as f32 + self.pf(10.0), lb, &t, HUNK_TEXT, text_w);
+                self.te.draw(cv, mono, self.code_px(11.5), body.x as f32 + self.pf(10.0), lb, &t, HUNK_TEXT(), text_w);
                 continue;
             }
             for (side, li) in [(0, l), (1, r)] {
@@ -240,14 +240,14 @@ impl Ui {
                 let cell = Rect::new(x0, y, half - 1, lh);
                 let Some(i) = li else {
                     // Nothing on this side: a quiet hatch-free fill.
-                    cv.fill(cell, BG_SIDEBAR);
+                    cv.fill(cell, BG_SIDEBAR());
                     continue;
                 };
                 let line = &diff.lines[i];
                 let (bg, fg, gut) = match (line.kind, side) {
-                    (LineKind::Del, _) => (DEL_BG, DEL_TEXT, DIFF_DEL_LINE),
-                    (LineKind::Add, _) => (ADD_BG, ADD_TEXT, DIFF_ADD_LINE),
-                    _ => (BG, TEXT_2, BG_SIDEBAR),
+                    (LineKind::Del, _) => (DEL_BG(), DEL_TEXT(), DIFF_DEL_LINE()),
+                    (LineKind::Add, _) => (ADD_BG(), ADD_TEXT(), DIFF_ADD_LINE()),
+                    _ => (BG(), TEXT_2(), BG_SIDEBAR()),
                 };
                 cv.fill(cell, bg);
                 cv.fill(Rect::new(x0, y, num_w as i32, lh), gut);
@@ -256,9 +256,9 @@ impl Ui {
                     let s = n.to_string();
                     let w = self.te.measure(mono, self.code_px(11.0), &s);
                     let nc = match line.kind {
-                        LineKind::Add => ADD_GUTTER,
-                        LineKind::Del => DEL_GUTTER,
-                        _ => TEXT_4,
+                        LineKind::Add => ADD_GUTTER(),
+                        LineKind::Del => DEL_GUTTER(),
+                        _ => TEXT_4(),
                     };
                     self.te.draw(cv, mono, self.code_px(11.0), x0 as f32 + num_w - w - self.pf(6.0), lb, &s, nc, num_w);
                 }
@@ -386,9 +386,9 @@ impl Ui {
             let w = (ui_.te.measure(semi, ui_.pf(11.5), label) + ui_.pf(16.0)) as i32;
             let r = Rect::new(*x - w, y, w, h);
             if on {
-                cv.fill_round(r, ui_.pf(5.0), BG_CHOSEN);
+                cv.fill_round(r, ui_.pf(5.0), BG_CHOSEN());
             } else if ui_.is_hot(Hot::DiffBar(hits.len())) {
-                cv.fill_round(r, ui_.pf(5.0), CONTROL_HOVER);
+                cv.fill_round(r, ui_.pf(5.0), CONTROL_HOVER());
             }
             ui_.te.draw(
                 cv,
@@ -397,7 +397,7 @@ impl Ui {
                 r.x as f32 + ui_.pf(8.0),
                 base,
                 label,
-                if on { TEXT } else { TEXT_2 },
+                if on { TEXT() } else { TEXT_2() },
                 w as f32,
             );
             hits.push((r, hit));
@@ -417,17 +417,17 @@ impl Ui {
             let r = Rect::new(x - h, y, h, h);
             let on = hit == DiffBar::Find && self.diff_find.is_some();
             if on {
-                cv.fill_round(r, self.pf(5.0), BG_CHOSEN);
+                cv.fill_round(r, self.pf(5.0), BG_CHOSEN());
             } else if self.is_hot(Hot::DiffBar(hits.len())) {
-                cv.fill_round(r, self.pf(5.0), CONTROL_HOVER);
+                cv.fill_round(r, self.pf(5.0), CONTROL_HOVER());
             }
-            let c = if on { TEXT } else { TEXT_2 };
+            let c = if on { TEXT() } else { TEXT_2() };
             self.glyph(cv, g, r.x as f32 + r.w as f32 / 2.0, r.y as f32 + r.h as f32 / 2.0, self.pf(6.5), c);
             hits.push((r, hit));
             x = r.x - self.px(2.0);
         }
         x -= self.px(5.0);
-        cv.fill(Rect::new(x, y + self.px(4.0), 1, h - self.px(8.0)), BORDER);
+        cv.fill(Rect::new(x, y + self.px(4.0), 1, h - self.px(8.0)), BORDER());
         x -= self.px(5.0);
         let ws = self.diff_opts.ignore_whitespace;
         seg(
@@ -440,14 +440,14 @@ impl Ui {
             &mut hits,
         );
         x -= self.px(5.0);
-        cv.fill(Rect::new(x, y + self.px(4.0), 1, h - self.px(8.0)), BORDER);
+        cv.fill(Rect::new(x, y + self.px(4.0), 1, h - self.px(8.0)), BORDER());
         x -= self.px(5.0);
         for &(n, label) in CONTEXTS.iter().rev() {
             let on = self.diff_opts.context == n;
             seg(self, cv, &mut x, label, on, DiffBar::Context(n), &mut hits);
         }
         x -= self.px(5.0);
-        cv.fill(Rect::new(x, y + self.px(4.0), 1, h - self.px(8.0)), BORDER);
+        cv.fill(Rect::new(x, y + self.px(4.0), 1, h - self.px(8.0)), BORDER());
         x -= self.px(5.0);
         let split = self.diff_split;
         seg(self, cv, &mut x, "Side by side", split, DiffBar::Split, &mut hits);
@@ -632,7 +632,7 @@ impl Ui {
             let mark = if c == '\t' { "→" } else { "·" };
             let w = self.te.measure(mono, fs, mark);
             let at = if c == '\t' { pen + self.pf(1.0) } else { pen + (sp - w) / 2.0 };
-            self.te.draw(cv, mono, fs, at, base, mark, WS_MARK, end - at);
+            self.te.draw(cv, mono, fs, at, base, mark, WS_MARK(), end - at);
             pen += sp * n as f32;
             col += n;
             run = i + c.len_utf8();

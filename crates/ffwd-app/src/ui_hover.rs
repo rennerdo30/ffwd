@@ -198,9 +198,9 @@ impl Ui {
     /// Background and border of a control in its current state.
     pub(super) fn control_colors(&self, h: Hot, bg: u32, border: u32) -> (u32, u32) {
         if self.is_pressed(h) {
-            (BG_PRESS, BORDER_HOVER)
+            (BG_PRESS(), BORDER_HOVER())
         } else if self.is_hot(h) {
-            (CONTROL_HOVER, BORDER_HOVER)
+            (CONTROL_HOVER(), BORDER_HOVER())
         } else {
             (bg, border)
         }
