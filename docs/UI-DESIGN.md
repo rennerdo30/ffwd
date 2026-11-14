@@ -40,6 +40,8 @@ The capture above is the real PoC UI. `ffwd --snapshot` rendered it offscreen fr
 
 - **Themes:** dark ("graphite and amber") and light ("paper and amber") keep the same roles and contrast steps. Settings → Appearance → Theme: **System** (default; follows the computer's light or dark mode, also when it changes), **Dark**, **Light** (`ui.theme`). The Windows title bar follows.
 - **Pane borders move:** sidebar | content, history / details, details header | diff, Local Changes' column | diff, unstaged / staged, lists / commit box, the Files tree and the agents rail. The pointer shows a resize cursor and the border an accent line; drag to move, double click to reset. Sizes are kept in `state.toml` (`ui.split.*`).
+- **The workspace dock** (under the card): a tile per view, three or two to a row, each with a live figure: Changes (changed files, conflicts in red), History (commits), Files, Activity (failures in red), Reflog, Agents (running, to review, off). The open view's tile is marked; the Workspace list is gone.
+- **Branch rows** wear their lane's colour from the history graph; ahead and behind are chips; ages fade with time and branches untouched for a month step back; the current branch has an amber tint. Section counts are pills.
 - **The sidebar's "here" card** (top): the branch (or the detached commit), its sync as chips (↑ ahead, ↓ behind, in sync, no upstream, upstream gone), the upstream, and changed files or a stopped merge or rebase with its conflicts; a click opens Local Changes. Branches show their age, worktrees their branch; empty Stashes is hidden and Remotes without a remote offers Add remote….
 
 ## Window frame

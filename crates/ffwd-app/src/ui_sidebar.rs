@@ -26,20 +26,15 @@ pub(super) struct SideItem {
     pub expander: Option<bool>,
     /// A quiet note at the right: a branch's age, a worktree's branch.
     pub age: String,
+    /// How old a branch's last commit is, in seconds (0: unknown).
+    pub age_secs: i64,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum SideKind {
     Header,
-    Changes,
-    Files,
-    Activity,
-    Reflog,
-    /// The agents page (FF-23).
-    Agents,
     /// "Add remote…" where a repository has none.
     AddRemote,
-    All,
     Branch,
     Folder,
     Remote,
@@ -63,6 +58,7 @@ impl SideItem {
             current: false,
             expander: None,
             age: String::new(),
+            age_secs: 0,
         }
     }
 }
@@ -136,6 +132,7 @@ fn tree(
             if it.badge.is_empty() && r.time > 0 {
                 // How old its last commit is, quietly.
                 it.age = short_age(now - r.time);
+                it.age_secs = now - r.time;
             }
         }
         out.push(it);
@@ -154,10 +151,163 @@ impl Ui {
         Rect::new(s.x + self.px(10.0), s.y + self.px(10.0), s.w - self.px(20.0), self.px(62.0))
     }
 
-    /// The filter field under the card.
-    pub(super) fn side_filter_rect(&self) -> Rect {
+    /// The workspace dock under the card (FF-57): a tile per view with a
+    /// live figure, three or two to a row.
+    pub(super) fn side_dock_rect(&self) -> Rect {
         let s = self.lay.side;
         let top = self.side_here_rect().bottom() + self.px(8.0);
+        let rows = 6_usize.div_ceil(self.dock_cols()) as i32;
+        let h = rows * self.px(52.0) + (rows - 1) * self.px(6.0);
+        Rect::new(s.x + self.px(10.0), top, s.w - self.px(20.0), h)
+    }
+
+    fn dock_cols(&self) -> usize {
+        if self.lay.side.w >= self.px(250.0) { 3 } else { 2 }
+    }
+
+    /// The tile rects, in the order of `dock_tiles`.
+    fn dock_tile_rects(&self) -> Vec<Rect> {
+        let d = self.side_dock_rect();
+        let cols = self.dock_cols() as i32;
+        let gap = self.px(6.0);
+        let tw = (d.w - (cols - 1) * gap) / cols;
+        let th = self.px(52.0);
+        (0..6)
+            .map(|k| {
+                let (c, r) = (k % cols, k / cols);
+                Rect::new(d.x + c * (tw + gap), d.y + r * (th + gap), tw, th)
+            })
+            .collect()
+    }
+
+    /// The dock's tiles: (key, name, icon, live figure, its colour).
+    pub(super) fn dock_tiles(&self) -> Vec<(&'static str, &'static str, super::Glyph, String, u32)> {
+        use super::Glyph as G;
+        let st = self.r.status;
+        let (changes, cc) = match st {
+            Some(s) if s.conflicted > 0 => (format!("{} conflicts", s.conflicted), DEL()),
+            Some(s) if s.total() > 0 => (format!("{} changed", fmt::num(s.total() as usize)), MOD()),
+            Some(_) => ("clean".to_string(), TEXT_4()),
+            None => ("…".to_string(), TEXT_4()),
+        };
+        let n = self.r.commits.len();
+        let history = if self.r.log_done { format!("{} commits", fmt::num(n)) } else { format!("{}…", fmt::num(n)) };
+        let (activity, ac) = match self.activity.unseen_failures {
+            0 => ("all fine".to_string(), TEXT_4()),
+            f => (format!("{f} failed"), DEL()),
+        };
+        let (agents, gc) = if !self.agent_config().0.enabled {
+            ("off".to_string(), TEXT_4())
+        } else {
+            match self.agent_counts() {
+                (0, 0) => ("idle".to_string(), TEXT_4()),
+                (0, r) => (format!("{r} to review"), ADD()),
+                (n, _) => (format!("{n} running"), ACCENT_FG()),
+            }
+        };
+        vec![
+            ("changes", "Changes", G::Edit, changes, cc),
+            ("all", "History", G::Commit, history, TEXT_3()),
+            ("files", "Files", G::Folder, "browse".to_string(), TEXT_4()),
+            ("activity", "Activity", G::Text, activity, ac),
+            ("reflog", "Reflog", G::Clock, "undo trail".to_string(), TEXT_4()),
+            ("agents", "Agents", G::Terminal, agents, gc),
+        ]
+    }
+
+    /// The tile under the pointer.
+    fn dock_tile_at(&self, x: i32, y: i32) -> Option<usize> {
+        self.dock_tile_rects().iter().position(|r| r.contains(x, y))
+    }
+
+    /// Opens a tile's view.
+    pub(super) fn dock_activate(&mut self, key: &str) {
+        if key != "agents" {
+            self.close_agents();
+        }
+        match key {
+            "changes" => self.enter_changes(),
+            "files" => self.enter_files(),
+            "activity" => self.enter_activity(),
+            "reflog" => self.enter_reflog(),
+            "agents" => self.open_agents(),
+            _ => {
+                self.leave_changes();
+                self.leave_files();
+                self.leave_activity();
+                self.leave_reflog();
+                self.side_select("all");
+            }
+        }
+        self.damage.rects.push(self.lay.side);
+    }
+
+    /// Tests: a tile's live figure.
+    #[cfg(test)]
+    pub(super) fn dock_stat(&self, key: &str) -> Option<String> {
+        self.dock_tiles().into_iter().find(|t| t.0 == key).map(|t| t.3)
+    }
+
+    fn paint_dock(&mut self, cv: &mut Canvas) {
+        let (ui, semi) = (self.f.ui, self.f.semi);
+        let tiles = self.dock_tiles();
+        let rects = self.dock_tile_rects();
+        let agents_open = self.agent_view.is_some();
+        for (k, ((key, name, glyph, stat, color), r)) in tiles.into_iter().zip(rects).enumerate() {
+            let on = if agents_open { key == "agents" } else { self.r.side_sel == key };
+            let hot = self.side_dock_hot == Some(k);
+            let (bg, border) = match (on, hot) {
+                (true, _) => (BG_SELECT_DIM(), ACCENT_BORDER()),
+                (false, true) => (BG_HOVER(), BORDER_HOVER()),
+                (false, false) => (BG_PANEL(), BORDER_SOFT()),
+            };
+            cv.round_border(r, self.pf(9.0), border, bg);
+            if on {
+                cv.fill_round(
+                    Rect::new(r.x + self.px(10.0), r.bottom() - self.px(3.0), r.w - self.px(20.0), self.px(2.0)),
+                    self.pf(1.0),
+                    ACCENT(),
+                );
+            }
+            let gx = r.x as f32 + self.pf(16.0);
+            let gy = r.y as f32 + self.pf(18.0);
+            self.glyph(cv, glyph, gx, gy, self.pf(5.5), if on { ACCENT() } else { TEXT_3() });
+            let w = r.w as f32 - self.pf(34.0);
+            self.te.draw(
+                cv,
+                semi,
+                self.pf(12.5),
+                gx + self.pf(12.0),
+                gy + self.pf(4.5),
+                name,
+                if on { TEXT() } else { TEXT_2() },
+                w,
+            );
+            // The live figure: a dot when it asks for attention.
+            let attention = color != TEXT_4() && color != TEXT_3();
+            let mut sx = r.x as f32 + self.pf(10.0);
+            let sy = r.y as f32 + self.pf(40.0);
+            if attention {
+                cv.fill_circle(sx + self.pf(3.0), sy - self.pf(4.0), self.pf(3.0), color);
+                sx += self.pf(10.0);
+            }
+            self.te.draw(
+                cv,
+                if attention { semi } else { ui },
+                self.pf(11.5),
+                sx,
+                sy,
+                &stat,
+                color,
+                r.right() as f32 - sx - self.pf(6.0),
+            );
+        }
+    }
+
+    /// The filter field under the dock.
+    pub(super) fn side_filter_rect(&self) -> Rect {
+        let s = self.lay.side;
+        let top = self.side_dock_rect().bottom() + self.px(10.0);
         Rect::new(s.x + self.px(10.0), top, s.w - self.px(20.0), self.px(FILTER_H - 14.0))
     }
 
@@ -272,34 +422,6 @@ impl Ui {
             open(key)
         };
 
-        if !filtering && header(&mut v, "Workspace", "h:workspace", String::new()) {
-            let mut c = SideItem::new(0, SideKind::Changes, "Local Changes", "changes".into());
-            c.badge = self
-                .r
-                .status
-                .map_or(String::new(), |s| if s.total() > 0 { fmt::num(s.total() as usize) } else { String::new() });
-            v.push(c);
-            v.push(SideItem::new(0, SideKind::All, "All Commits", "all".into()));
-            v.push(SideItem::new(0, SideKind::Files, "Files", "files".into()));
-            let mut a = SideItem::new(0, SideKind::Activity, "Activity", "activity".into());
-            if self.activity.unseen_failures > 0 {
-                a.badge = format!("{} failed", self.activity.unseen_failures);
-            }
-            v.push(a);
-            v.push(SideItem::new(0, SideKind::Reflog, "Reflog", "reflog".into()));
-            // The agents page, when agents are on (FF-23): what runs and
-            // what waits for review.
-            if self.agent_config().0.enabled {
-                let mut a = SideItem::new(0, SideKind::Agents, "Agents", "agents".into());
-                let (running, review) = self.agent_counts();
-                a.badge = match (running, review) {
-                    (0, 0) => String::new(),
-                    (0, n) => format!("{n} to review"),
-                    (n, _) => format!("{n} running"),
-                };
-                v.push(a);
-            }
-        }
         let refs = &self.r.refs.refs;
         let recent = self.settings.get("sidebar.branch_order") == Some("recent");
         let locals: Vec<(String, &Ref)> = refs
@@ -507,32 +629,18 @@ impl Ui {
     /// Acts on an item: refs jump the history to their commit.
     fn side_activate(&mut self, i: usize) {
         let Some(it) = self.r.side.get(i).cloned() else { return };
-        if !matches!(
-            it.kind,
-            SideKind::Agents | SideKind::Header | SideKind::Folder | SideKind::Remote | SideKind::AddRemote
-        ) {
+        if !matches!(it.kind, SideKind::Header | SideKind::Folder | SideKind::Remote | SideKind::AddRemote) {
             self.close_agents();
         }
         self.side_select(&it.key);
         match it.kind {
             SideKind::Header | SideKind::Folder | SideKind::Remote => self.toggle_side(i),
-            SideKind::Changes => self.enter_changes(),
-            SideKind::Files => self.enter_files(),
             SideKind::Submodule => self.open_submodule(it.key.trim_start_matches("m:")),
-            SideKind::Activity => self.enter_activity(),
-            SideKind::Agents => self.open_agents(),
             SideKind::AddRemote => self.open_dialog(super::menu::DialogKind::Name {
                 act: super::menu::NameAct::AddRemoteUrl,
                 field: TextField::default(),
                 checkout: false,
             }),
-            SideKind::Reflog => self.enter_reflog(),
-            SideKind::All => {
-                self.leave_changes();
-                self.leave_files();
-                self.leave_activity();
-                self.leave_reflog();
-            }
             _ => match it.target.and_then(|t| self.r.by_id.get(&t).copied()) {
                 Some(row) => {
                     self.leave_changes();
@@ -551,13 +659,11 @@ impl Ui {
     pub(super) fn side_click(&mut self, x: i32, y: i32) {
         if self.side_here_rect().contains(x, y) {
             // The card leads to the working tree.
-            self.close_agents();
-            if let Some(i) = self.side_index("changes") {
-                self.side_activate(i);
-            } else {
-                self.enter_changes();
-            }
-            return;
+            return self.dock_activate("changes");
+        }
+        if let Some(k) = self.dock_tile_at(x, y) {
+            let key = self.dock_tiles()[k].0;
+            return self.dock_activate(key);
         }
         if self.side_filter_rect().contains(x, y) {
             self.focus = Focus::SideFilter;
@@ -720,6 +826,7 @@ impl Ui {
         cv.fill(r, BG_SIDEBAR());
         cv.fill(Rect::new(r.right() - 1, r.y, 1, r.h), BORDER());
         self.paint_side_here(cv);
+        self.paint_dock(cv);
         let (ui, semi) = (self.f.ui, self.f.semi);
         // Filter field.
         let fr = self.side_filter_rect();
@@ -807,15 +914,19 @@ impl Ui {
                     row.w as f32,
                 );
                 if !it.badge.is_empty() {
-                    let bw = self.te.measure(ui, self.pf(11.0), &it.badge);
+                    let bw = self.te.measure(semi, self.pf(10.5), &it.badge);
+                    let pw = bw + self.pf(14.0);
+                    let px = row.right() as f32 - pw - self.pf(6.0);
+                    let pr = Rect::new(px as i32, (cy - self.pf(8.5)) as i32, pw as i32, self.px(17.0));
+                    cv.fill_round(pr, self.pf(8.5), BG_HOVER());
                     self.te.draw(
                         cv,
-                        ui,
-                        self.pf(11.0),
-                        row.right() as f32 - bw - self.pf(10.0),
-                        base - self.pf(0.5),
+                        semi,
+                        self.pf(10.5),
+                        px + self.pf(7.0),
+                        base - self.pf(1.0),
                         &it.badge,
-                        TEXT_4(),
+                        TEXT_3(),
                         bw + 2.0,
                     );
                 }
@@ -830,19 +941,34 @@ impl Ui {
                 SideKind::RemoteBranch => (REMOTE_FG(), TEXT_3()),
                 SideKind::Tag => (TAG_FG(), TEXT_2()),
                 SideKind::Stash => (STASH_FG(), TEXT_2()),
-                SideKind::Changes => (MOD(), TEXT()),
                 SideKind::Worktree | SideKind::Submodule | SideKind::PullRequest => (TEXT_3(), TEXT_2()),
-                SideKind::All | SideKind::Files | SideKind::Activity | SideKind::Reflog | SideKind::Agents => {
-                    (TEXT_2(), TEXT())
-                }
                 SideKind::Header => (TEXT_3(), TEXT_3()),
                 SideKind::AddRemote => (ACCENT(), TEXT_3()),
             };
-            let text = if selected { TEXT() } else { text };
+            // A branch wears its lane's colour from the history graph.
+            let lane = it
+                .target
+                .filter(|_| matches!(it.kind, SideKind::Branch | SideKind::RemoteBranch))
+                .and_then(|t| self.r.by_id.get(&t))
+                .and_then(|&row| self.r.graph.rows.get(row as usize))
+                .map(|g| crate::theme::lane(g.color));
+            let icon = lane.filter(|_| !it.current).unwrap_or(icon);
+            // A branch untouched for a month steps back.
+            let stale = it.kind == SideKind::Branch && !it.current && it.age_secs > 30 * 86_400;
+            let text = if selected {
+                TEXT()
+            } else if stale {
+                TEXT_4()
+            } else {
+                text
+            };
+            if it.current && !selected && it.kind == SideKind::Branch {
+                cv.fill_round(row, self.pf(6.0), ACCENT_SOFT());
+            }
             match it.kind {
                 SideKind::Branch if it.current => self.check(cv, ix, cy, icon),
                 SideKind::Branch | SideKind::RemoteBranch => self.branch_icon(cv, ix, cy, icon),
-                SideKind::Folder | SideKind::Files => self.folder_icon(cv, ix, cy, icon),
+                SideKind::Folder => self.folder_icon(cv, ix, cy, icon),
                 SideKind::Tag => {
                     let s = self.pf(4.0);
                     cv.stroke(
@@ -859,32 +985,6 @@ impl Ui {
                     let b =
                         Rect::new((ix - self.pf(5.0)) as i32, (cy - self.pf(4.0)) as i32, self.px(10.0), self.px(8.0));
                     cv.round_border(b, self.pf(2.0), icon, BG_SIDEBAR());
-                }
-                SideKind::Changes => cv.fill_circle(ix, cy, self.pf(4.0), icon),
-                // A clock: where HEAD has been.
-                SideKind::Reflog => self.glyph(cv, super::Glyph::Clock, ix, cy, self.pf(5.8), icon),
-                SideKind::Agents => self.glyph(cv, super::Glyph::Terminal, ix, cy, self.pf(5.8), icon),
-                SideKind::Activity => {
-                    // A pulse line.
-                    let s = self.pf(5.0);
-                    cv.stroke(
-                        &[
-                            (ix - s, cy),
-                            (ix - s * 0.4, cy),
-                            (ix - s * 0.1, cy - s * 0.8),
-                            (ix + s * 0.3, cy + s * 0.8),
-                            (ix + s * 0.6, cy),
-                            (ix + s, cy),
-                        ],
-                        self.pf(1.4),
-                        icon,
-                    );
-                }
-                SideKind::All => {
-                    for j in 0..3 {
-                        let yy = cy - self.pf(4.0) + j as f32 * self.pf(4.0);
-                        cv.stroke(&[(ix - self.pf(5.0), yy), (ix + self.pf(5.0), yy)], self.pf(1.5), icon);
-                    }
                 }
                 SideKind::Submodule => {
                     // A box inside a box: a repository in the repository.
@@ -930,6 +1030,9 @@ impl Ui {
             };
             let badge_w = if it.badge.is_empty() {
                 note_w
+            } else if it.kind == SideKind::Branch {
+                let parts = it.badge.split_whitespace().count() as f32;
+                self.te.measure(semi, self.pf(10.5), &it.badge) + parts * self.pf(16.0) + self.pf(8.0)
             } else {
                 self.te.measure(semi, self.pf(11.0), &it.badge) + self.pf(14.0)
             };
@@ -950,32 +1053,39 @@ impl Ui {
                     row.right() as f32 - tw - self.pf(10.0),
                     base - self.pf(0.5),
                     &shown,
-                    TEXT_4(),
+                    match it.age_secs {
+                        s if s > 0 && s < 86_400 => TEXT_3(),
+                        _ => TEXT_4(),
+                    },
                     nw + 2.0,
                 );
             }
-            if !it.badge.is_empty() {
+            if it.kind == SideKind::Branch && !it.badge.is_empty() {
+                // Sync as chips: ↑ ahead (accent), ↓ behind (remote blue),
+                // gone (red), from the right.
+                let mut x = row.right() as f32 - self.pf(8.0);
+                for part in it.badge.split_whitespace().collect::<Vec<_>>().into_iter().rev() {
+                    let (bg, fg) = match part {
+                        p if p.starts_with('↑') => (ACCENT_SOFT(), ACCENT_FG()),
+                        p if p.starts_with('↓') => (REMOTE_BG(), REMOTE_FG()),
+                        _ => (DEL_BG(), DEL_TEXT()),
+                    };
+                    let w = self.te.measure(semi, self.pf(10.5), part) + self.pf(12.0);
+                    x -= w;
+                    let r = Rect::new(x as i32, (cy - self.pf(8.5)) as i32, w as i32, self.px(17.0));
+                    cv.fill_round(r, self.pf(8.5), bg);
+                    self.te.draw(cv, semi, self.pf(10.5), x + self.pf(6.0), base - self.pf(1.0), part, fg, w);
+                    x -= self.pf(4.0);
+                }
+            } else if !it.badge.is_empty() {
                 let bw = badge_w - self.pf(14.0);
                 let bx = row.right() as f32 - bw - self.pf(10.0);
                 let color = match it.kind {
-                    SideKind::Changes => MOD(),
-                    SideKind::Activity => DEL(),
-                    SideKind::Agents if it.badge.ends_with("running") => ACCENT(),
-                    SideKind::Agents => ADD(),
                     // A gone upstream reads as a warning.
                     SideKind::Branch if it.badge.starts_with("gone") => DEL(),
                     SideKind::Branch => ACCENT(),
                     _ => TEXT_4(),
                 };
-                if it.kind == SideKind::Changes {
-                    let b = Rect::new(
-                        (bx - self.pf(6.0)) as i32,
-                        (cy - self.pf(9.0)) as i32,
-                        (bw + self.pf(12.0)) as i32,
-                        self.px(18.0),
-                    );
-                    cv.fill_round(b, self.pf(9.0), ACCENT_SOFT());
-                }
                 self.te.draw(cv, semi, self.pf(11.0), bx, base - self.pf(0.5), &it.badge, color, bw + 8.0);
             }
         }
@@ -1005,6 +1115,12 @@ impl Ui {
         if here != self.side_here_hot {
             self.side_here_hot = here;
             let r = self.side_here_rect();
+            self.damage.rects.push(r);
+        }
+        let d = self.dock_tile_at(x, y);
+        if d != self.side_dock_hot {
+            self.side_dock_hot = d;
+            let r = self.side_dock_rect();
             self.damage.rects.push(r);
         }
         let h = self.side_item_at(x, y);

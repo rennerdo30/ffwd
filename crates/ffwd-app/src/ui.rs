@@ -644,6 +644,8 @@ pub struct Ui {
     cap_pressed: Option<u8>,
     /// The pointer is over the sidebar's "here" card.
     pub(super) side_here_hot: bool,
+    /// The dock tile under the pointer.
+    pub(super) side_dock_hot: Option<usize>,
     /// A pane border being dragged, and the one under the pointer (FF-57).
     pub(super) split_drag: Option<Split>,
     pub(super) split_hot: Option<Split>,
@@ -816,6 +818,7 @@ impl Ui {
             cap_hover: None,
             cap_pressed: None,
             side_here_hot: false,
+            side_dock_hot: None,
             split_drag: None,
             split_hot: None,
             max_state: (false, false),
@@ -5594,13 +5597,13 @@ mod tests {
         assert_eq!(a.get(0).unwrap().title, "Stage 1 file");
         assert_eq!(&*a.get(0).unwrap().repo, dir.file_name().unwrap().to_str().unwrap());
         assert_eq!(a.unseen_failures, 1);
-        assert!(ui.r.side.iter().any(|i| i.key == "activity" && i.badge == "1 failed"));
+        assert_eq!(ui.dock_stat("activity").as_deref(), Some("1 failed"));
         // Open the view: the badge clears; moving and copying works.
         let mut screen = vec![0u32; 1280 * 800];
         ui.paint(&mut Canvas::new(&mut screen, 1280, 800), true);
         ui.enter_activity();
         assert_eq!(ui.activity.unseen_failures, 0);
-        assert!(ui.r.side.iter().any(|i| i.key == "activity" && i.badge.is_empty()), "the badge clears");
+        assert_eq!(ui.dock_stat("activity").as_deref(), Some("all fine"), "the badge clears");
         assert_partial_paint_is_full(&mut ui, &mut screen, "open the activity log");
         ui.key(Key::Down);
         assert_eq!(ui.activity.sel, 1);
@@ -9048,8 +9051,7 @@ mod tests {
         // Runs: running, to review, failed; the sidebar says what runs.
         ui.snapshot_agents_demo();
         ui.rebuild_side();
-        let side = ui.r.side.iter().find(|i| i.key == "agents").map(|i| i.badge.clone());
-        assert_eq!(side.as_deref(), Some("1 running"));
+        assert_eq!(ui.dock_stat("agents").as_deref(), Some("1 running"));
         ui.paint(&mut Canvas::new(&mut screen, 1400, 900), true);
         let order: Vec<String> = ui.agent_rail_titles();
         assert_eq!(

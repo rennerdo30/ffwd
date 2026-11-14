@@ -248,9 +248,7 @@ impl Ui {
             return;
         }
         self.load_agent_runs();
-        if self.r.side.iter().any(|i| i.key == "agents") {
-            self.side_select("agents");
-        }
+        self.side_select("agents");
         let runs = self.tab_runs();
         for &i in &runs {
             self.agents[i].seen = true;
