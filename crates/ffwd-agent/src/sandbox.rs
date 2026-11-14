@@ -30,6 +30,9 @@ pub struct Ctx<'a> {
     /// sandbox starts the real path and mounts its folder read-only, so a
     /// tool installed in the home folder runs with a private home too.
     pub program: Option<(String, String)>,
+    /// A terminal session (FF-23): the tool keeps its terminal. Without it
+    /// bubblewrap starts a new session, and `/dev/tty` cannot be opened.
+    pub interactive: bool,
 }
 
 /// `~/rest` (or `~` + backslash + `rest`) gives `rest`; `~` alone gives "".
@@ -140,7 +143,15 @@ pub fn to_wsl(p: &Path, map: &[(String, String)]) -> Result<String, String> {
 /// Bubblewrap arguments (Linux, or inside WSL with `conv` translating paths).
 fn bwrap_args(ctx: &Ctx, conv: &dyn Fn(&Path) -> Result<String, String>) -> Result<Vec<String>, String> {
     let cfg = ctx.cfg;
-    let mut a: Vec<String> = ["--die-with-parent", "--new-session", "--unshare-all"].map(String::from).to_vec();
+    // --new-session stops a sandboxed program from typing into the
+    // terminal it runs in (TIOCSTI). A terminal session needs that terminal
+    // as its own (`/dev/tty`); its window is the session's alone, and
+    // current kernels refuse TIOCSTI anyway (dev.tty.legacy_tiocsti = 0).
+    let mut a: Vec<String> = vec!["--die-with-parent".into()];
+    if !ctx.interactive {
+        a.push("--new-session".into());
+    }
+    a.push("--unshare-all".into());
     if cfg.network {
         a.push("--share-net".into());
     }
@@ -373,6 +384,19 @@ pub fn template_vars(ctx: &Ctx) -> Vec<(&'static str, String)> {
 #[cfg(test)]
 mod tests {
 
+    /// A terminal session keeps its terminal (FF-23): no --new-session,
+    /// which leaves an interactive tool without /dev/tty.
+    #[test]
+    fn terminal_sessions_keep_their_terminal() {
+        let c = cfg(SandboxKind::Bubblewrap);
+        let mut x = ctx(&c);
+        let l = wrap(&["agent".into()], &x, None).unwrap();
+        assert!(l.args.iter().any(|a| a == "--new-session"), "runs get a new session");
+        x.interactive = true;
+        let l = wrap(&["agent".into()], &x, None).unwrap();
+        assert!(!l.args.iter().any(|a| a == "--new-session"), "{:?}", l.args);
+    }
+
     /// A terminal session without the sandbox (FF-23): inside WSL it still
     /// runs in the distribution, in the worktree, by the tool's real path,
     /// but without bubblewrap.
@@ -417,6 +441,7 @@ mod tests {
             vars: vec![("FFWD_AGENT_BRANCH".into(), "agent/fix".into())],
             home: Some("/home/me".into()),
             program: None,
+            interactive: false,
         }
     }
 

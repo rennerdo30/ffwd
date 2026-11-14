@@ -8799,15 +8799,23 @@ mod tests {
         let sinks: SinkFactory = Arc::new(|_| Arc::new(|_| {}));
         let mut ui = Ui::new(te, f, s, empty, None, sinks, 1280, 800, 1.0);
         let labels = |v: Vec<menu::MenuItem>| v.into_iter().map(|i| i.label).collect::<Vec<_>>();
+        let all = labels(ui.agent_terminal_menu(None, true));
         assert_eq!(
-            labels(ui.agent_terminal_menu(None, true)),
+            all[..5],
             [
                 "Open Claude Code in a new worktree (WSL + bubblewrap)",
                 "Open Claude Code in this repository (WSL + bubblewrap)",
                 "Open Claude Code in a new worktree (WSL, no sandbox)",
                 "Open Claude Code in this repository (WSL, no sandbox)",
+                "",
             ]
         );
+        // Every other agent, sandboxed, with its own command.
+        assert!(all.iter().any(|l| l == "Open Codex in a new worktree (WSL + bubblewrap)"), "{all:?}");
+        assert!(all.iter().any(|l| l == "Open opencode in this repository (WSL + bubblewrap)"), "{all:?}");
+        assert_eq!(all.len(), 5 + 2 * (ffwd_agent::presets::PRESETS.len() - 1));
+        let (codex, _) = ui.agent_config_for(Some("codex"));
+        assert_eq!(codex.interactive_command, "codex");
         ui.r.refs.worktrees = vec!["E:/r/main".into(), "E:/r/.ffwd-agents/r/fix".into()];
         let main = labels(ui.ref_menu("w:E:/r/main"));
         assert!(main.iter().any(|l| l == "Open in a new tab") && main.iter().any(|l| l == "Open terminal here"));

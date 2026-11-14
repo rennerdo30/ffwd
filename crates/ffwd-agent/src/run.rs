@@ -336,6 +336,7 @@ fn execute(cfg: &Config, repo: &Path, id: &str, prompt: &str, mode: Mode, cancel
         vars: vars.clone(),
         home: found.home,
         program: found.program,
+        interactive: interactive.is_some(),
     };
     rec.status = Status::Running;
     save(&rec);
@@ -349,6 +350,8 @@ fn execute(cfg: &Config, repo: &Path, id: &str, prompt: &str, mode: Mode, cancel
             Err(e) => return Exit::SpawnFailed(e),
         };
         let mut c2 = ctx.clone();
+        // Scripts run without a terminal, as in any run.
+        c2.interactive = false;
         c2.vars.extend(extra.iter().cloned());
         let launch = if sandboxed {
             match sandbox::wrap(&argv, &c2, None) {
@@ -384,6 +387,7 @@ fn execute(cfg: &Config, repo: &Path, id: &str, prompt: &str, mode: Mode, cancel
     if let (true, Some(sandboxed)) = (exit.ok(), interactive) {
         log.phase("Terminal session");
         exit = match config::split_command(&cfg.interactive_command)
+            .map(|argv| session_argv(cfg, &ctx, argv))
             .and_then(|argv| if sandboxed { sandbox::wrap(&argv, &ctx, None) } else { sandbox::plain(&argv, &ctx) })
         {
             Ok(launch) => {
@@ -535,6 +539,49 @@ fn execute(cfg: &Config, repo: &Path, id: &str, prompt: &str, mode: Mode, cancel
     send(&rec);
 }
 
+/// A terminal session's argv: where a POSIX shell runs the tool (WSL,
+/// bubblewrap, macOS), a failing tool leaves its window open until Enter,
+/// so its message can be read; a normal exit closes it (FF-23).
+pub fn session_argv(cfg: &Config, ctx: &sandbox::Ctx, mut argv: Vec<String>) -> Vec<String> {
+    let posix = matches!(cfg.sandbox.resolve(), SandboxKind::Wsl | SandboxKind::Bubblewrap | SandboxKind::MacOs);
+    if !posix || argv.is_empty() {
+        return argv;
+    }
+    // The tool's real path, found by the preflight check (the wrappers
+    // only replace it when it comes first).
+    if let Some((name, real)) = &ctx.program
+        && argv[0] == *name
+    {
+        argv[0] = real.clone();
+    }
+    let script = "\"$@\"; s=$?; if [ $s -ne 0 ]; then printf '\\n[ffwd] the session ended with exit code %s. Press Enter to close.' $s; read _; fi; exit $s";
+    // A file in the run folder (read-only inside the sandbox): quotes and
+    // % cannot pass through the console window's command line.
+    let file = ctx.run_dir.join("session.sh");
+    if std::fs::write(
+        &file,
+        format!(
+            "{script}
+"
+        ),
+    )
+    .is_err()
+    {
+        return argv;
+    }
+    let shown = if cfg.sandbox.resolve() == SandboxKind::Wsl {
+        match sandbox::to_wsl(&file, &cfg.wsl_path_map) {
+            Ok(p) => p,
+            Err(_) => return argv,
+        }
+    } else {
+        file.to_string_lossy().into_owned()
+    };
+    let mut v = vec!["sh".to_string(), shown];
+    v.extend(argv);
+    v
+}
+
 /// [`preflight`] for a run mode: an interactive session without the
 /// sandbox needs the interactive program and no bubblewrap.
 fn preflight_for(cfg: &Config, interactive: Option<bool>) -> Result<Found, String> {
@@ -576,8 +623,9 @@ pub fn open_in_repo(cfg: &Config, repo: &Path, sandboxed: bool) -> Result<String
         vars: vec![("FFWD_AGENT_REPO".into(), top.root.to_string_lossy().into_owned())],
         home: found.home,
         program: found.program,
+        interactive: true,
     };
-    let argv = config::split_command(&cfg.interactive_command)?;
+    let argv = session_argv(cfg, &ctx, config::split_command(&cfg.interactive_command)?);
     let launch = if sandboxed { sandbox::wrap(&argv, &ctx, None)? } else { sandbox::plain(&argv, &ctx)? };
     let title = format!("ffwd · {}", top.root.file_name().map_or(String::new(), |n| n.to_string_lossy().into_owned()));
     std::thread::Builder::new()
@@ -588,7 +636,8 @@ pub fn open_in_repo(cfg: &Config, repo: &Path, sandboxed: bool) -> Result<String
         })
         .map_err(|e| e.to_string())?;
     let how = if sandboxed { cfg.sandbox.label() } else { "no sandbox" };
-    Ok(format!("Opened {} in a terminal window ({how})", argv[0]))
+    let tool = config::split_command(&cfg.interactive_command)?.into_iter().next().unwrap_or_default();
+    Ok(format!("Opened {tool} in a terminal window ({how})"))
 }
 
 /// What the preflight check found where the agent will run.
@@ -811,6 +860,37 @@ pub fn discard(cfg: Config, tab: PathBuf, mut rec: Record, emit: Emit) {
 
 #[cfg(test)]
 mod tests {
+
+    /// A failing terminal session keeps its window open (FF-23): the tool
+    /// runs through a small script in the run folder, by its real path.
+    #[test]
+    fn session_argv_pauses_only_after_a_failure() {
+        let dir = std::env::temp_dir().join(format!("ffwd-session-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg = Config { sandbox: SandboxKind::Bubblewrap, ..Config::default() };
+        let ctx = Ctx {
+            cfg: &cfg,
+            worktree: &dir,
+            git_common: &dir,
+            git_dir: &dir,
+            run_dir: &dir,
+            vars: vec![],
+            home: None,
+            program: Some(("claude".into(), "/opt/claude/bin/claude".into())),
+            interactive: true,
+        };
+        let v = session_argv(&cfg, &ctx, vec!["claude".into(), "--x".into()]);
+        let file = dir.join("session.sh").to_string_lossy().into_owned();
+        assert_eq!(v, ["sh", file.as_str(), "/opt/claude/bin/claude", "--x"]);
+        let script = std::fs::read_to_string(dir.join("session.sh")).unwrap();
+        assert!(script.contains("read _") && script.contains("-ne 0"), "{script}");
+        let host = Config { sandbox: SandboxKind::None, ..Config::default() };
+        let c2 = Ctx { cfg: &host, ..ctx.clone() };
+        assert_eq!(session_argv(&host, &c2, vec!["tool".into()]), ["tool"], "no shell on the host");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     use super::*;
     use std::sync::Mutex;
 

@@ -62,8 +62,21 @@ impl Ui {
     /// The agent settings of the active tab: its repository's overrides
     /// first, then the global values.
     pub(super) fn agent_config(&self) -> (AgentConfig, Vec<String>) {
+        self.agent_config_for(None)
+    }
+
+    /// [`agent_config`] for another agent (FF-23): its preset's own
+    /// command and grants, the rest (sandbox, paths) as configured.
+    pub(super) fn agent_config_for(&self, preset: Option<&str>) -> (AgentConfig, Vec<String>) {
         let repo = self.current_repo_settings();
         AgentConfig::from_lookup(|k| {
+            if let Some(p) = preset {
+                match k {
+                    "preset" => return Some(p.to_string()),
+                    "command" | "interactive_command" | "preset_access" => return None,
+                    _ => {}
+                }
+            }
             let key = format!("agents.{k}");
             repo.and_then(|r| r.get(&key)).or_else(|| self.settings.get(&key)).map(str::to_string)
         })
@@ -214,7 +227,29 @@ impl Ui {
     /// in a new worktree (with `worktrees`) or in `path` (None: this
     /// repository), with the sandbox and without.
     pub(super) fn agent_terminal_menu(&self, path: Option<PathBuf>, worktrees: bool) -> Vec<menu::MenuItem> {
-        let (cfg, _) = self.agent_config();
+        let mut v = self.agent_terminal_items(None, path.clone(), worktrees, true);
+        // Every other agent too, with the configured sandbox (FF-23).
+        let current = self.agent_config().0.preset.map(|p| p.id);
+        let mut first = true;
+        for p in ffwd_agent::presets::PRESETS.iter().filter(|p| Some(p.id) != current) {
+            if std::mem::take(&mut first) && !v.is_empty() {
+                v.push(menu::MenuItem { label: String::new(), act: None, danger: false });
+            }
+            v.extend(self.agent_terminal_items(Some(p.id), path.clone(), worktrees, false));
+        }
+        v
+    }
+
+    /// The menu items of one agent: in a new worktree (with `worktrees`)
+    /// and here, sandboxed; with `both`, also without the sandbox.
+    fn agent_terminal_items(
+        &self,
+        preset: Option<&'static str>,
+        path: Option<PathBuf>,
+        worktrees: bool,
+        both: bool,
+    ) -> Vec<menu::MenuItem> {
+        let (cfg, _) = self.agent_config_for(preset);
         let tool = cfg.preset.map(|p| p.name.to_string()).unwrap_or_else(|| {
             ffwd_agent::config::split_command(&cfg.interactive_command)
                 .ok()
@@ -227,12 +262,12 @@ impl Ui {
         let here = if path.is_some() { "in this worktree" } else { "in this repository" };
         let it = |label: String, worktree: bool, sandboxed: bool| menu::MenuItem {
             label,
-            act: Some(menu::MenuAct::AgentTerminal { path: path.clone(), worktree, sandboxed }),
+            act: Some(menu::MenuAct::AgentTerminal { path: path.clone(), worktree, sandboxed, preset }),
             danger: false,
         };
         let mut v = Vec::new();
         for sandboxed in [true, false] {
-            if sandboxed && !boxed {
+            if (sandboxed && !boxed) || (!sandboxed && !both && boxed) {
                 continue;
             }
             let how = if sandboxed { cfg.sandbox.label() } else { plain };
@@ -247,13 +282,19 @@ impl Ui {
     /// Opens a terminal session (FF-23). In a new worktree it is a run of
     /// its own (listed, committed when the window closes); elsewhere the
     /// window is on its own.
-    pub(super) fn agent_terminal(&mut self, path: Option<PathBuf>, worktree: bool, sandboxed: bool) {
+    pub(super) fn agent_terminal(
+        &mut self,
+        path: Option<PathBuf>,
+        worktree: bool,
+        sandboxed: bool,
+        preset: Option<&'static str>,
+    ) {
         let mode = ffwd_agent::run::Mode::Interactive { sandboxed };
+        let (cfg, _) = self.agent_config_for(preset);
         if worktree {
             let title = self.agent_view.as_ref().map(|v| v.input.text().trim().to_string()).unwrap_or_default();
-            return self.launch_agent(title, mode);
+            return self.launch_agent_with(cfg, title, mode);
         }
-        let (cfg, _) = self.agent_config();
         let Some(dir) = path.or_else(|| self.tab_path()) else { return };
         let sink = (self.sinks)(0);
         self.set_notice("Opening a terminal session…".into());
@@ -270,6 +311,10 @@ impl Ui {
 
     fn launch_agent(&mut self, prompt: String, mode: ffwd_agent::run::Mode) {
         let (cfg, _) = self.agent_config();
+        self.launch_agent_with(cfg, prompt, mode);
+    }
+
+    fn launch_agent_with(&mut self, cfg: AgentConfig, prompt: String, mode: ffwd_agent::run::Mode) {
         let refusal = match mode {
             ffwd_agent::run::Mode::Prompt => cfg.refusal(),
             ffwd_agent::run::Mode::Interactive { sandboxed } => cfg.refusal_interactive(sandboxed),
