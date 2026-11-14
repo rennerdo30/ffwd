@@ -4,6 +4,8 @@
 
 ## 0.2.0-beta.7
 
+The redesign release: Settings, the agents view and the sidebar are new, ffwd gets a light theme, every pane border moves, and Settings has an About section.
+
 - **History:** the messages start right after the graph lanes on screen; branches further down no longer push them far to the right.
 - **Settings → About:** the version, ffwd's licence, the third-party licences and the source code. **Check for updates** no longer closes Settings; its answer shows under the button.
 - **Sidebar, rebuilt:** Changes, History, Files, Activity, Reflog and Agents in a bar of icons under the card, each with a live figure (Settings → Appearance → Views also offers a rail, tabs over the content or a list); branches in their graph lane's colour with ahead/behind chips, fading ages and stale branches set back.
