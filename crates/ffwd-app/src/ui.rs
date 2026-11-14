@@ -605,6 +605,9 @@ pub struct Ui {
     pub diff_max: bool,
     /// Installed WSL distributions, read when Settings opens (Windows).
     pub wsl_distros: Vec<String>,
+    /// Merge and diff tools Git can start (Settings choices, FF-42).
+    pub merge_tools: Vec<String>,
+    pub diff_tools: Vec<String>,
     /// Minutes between automatic fetches (0: off), read by the clock
     /// thread (FF-39).
     pub(super) auto_fetch_minutes: Arc<std::sync::atomic::AtomicU64>,
@@ -769,6 +772,8 @@ impl Ui {
             code_left: 0.0,
             diff_max: false,
             wsl_distros: Vec::new(),
+            merge_tools: Vec::new(),
+            diff_tools: Vec::new(),
             auto_fetch_minutes: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             auto_fetch_failed: false,
             diff_tab: diff_view::view_from(&settings).1 as usize,
@@ -1084,6 +1089,15 @@ impl Ui {
         }
         if let Msg::AutoFetchTick = m {
             return self.auto_fetch_due();
+        }
+        if let Msg::Tools(merge, diff) = m {
+            self.merge_tools = merge;
+            self.diff_tools = diff;
+            if self.settings_view.is_some() {
+                let r = self.settings_rect();
+                self.damage.rects.push(r);
+            }
+            return;
         }
         if let Msg::WslDistros(list) = m {
             self.wsl_distros = list;
@@ -1528,7 +1542,7 @@ impl Ui {
                 }
             }
             // Handled in on_tab_msg; repeated here so a stray one is harmless.
-            Msg::Repos(_) | Msg::WslDistros(_) | Msg::AutoFetchTick => {}
+            Msg::Repos(_) | Msg::WslDistros(_) | Msg::Tools(..) | Msg::AutoFetchTick => {}
             Msg::Agent(e) => self.on_agent_event(e),
             Msg::RepoSettings(p, s) => self.on_repo_settings(p, s),
             Msg::Changes(r) => self.on_changes(r),
@@ -8735,6 +8749,35 @@ mod tests {
         // Back to Write drops the preset entry again.
         ui.set_choice(Row::Grant(0), 2);
         assert_eq!(ui.settings.get("agents.preset_access").unwrap_or(""), "");
+    }
+
+    /// Merge and diff tools (FF-42): Settings lists the tools Git can
+    /// start; picking one sets tools.merge_tool, "Git config" clears it.
+    #[test]
+    fn merge_and_diff_tools_are_choices() {
+        let mut te = TextEngine::new();
+        let Some(f) = load_fonts(&mut te) else { return };
+        let empty = crate::settings::Settings::parse("");
+        let sinks: SinkFactory = Arc::new(|_| Arc::new(|_| {}));
+        let mut ui = Ui::new(te, f, empty.clone(), empty, None, sinks, 1280, 900, 1.0);
+        ui.open_settings_page(0);
+        ui.on_tab_msg(0, Msg::Tools(vec!["tool-a".into(), "tool-b".into()], vec!["tool-c".into()]));
+        assert_eq!(ui.row_choices(settings_view::Row::MergeTool), ["Git config", "tool-a", "tool-b"]);
+        assert_eq!(ui.row_choices(settings_view::Row::DiffTool), ["Git config", "tool-c"]);
+        let mut screen = vec![0u32; 1280 * 900];
+        ui.paint(&mut Canvas::new(&mut screen, 1280, 900), true);
+        let rows = ui.rows();
+        let row = rows.iter().position(|r| *r == settings_view::Row::MergeTool).unwrap();
+        ui.settings_view.as_mut().unwrap().sel = row;
+        ui.settings_follow();
+        ui.paint(&mut Canvas::new(&mut screen, 1280, 900), true);
+        let hits = ui.settings_view.as_ref().unwrap().hits.clone();
+        let (_, _, r) = *hits.iter().find(|h| h.0 == row && h.1 == 2).expect("tool-b is on screen");
+        ui.click(r.x + r.w / 2, r.y + r.h / 2);
+        assert_eq!(ui.settings.get("tools.merge_tool"), Some("tool-b"));
+        assert_partial_paint_is_full(&mut ui, &mut screen, "merge tool chosen");
+        ui.set_choice(settings_view::Row::MergeTool, 0);
+        assert_eq!(ui.settings.get("tools.merge_tool").unwrap_or(""), "");
     }
 
     /// Find in the diff (FF-34): `Ctrl+F` with the diff focused searches
