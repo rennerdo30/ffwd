@@ -633,6 +633,8 @@ pub struct Ui {
     pub chrome: Chrome,
     cap_hover: Option<u8>,
     cap_pressed: Option<u8>,
+    /// The pointer is over the sidebar's "here" card.
+    pub(super) side_here_hot: bool,
     /// Hover and press of the maximise button, reported by the frame.
     pub max_state: (bool, bool),
     pub maximized: bool,
@@ -798,6 +800,7 @@ impl Ui {
             },
             cap_hover: None,
             cap_pressed: None,
+            side_here_hot: false,
             max_state: (false, false),
             maximized: false,
             active: true,

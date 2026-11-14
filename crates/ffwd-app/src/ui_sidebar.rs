@@ -24,6 +24,8 @@ pub(super) struct SideItem {
     pub current: bool,
     /// `Some(expanded)` for headers, folders and remotes.
     pub expander: Option<bool>,
+    /// A quiet note at the right: a branch's age, a worktree's branch.
+    pub age: String,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -35,6 +37,8 @@ pub(super) enum SideKind {
     Reflog,
     /// The agents page (FF-23).
     Agents,
+    /// "Add remote…" where a repository has none.
+    AddRemote,
     All,
     Branch,
     Folder,
@@ -58,6 +62,7 @@ impl SideItem {
             target: None,
             current: false,
             expander: None,
+            age: String::new(),
         }
     }
 }
@@ -107,6 +112,7 @@ fn tree(
     } else {
         leaves.sort_by_key(|a| a.0.to_lowercase());
     }
+    let now = super::now_secs();
     for (name, r) in leaves {
         let mut it = SideItem::new(depth, kind, &name, format!("{prefix}{name}"));
         it.target = Some(r.target);
@@ -127,6 +133,10 @@ fn tree(
                 b.push_str(&format!("↓{}", r.behind));
             }
             it.badge = b;
+            if it.badge.is_empty() && r.time > 0 {
+                // How old its last commit is, quietly.
+                it.age = short_age(now - r.time);
+            }
         }
         out.push(it);
     }
@@ -137,16 +147,110 @@ impl Ui {
         self.px(SIDE_ROW)
     }
 
-    /// The filter field at the top of the sidebar.
+    /// Where you are, at the top of the sidebar (FF-57): the branch, its
+    /// sync with the upstream, the changes and a stopped operation.
+    pub(super) fn side_here_rect(&self) -> Rect {
+        let s = self.lay.side;
+        Rect::new(s.x + self.px(10.0), s.y + self.px(10.0), s.w - self.px(20.0), self.px(62.0))
+    }
+
+    /// The filter field under the card.
     pub(super) fn side_filter_rect(&self) -> Rect {
         let s = self.lay.side;
-        Rect::new(s.x + self.px(10.0), s.y + self.px(8.0), s.w - self.px(20.0), self.px(FILTER_H - 14.0))
+        let top = self.side_here_rect().bottom() + self.px(8.0);
+        Rect::new(s.x + self.px(10.0), top, s.w - self.px(20.0), self.px(FILTER_H - 14.0))
     }
 
     pub(super) fn side_list_rect(&self) -> Rect {
         let s = self.lay.side;
-        let top = s.y + self.px(FILTER_H);
+        let top = self.side_filter_rect().bottom() + self.px(8.0);
         Rect::new(s.x, top, s.w - 1, (s.bottom() - top).max(0))
+    }
+
+    /// The card: line one the branch (or the detached commit) and its sync
+    /// as chips, line two the upstream and what waits in the working tree.
+    fn paint_side_here(&mut self, cv: &mut Canvas) {
+        let (ui, semi, mono) = (self.f.ui, self.f.semi, self.f.mono);
+        let r = self.side_here_rect();
+        let hot = self.side_here_hot;
+        cv.round_border(
+            r,
+            self.pf(9.0),
+            if hot { BORDER_HOVER } else { BORDER_SOFT },
+            if hot { BG_HOVER } else { BG_PANEL },
+        );
+        let head = self.r.refs.refs.iter().find(|x| x.kind == RefKind::Local && x.is_head).cloned();
+        let x0 = r.x as f32 + self.pf(12.0);
+        let b1 = r.y as f32 + self.pf(24.0);
+        let b2 = r.y as f32 + self.pf(46.0);
+        let right = r.right() as f32 - self.pf(10.0);
+        // Line one: branch, then the sync chips from the right.
+        let mut chips: Vec<(String, u32, u32)> = Vec::new();
+        match &head {
+            Some(h) if h.upstream_gone => chips.push(("upstream gone".into(), DEL_BG, DEL_TEXT)),
+            Some(h) if h.upstream.is_none() => chips.push(("no upstream".into(), BG_HOVER, TEXT_3)),
+            Some(h) if h.ahead == 0 && h.behind == 0 => chips.push(("in sync".into(), ADD_BG, ADD_TEXT)),
+            Some(h) => {
+                if h.behind > 0 {
+                    chips.push((format!("↓{}", h.behind), REMOTE_BG, REMOTE_FG));
+                }
+                if h.ahead > 0 {
+                    chips.push((format!("↑{}", h.ahead), ACCENT_SOFT, ACCENT_FG));
+                }
+            }
+            None => {}
+        }
+        let mut cx = right;
+        for (t, bg, fg) in chips.iter().rev() {
+            let w = self.te.measure(semi, self.pf(11.0), t) + self.pf(14.0);
+            cx -= w;
+            let cr = Rect::new(cx as i32, (b1 - self.pf(14.0)) as i32, w as i32, self.px(19.0));
+            cv.fill_round(cr, self.pf(9.5), *bg);
+            self.te.draw(cv, semi, self.pf(11.0), cx + self.pf(7.0), b1 - self.pf(0.5), t, *fg, w);
+            cx -= self.pf(6.0);
+        }
+        let name_w = cx - x0 - self.pf(20.0);
+        match &head {
+            Some(h) => {
+                self.branch_icon(cv, x0 + self.pf(5.0), b1 - self.pf(4.5), ACCENT);
+                let fs = self.pf(14.0);
+                let name = super::fit_middle(&mut self.te, semi, fs, &h.name, name_w);
+                self.te.draw(cv, semi, self.pf(14.0), x0 + self.pf(18.0), b1, &name, TEXT, name_w + 2.0);
+            }
+            None => {
+                let at = self.r.refs.head.map(|h| h.short(8)).unwrap_or_default();
+                let t = if at.is_empty() { "No commit yet".to_string() } else { format!("Detached at {at}") };
+                self.te.draw(cv, semi, self.pf(14.0), x0, b1, &t, MOD, name_w + 20.0);
+            }
+        }
+        // Line two: a stopped operation first; else upstream and changes.
+        let st = self.r.status;
+        let conflicts = st.map_or(0, |s| s.conflicted as usize);
+        let changed = st.map_or(0, |s| s.total() as usize);
+        let mut x = x0;
+        let w2 = right - x0;
+        if let Some(op) = self.r.changes.in_progress {
+            let t = if conflicts > 0 {
+                format!("{op} stopped · {conflicts} conflicts")
+            } else {
+                format!("{op} in progress")
+            };
+            cv.fill_circle(x + self.pf(3.5), b2 - self.pf(4.0), self.pf(3.5), DEL);
+            self.te.draw(cv, semi, self.pf(12.0), x + self.pf(12.0), b2, &t, DEL_TEXT, w2);
+            return;
+        }
+        if let Some(up) = head.as_ref().and_then(|h| h.upstream.clone()) {
+            x = self.te.draw(cv, mono, self.pf(11.5), x, b2, &format!("→ {up}"), TEXT_3, w2 * 0.6) + self.pf(10.0);
+        }
+        let (t, c) = match changed {
+            0 => ("clean".to_string(), TEXT_4),
+            n => (format!("{n} changed"), MOD),
+        };
+        if changed > 0 {
+            cv.fill_circle(x + self.pf(3.0), b2 - self.pf(4.0), self.pf(3.0), MOD);
+            x += self.pf(10.0);
+        }
+        self.te.draw(cv, if changed > 0 { semi } else { ui }, self.pf(12.0), x, b2, &t, c, right - x);
     }
 
     fn side_visible_rows(&self) -> usize {
@@ -213,13 +317,23 @@ impl Ui {
         // Configured remotes show even before their first fetch; the header
         // always shows (its menu adds a remote).
         let configured = &self.r.refs.remotes;
-        if (!filtering || !remotes.is_empty()) && header(&mut v, "Remotes", "h:remotes", fmt::num(configured.len())) {
+        if (!filtering || !remotes.is_empty())
+            && header(
+                &mut v,
+                "Remotes",
+                "h:remotes",
+                if configured.is_empty() { String::new() } else { fmt::num(configured.len()) },
+            )
+        {
             let mut names: Vec<&str> = remotes.iter().filter_map(|r| r.name.split('/').next()).collect();
             if !filtering {
                 names.extend(configured.iter().map(|r| &*r.name));
             }
             names.sort_unstable();
             names.dedup();
+            if names.is_empty() && !filtering {
+                v.push(SideItem::new(0, SideKind::AddRemote, "Add remote…", "act:addremote".into()));
+            }
             for n in names {
                 let rs: Vec<(String, &Ref)> = remotes
                     .iter()
@@ -247,7 +361,7 @@ impl Ui {
             }
         }
         let stashes: Vec<&(Box<str>, Box<str>)> = self.r.refs.stashes.iter().filter(|(_, m)| matches(m)).collect();
-        if !filtering || !stashes.is_empty() {
+        if !stashes.is_empty() {
             let n = fmt::num(stashes.len());
             if header(&mut v, "Stashes", "h:stashes", n) {
                 for (name, msg) in stashes {
@@ -295,10 +409,14 @@ impl Ui {
         if self.r.refs.worktrees.len() > 1 {
             let n = fmt::num(self.r.refs.worktrees.len());
             if header(&mut v, "Worktrees", "h:worktrees", n) {
-                for w in &self.r.refs.worktrees {
+                let here = self.r.git.as_ref().map(|g| g.root.clone());
+                for (k, w) in self.r.refs.worktrees.iter().enumerate() {
                     let name = w.rsplit(['/', '\\']).next().unwrap_or(w);
                     if matches(name) {
-                        v.push(SideItem::new(0, SideKind::Worktree, name, format!("w:{w}")));
+                        let mut it = SideItem::new(0, SideKind::Worktree, name, format!("w:{w}"));
+                        it.age = self.r.refs.worktree_branches.get(k).map(|b| b.to_string()).unwrap_or_default();
+                        it.current = here.as_ref().is_some_and(|h| same_path(h, std::path::Path::new(&**w)));
+                        v.push(it);
                     }
                 }
             }
@@ -386,7 +504,10 @@ impl Ui {
     /// Acts on an item: refs jump the history to their commit.
     fn side_activate(&mut self, i: usize) {
         let Some(it) = self.r.side.get(i).cloned() else { return };
-        if !matches!(it.kind, SideKind::Agents | SideKind::Header | SideKind::Folder | SideKind::Remote) {
+        if !matches!(
+            it.kind,
+            SideKind::Agents | SideKind::Header | SideKind::Folder | SideKind::Remote | SideKind::AddRemote
+        ) {
             self.close_agents();
         }
         self.side_select(&it.key);
@@ -397,6 +518,11 @@ impl Ui {
             SideKind::Submodule => self.open_submodule(it.key.trim_start_matches("m:")),
             SideKind::Activity => self.enter_activity(),
             SideKind::Agents => self.open_agents(),
+            SideKind::AddRemote => self.open_dialog(super::menu::DialogKind::Name {
+                act: super::menu::NameAct::AddRemoteUrl,
+                field: TextField::default(),
+                checkout: false,
+            }),
             SideKind::Reflog => self.enter_reflog(),
             SideKind::All => {
                 self.leave_changes();
@@ -420,6 +546,16 @@ impl Ui {
     }
 
     pub(super) fn side_click(&mut self, x: i32, y: i32) {
+        if self.side_here_rect().contains(x, y) {
+            // The card leads to the working tree.
+            self.close_agents();
+            if let Some(i) = self.side_index("changes") {
+                self.side_activate(i);
+            } else {
+                self.enter_changes();
+            }
+            return;
+        }
         if self.side_filter_rect().contains(x, y) {
             self.focus = Focus::SideFilter;
             self.damage.rects.push(self.lay.side);
@@ -580,6 +716,7 @@ impl Ui {
         let r = self.lay.side;
         cv.fill(r, BG_SIDEBAR);
         cv.fill(Rect::new(r.right() - 1, r.y, 1, r.h), BORDER);
+        self.paint_side_here(cv);
         let (ui, semi) = (self.f.ui, self.f.semi);
         // Filter field.
         let fr = self.side_filter_rect();
@@ -696,6 +833,7 @@ impl Ui {
                     (TEXT_2, TEXT)
                 }
                 SideKind::Header => (TEXT_3, TEXT_3),
+                SideKind::AddRemote => (ACCENT, TEXT_3),
             };
             let text = if selected { TEXT } else { text };
             match it.kind {
@@ -770,22 +908,49 @@ impl Ui {
                         icon,
                     );
                 }
-                SideKind::Worktree => {
-                    let b =
-                        Rect::new((ix - self.pf(5.0)) as i32, (cy - self.pf(5.0)) as i32, self.px(10.0), self.px(10.0));
-                    cv.round_border(b, self.pf(2.5), icon, BG_SIDEBAR);
+                SideKind::Worktree if it.current => self.check(cv, ix, cy, ACCENT),
+                SideKind::Worktree if it.key.contains(".ffwd-agents") => {
+                    self.glyph(cv, super::Glyph::Terminal, ix, cy, self.pf(5.5), icon)
                 }
+                SideKind::Worktree => self.folder_icon(cv, ix, cy, icon),
+                SideKind::AddRemote => self.glyph(cv, super::Glyph::Plus, ix, cy, self.pf(5.0), icon),
                 SideKind::Header => {}
             }
             let font = if it.current || selected { semi } else { ui };
             let lx = ix + self.pf(14.0);
-            let badge_w =
-                if it.badge.is_empty() { 0.0 } else { self.te.measure(semi, self.pf(11.0), &it.badge) + self.pf(14.0) };
+            let note = if it.badge.is_empty() { it.age.clone() } else { String::new() };
+            let note_font = if it.kind == SideKind::Worktree { self.f.mono } else { ui };
+            let note_w = if note.is_empty() {
+                0.0
+            } else {
+                (self.te.measure(note_font, self.pf(11.0), &note) + self.pf(12.0)).min(row.w as f32 * 0.45)
+            };
+            let badge_w = if it.badge.is_empty() {
+                note_w
+            } else {
+                self.te.measure(semi, self.pf(11.0), &it.badge) + self.pf(14.0)
+            };
             // Long names keep both ends (they often differ only at the end).
             let lw = row.right() as f32 - lx - badge_w - self.pf(6.0);
             let fs = self.pf(13.0);
             let label = super::fit_middle(&mut self.te, font, fs, &it.label, lw);
             self.te.draw(cv, font, self.pf(13.0), lx, base, &label, text, lw + 2.0);
+            if !note.is_empty() {
+                let nw = note_w - self.pf(12.0);
+                let nfs = self.pf(11.0);
+                let shown = super::fit_middle(&mut self.te, note_font, nfs, &note, nw);
+                let tw = self.te.measure(note_font, self.pf(11.0), &shown);
+                self.te.draw(
+                    cv,
+                    note_font,
+                    self.pf(11.0),
+                    row.right() as f32 - tw - self.pf(10.0),
+                    base - self.pf(0.5),
+                    &shown,
+                    TEXT_4,
+                    nw + 2.0,
+                );
+            }
             if !it.badge.is_empty() {
                 let bw = badge_w - self.pf(14.0);
                 let bx = row.right() as f32 - bw - self.pf(10.0);
@@ -808,7 +973,7 @@ impl Ui {
                     );
                     cv.fill_round(b, self.pf(9.0), ACCENT_SOFT);
                 }
-                self.te.draw(cv, semi, self.pf(11.0), bx, base - self.pf(0.5), &it.badge, color, bw + 2.0);
+                self.te.draw(cv, semi, self.pf(11.0), bx, base - self.pf(0.5), &it.badge, color, bw + 8.0);
             }
         }
         // Scroll thumb when the list is longer than the panel.
@@ -833,6 +998,12 @@ impl Ui {
     }
 
     pub(super) fn side_pointer(&mut self, x: i32, y: i32) {
+        let here = self.side_here_rect().contains(x, y);
+        if here != self.side_here_hot {
+            self.side_here_hot = here;
+            let r = self.side_here_rect();
+            self.damage.rects.push(r);
+        }
         let h = self.side_item_at(x, y);
         if h != self.side_hover {
             self.side_hover = h;
@@ -864,6 +1035,17 @@ impl Ui {
 }
 
 /// Descending order that compares digit runs as numbers (v0.10 > v0.9).
+/// An age in a few characters: 5m, 3h, 2d, 6w, 1y.
+pub(super) fn short_age(secs: i64) -> String {
+    match secs.max(0) {
+        s if s < 3600 => format!("{}m", (s / 60).max(1)),
+        s if s < 86_400 => format!("{}h", s / 3600),
+        s if s < 14 * 86_400 => format!("{}d", s / 86_400),
+        s if s < 365 * 86_400 => format!("{}w", s / (7 * 86_400)),
+        s => format!("{}y", s / (365 * 86_400)),
+    }
+}
+
 /// Items that can be picked for a batch (FF-36): branches, remote
 /// branches, tags and stashes.
 pub(super) fn multi_kind(k: SideKind) -> bool {
