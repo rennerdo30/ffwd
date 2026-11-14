@@ -56,10 +56,13 @@ pub enum MenuAct {
     /// The agent's interactive CLI in a terminal window (FF-23): in a new
     /// worktree (`worktree`) or in `path` (None: the current tab), in the
     /// sandbox or not.
+    /// `preset`: another agent than the configured one (its own command
+    /// and grants).
     AgentTerminal {
         path: Option<PathBuf>,
         worktree: bool,
         sandboxed: bool,
+        preset: Option<&'static str>,
     },
     /// Open a folder (a worktree) in a new tab.
     OpenTab(PathBuf),
@@ -854,8 +857,8 @@ impl Ui {
                     self.select(row as usize);
                 }
             }
-            Some(MenuAct::AgentTerminal { path, worktree, sandboxed }) => {
-                self.agent_terminal(path, worktree, sandboxed)
+            Some(MenuAct::AgentTerminal { path, worktree, sandboxed, preset }) => {
+                self.agent_terminal(path, worktree, sandboxed, preset)
             }
             Some(MenuAct::OpenTab(p)) => self.open_tab(p),
             Some(MenuAct::SidePick(key)) => {

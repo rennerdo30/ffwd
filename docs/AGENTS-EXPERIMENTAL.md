@@ -27,6 +27,8 @@ Runs survive a restart. Their worktrees and branches stay where they are, and th
 - **In a new worktree**, with the sandbox or without: like a run (its own branch and worktree, listed in the panel, setup script first), but you drive the tool. When the window closes, the after script runs and ffwd commits what is left, as for any run. No time limit.
 - **In this repository** (or, from a worktree's menu in the sidebar, in that worktree), with the sandbox or without: the window opens in that working tree; nothing is created or committed.
 
+The menu lists the configured agent with all four choices first, then every other built-in agent (in a new worktree and here, with the sandbox), each with its own command and login folders. A session keeps its terminal (bubblewrap runs it without `--new-session`, which would leave the tool without `/dev/tty`; the window is the session's own). When the tool exits with an error, the window stays open with the exit code until Enter.
+
 "Without the sandbox" runs where the sandbox would (inside WSL for the WSL sandbox), with your own permissions, like any terminal of yours. The command is `agents.interactive_command`, by default the preset's program (for example `claude`). Windows opens a console window; Linux uses `$TERMINAL` or `x-terminal-emulator`; macOS is not supported yet.
 
 ## What a run does
