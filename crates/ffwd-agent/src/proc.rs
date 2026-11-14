@@ -200,7 +200,7 @@ pub fn run_console(l: &Launch, title: &str, cancel: &AtomicBool) -> Exit {
     #[cfg(target_os = "macos")]
     {
         let _ = (title, cancel, &program);
-        return Exit::SpawnFailed("a terminal window for agents is not available on macOS yet".into());
+        Exit::SpawnFailed("a terminal window for agents is not available on macOS yet".into())
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     let mut cmd = {
