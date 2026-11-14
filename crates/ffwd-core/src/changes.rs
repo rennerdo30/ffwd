@@ -164,8 +164,17 @@ pub fn parse_status(out: &[u8]) -> WorkStatus {
 /// The raw patch of one side of `e` (what `diff` parses and what hunk
 /// staging cuts hunks from).
 fn raw_patch(git: &Git, e: &Entry, side: Side) -> Result<Vec<u8>, GitError> {
+    raw_patch_with(git, e, side, false)
+}
+
+/// The patch, with `-w` when `ignore_ws`. Staging always uses the exact
+/// patch (`ignore_ws` false): its hunks and lines are what gets applied.
+fn raw_patch_with(git: &Git, e: &Entry, side: Side, ignore_ws: bool) -> Result<Vec<u8>, GitError> {
     let base = ["diff", "--no-color", "--no-ext-diff", "-U3"];
     let mut args: Vec<&str> = base.to_vec();
+    if ignore_ws {
+        args.push("-w");
+    }
     if e.untracked() && side == Side::Unstaged {
         // An untracked file: everything is added. Exit code 1 = "differs".
         let null = if cfg!(windows) { "NUL" } else { "/dev/null" };
@@ -186,7 +195,14 @@ fn raw_patch(git: &Git, e: &Entry, side: Side) -> Result<Vec<u8>, GitError> {
 
 /// The diff of one side of a changed file.
 pub fn diff(git: &Git, e: &Entry, side: Side) -> Result<FileDiff, GitError> {
-    Ok(parse_patch(&e.path, &raw_patch(git, e, side)?))
+    diff_with(git, e, side, false)
+}
+
+/// The diff of one side, with changes in whitespace only left out when
+/// `ignore_ws`. Such a diff is for reading: its hunks and lines don't
+/// match the patch that staging applies.
+pub fn diff_with(git: &Git, e: &Entry, side: Side, ignore_ws: bool) -> Result<FileDiff, GitError> {
+    Ok(parse_patch(&e.path, &raw_patch_with(git, e, side, ignore_ws)?))
 }
 
 /// Splits a one-file patch into its header and hunks.
@@ -575,6 +591,34 @@ u UU N... 100644 100644 100644 100644 e f g conflict.txt\0\
         // Amend keeps the message when none is given... and an empty
         // message without amend is refused.
         assert!(commit(&g, "  ", &CommitOptions::default()).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Ignoring whitespace hides a change in indentation only, keeps a
+    /// real change, and leaves the staging patch exact.
+    #[test]
+    fn whitespace_only_changes_can_be_hidden() {
+        let (dir, g) = repo("ws");
+        std::fs::write(dir.join("f.txt"), lines(40, None)).unwrap();
+        stage(&g, &["f.txt"]).unwrap();
+        commit(&g, &message("first", ""), &CommitOptions::default()).unwrap();
+        let text = lines(40, Some((2, "    line 2"))).replace(
+            "line 30
+", "thirty
+",
+        );
+        std::fs::write(dir.join("f.txt"), &text).unwrap();
+        let f = load(&g).unwrap().entries.into_iter().find(|e| &*e.path == "f.txt").unwrap();
+        let hunks = |d: &FileDiff| d.lines.iter().filter(|l| l.kind == crate::diff::LineKind::Hunk).count();
+        assert_eq!(hunks(&diff_with(&g, &f, Side::Unstaged, false).unwrap()), 2);
+        let shown = diff_with(&g, &f, Side::Unstaged, true).unwrap();
+        assert_eq!(hunks(&shown), 1, "{shown:?}");
+        assert!(shown.lines.iter().any(|l| &*l.text == "thirty"));
+        assert!(!shown.lines.iter().any(|l| l.text.contains("    line 2")));
+        // Staging hunk 0 still stages the indentation change.
+        toggle_hunk(&g, &f, Side::Unstaged, 0).unwrap();
+        let cached = String::from_utf8(g.output(&["diff", "--cached"]).unwrap()).unwrap();
+        assert!(cached.contains("+    line 2") && !cached.contains("thirty"), "{cached}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

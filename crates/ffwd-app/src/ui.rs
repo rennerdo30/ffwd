@@ -149,6 +149,13 @@ pub enum Key {
     CtrlEnter,
 }
 
+/// A diff strip held down: moving the pointer scrolls that diff.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum StripDrag {
+    Diff,
+    Changes,
+}
+
 #[derive(Clone, Copy, Default)]
 pub struct Layout {
     pub top: Rect,
@@ -663,6 +670,8 @@ pub struct Ui {
     search_rect: Rect,
     /// The diff's overview strip (change marks; a click jumps there).
     diff_strip: Rect,
+    /// The diff strip being dragged: the history's or Local Changes'.
+    pub(super) strip_drag: Option<StripDrag>,
     /// The list title, which switches all branches / current branch.
     scope_rect: Rect,
     /// The comparison header's Swap and Close buttons.
@@ -834,6 +843,7 @@ impl Ui {
             top_buttons: Vec::new(),
             search_rect: Rect::default(),
             diff_strip: Rect::default(),
+            strip_drag: None,
             scope_rect: Rect::default(),
             compare_btns: [Rect::default(); 2],
             details_extra: 0,
@@ -2351,6 +2361,7 @@ impl Ui {
             return;
         }
         if !self.r.changes_view && self.r.diff.is_some() && self.diff_strip.contains(x, y) {
+            self.strip_drag = Some(StripDrag::Diff);
             return self.diff_strip_click(y);
         }
         if self.r.changes_view && self.changes_click(x, y) {
@@ -3468,6 +3479,11 @@ impl Ui {
 
     /// Pointer moved in the client area (hover for minimise and close).
     pub fn pointer(&mut self, x: i32, y: i32) {
+        match self.strip_drag {
+            Some(StripDrag::Diff) => return self.diff_strip_click(y),
+            Some(StripDrag::Changes) => return self.changes_strip_click(y),
+            None => {}
+        }
         if self.split_drag.is_some() {
             self.split_move(x, y);
             self.split_hover(x, y);
@@ -3523,6 +3539,7 @@ impl Ui {
     /// started on it and the pointer is still over it (as on Windows).
     pub fn release(&mut self, x: i32, y: i32) {
         self.release_press();
+        self.strip_drag = None;
         if self.split_release() {
             self.refresh_hot();
         }
@@ -4304,25 +4321,41 @@ impl Ui {
         let _ = ui;
     }
 
-    /// The overview strip on the diff's right edge (FF-41): a tick where
-    /// changes are (green added, red removed, amber both) and a band for
-    /// what is in view. One pass over the rows into pixel buckets.
+    /// The overview strip on the diff's right edge (FF-41), which is also
+    /// its scrollbar: a tick where changes are (green added, red removed,
+    /// amber both) and a band for what is in view; click or drag to
+    /// scroll.
     fn paint_diff_strip(&mut self, cv: &mut Canvas, body: Rect) {
-        let w = self.px(10.0);
+        let Some(d) = self.r.diff.clone() else { return };
+        let (top, split) = (self.r.diff_top, self.diff_split);
+        self.diff_strip = self.paint_strip_of(cv, body, &d, top, split);
+    }
+
+    /// The strip of `d` at the right edge of `body`, scrolled to row
+    /// `top`; returns its rect. One pass over the rows into pixel buckets.
+    pub(super) fn paint_strip_of(
+        &mut self,
+        cv: &mut Canvas,
+        body: Rect,
+        d: &FileDiff,
+        top: usize,
+        split: bool,
+    ) -> Rect {
+        let w = self.px(12.0);
         let strip = Rect::new(body.right() - w, body.y, w, body.h);
-        self.diff_strip = strip;
-        let n = self.diff_row_count();
+        let n = self.rows_of(d, split);
         if n == 0 || strip.h <= 0 {
-            return;
+            return strip;
         }
         cv.fill(strip, BG_SIDEBAR());
         let fit = (body.h / self.code_lh().max(1)) as usize;
         if n > fit {
-            let y0 = strip.y + (self.r.diff_top * strip.h as usize / n) as i32;
-            let hh = ((fit * strip.h as usize / n) as i32).max(self.px(6.0));
-            cv.fill(Rect::new(strip.x, y0, strip.w, hh), BG_HOVER());
+            let y0 = strip.y + (top * strip.h as usize / n) as i32;
+            let hh = ((fit * strip.h as usize / n) as i32).max(self.px(16.0));
+            // The thumb: what is in view, plain to see against the track.
+            cv.fill(Rect::new(strip.x, y0.min(strip.bottom() - hh), strip.w, hh), BG_CHOSEN());
         }
-        for (py, m) in self.diff_marks(strip.h as usize).into_iter().enumerate() {
+        for (py, m) in self.marks_of(d, split, strip.h as usize).into_iter().enumerate() {
             let color = match m {
                 1 => ADD(),
                 2 => DEL(),
@@ -4334,21 +4367,42 @@ impl Ui {
                 color,
             );
         }
+        strip
+    }
+
+    /// Rows of `d`: lines unified, line pairs side by side.
+    pub(super) fn rows_of(&mut self, d: &FileDiff, split: bool) -> usize {
+        if split {
+            let (p, _) = self.diff_meta(d);
+            Self::split_rows(d, &p).len()
+        } else {
+            d.lines.len()
+        }
+    }
+
+    /// Change marks per pixel of the history diff's strip `h` high.
+    #[cfg(test)]
+    fn diff_marks(&mut self, h: usize) -> Vec<u8> {
+        let Some(d) = self.r.diff.clone() else { return vec![0u8; h] };
+        let split = self.diff_split;
+        self.marks_of(&d, split, h)
     }
 
     /// Change marks per pixel of a strip `h` high: 1 added, 2 removed, 3 both.
-    fn diff_marks(&mut self, h: usize) -> Vec<u8> {
+    fn marks_of(&mut self, d: &FileDiff, split: bool, h: usize) -> Vec<u8> {
         use ffwd_core::diff::LineKind;
         let mut out = vec![0u8; h];
-        let Some(d) = self.r.diff.clone() else { return out };
+        if h == 0 {
+            return out;
+        }
         let kind = |i: usize| match d.lines[i].kind {
             LineKind::Add => 1u8,
             LineKind::Del => 2,
             _ => 0,
         };
-        let rows: Vec<u8> = if self.diff_split {
-            let (p, _) = self.diff_meta(&d);
-            diff_view::split_rows_of(&d, &p).into_iter().map(|(l, r)| l.map_or(0, kind) | r.map_or(0, kind)).collect()
+        let rows: Vec<u8> = if split {
+            let (p, _) = self.diff_meta(d);
+            diff_view::split_rows_of(d, &p).into_iter().map(|(l, r)| l.map_or(0, kind) | r.map_or(0, kind)).collect()
         } else {
             (0..d.lines.len()).map(kind).collect()
         };
@@ -4361,17 +4415,25 @@ impl Ui {
         out
     }
 
-    /// A click on the strip scrolls there.
+    /// The top row that puts the row under `y` of `strip` in the middle
+    /// of the view (`n` rows in all).
+    pub(super) fn strip_top(&self, strip: Rect, y: i32, n: usize) -> usize {
+        if n == 0 || strip.h <= 0 {
+            return 0;
+        }
+        let row = ((y - strip.y).max(0) as usize * n / strip.h as usize).min(n - 1);
+        let fit = (strip.h / self.code_lh().max(1)) as usize;
+        row.saturating_sub(fit / 2)
+    }
+
+    /// A click or drag on the history diff's strip scrolls there.
     fn diff_strip_click(&mut self, y: i32) {
         let n = self.diff_row_count();
-        let s = self.diff_strip;
-        if n == 0 || s.h <= 0 {
-            return;
+        let top = self.strip_top(self.diff_strip, y, n);
+        if n > 0 && top != self.r.diff_top {
+            self.r.diff_top = top;
+            self.damage.rects.push(self.diff_rect());
         }
-        let row = ((y - s.y).max(0) as usize * n / s.h as usize).min(n - 1);
-        let fit = (s.h / self.code_lh().max(1)) as usize;
-        self.r.diff_top = row.saturating_sub(fit / 2);
-        self.damage.rects.push(self.diff_rect());
     }
 
     /// The lines of a diff in `body`, from line `top`. With `hunk_label`,
@@ -4455,7 +4517,7 @@ impl Ui {
                     // A stage or unstage button at the hunk's right end.
                     let w = self.te.measure(semi, self.pf(11.0), label) + self.pf(18.0);
                     let b = Rect::new(
-                        body.right() - self.px(10.0) - w as i32,
+                        body.right() - self.px(16.0) - w as i32,
                         y + self.px(2.0),
                         w as i32,
                         lh - self.px(4.0),
@@ -4504,7 +4566,7 @@ impl Ui {
             // lines whose tabs were widened.
             let mut marks: Vec<_> =
                 Self::word_range(diff, &pairs, i).filter(|_| !line.text.contains('\t')).into_iter().collect();
-            if hunk_label.is_none() {
+            if hunk_label.is_none() && !self.r.changes_view {
                 // The history's diff: find matches (the Local Changes diff has none).
                 marks.extend(self.diff_find_marks(i, &text));
             }
@@ -5144,6 +5206,128 @@ mod tests {
         pump(&mut ui, "the commit", &|u| idle(u) && u.r.changes.subject.text().is_empty());
         ui.key(Key::Ctrl('r'));
         assert_eq!(ui.r.changes.subject.text(), "Two | lines");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Local Changes: the bar's whitespace switch hides a change in
+    /// indentation only (and turns hunk and line staging off, since the
+    /// shown hunks are not the ones Git applies); the strip on the right
+    /// is a scrollbar: a click jumps, a drag follows the pointer.
+    #[test]
+    fn local_changes_whitespace_switch_and_strip() {
+        use std::sync::mpsc;
+        let mut te = TextEngine::new();
+        let Some(f) = load_fonts(&mut te) else { return };
+        let dir = std::env::temp_dir().join(format!("ffwd-ui-cws-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = Git { root: dir.clone() };
+        for a in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.name", "ffwd test"],
+            &["config", "user.email", "test@example.invalid"],
+            &["config", "commit.gpgsign", "false"],
+            &["config", "core.autocrlf", "false"],
+        ] {
+            g.output(a).unwrap();
+        }
+        let lines: Vec<String> = (1..=400).map(|i| format!("line {i}")).collect();
+        std::fs::write(dir.join("a.txt"), lines.join("\n") + "\n").unwrap();
+        g.output(&["add", "."]).unwrap();
+        g.output(&["commit", "-q", "-m", "first"]).unwrap();
+        let mut changed = lines.clone();
+        changed[1] = "    line 2".into(); // indentation only
+        for l in changed.iter_mut().take(350).skip(100) {
+            *l = format!("{l} changed");
+        }
+        std::fs::write(dir.join("a.txt"), changed.join("\n") + "\n").unwrap();
+        let (tx, rx) = mpsc::channel::<(u64, Msg)>();
+        let tx = Arc::new(std::sync::Mutex::new(tx));
+        let sinks: SinkFactory = Arc::new(move |id| {
+            let tx = tx.clone();
+            Arc::new(move |m| {
+                if let Ok(t) = tx.lock() {
+                    let _ = t.send((id, m));
+                }
+            })
+        });
+        crate::work::start(dir.clone(), &sinks(1));
+        let empty = crate::settings::Settings::parse("");
+        let mut ui = Ui::new(te, f, empty.clone(), empty, Some((1, dir.clone())), sinks, 1280, 800, 1.0);
+        let pump = |ui: &mut Ui, what: &str, done: &dyn Fn(&Ui) -> bool| {
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while !done(ui) {
+                let left = until.saturating_duration_since(std::time::Instant::now());
+                assert!(!left.is_zero(), "timed out waiting for {what}");
+                if let Ok((id, m)) = rx.recv_timeout(left) {
+                    ui.on_tab_msg(id, m);
+                }
+            }
+        };
+        let indented =
+            |u: &Ui| u.r.changes.diff.as_ref().is_some_and(|d| d.lines.iter().any(|l| &*l.text == "    line 2"));
+        pump(&mut ui, "the repository", &|u| u.r.git.is_some());
+        ui.enter_changes();
+        pump(&mut ui, "the diff", &indented);
+        let mut screen = vec![0u32; 1280 * 800];
+        ui.paint(&mut Canvas::new(&mut screen, 1280, 800), true);
+        use changes_view::CHit;
+        let hit = |ui: &Ui, h: CHit| ui.r.changes.hits.iter().find(|x| x.1 == h).map(|x| x.0);
+        assert!(hit(&ui, CHit::Hunk(0)).is_some(), "hunk buttons while whitespace is shown");
+
+        // The strip: a click near the bottom jumps there, a drag back up
+        // follows the pointer, and the release ends the drag.
+        let s = ui.r.changes.strip;
+        assert!(s.h > 100 && s.w > 0, "the strip is painted: {s:?}");
+        ui.click(s.x + s.w / 2, s.bottom() - 2);
+        ui.last_click = None;
+        let low = ui.changes_diff_top();
+        assert!(low > 150, "the click jumps near the end: {low}");
+        assert_eq!(ui.strip_drag, Some(StripDrag::Changes));
+        assert_partial_paint_is_full(&mut ui, &mut screen, "strip click");
+        ui.pointer(s.x - 300, s.y + s.h / 2);
+        let mid = ui.changes_diff_top();
+        assert!(mid > 0 && mid < low, "the drag follows the pointer, also beside the strip: {mid}");
+        ui.pointer(s.x, s.y);
+        assert_eq!(ui.changes_diff_top(), 0, "dragged to the top");
+        ui.release(s.x, s.y);
+        assert_eq!(ui.strip_drag, None);
+        ui.pointer(s.x + s.w / 2, s.bottom() - 2);
+        assert_eq!(ui.changes_diff_top(), 0, "no drag after the release");
+
+        // Whitespace ignored: the indentation change goes, staging by hunk
+        // or line is off.
+        ui.paint(&mut Canvas::new(&mut screen, 1280, 800), true);
+        let b = hit(&ui, CHit::Whitespace).expect("the whitespace switch");
+        ui.click(b.x + b.w / 2, b.y + b.h / 2);
+        ui.last_click = None;
+        assert_eq!(ui.settings.get("diff.ignore_whitespace"), Some("true"));
+        pump(&mut ui, "the diff without whitespace", &|u| {
+            u.r.changes.diff.as_ref().is_some_and(|d| !d.lines.is_empty()) && !indented(u)
+        });
+        assert_partial_paint_is_full(&mut ui, &mut screen, "whitespace ignored");
+        assert!(hit(&ui, CHit::Hunk(0)).is_none(), "no hunk buttons while whitespace is ignored");
+        let d = ui.r.changes.diff.clone().unwrap();
+        let added = d.lines.iter().position(|l| l.kind == LineKind::Add).unwrap();
+        ui.r.changes.focus = changes_view::CFocus::Diff;
+        ui.r.changes.line = added;
+        ui.key(Key::Char(' '));
+        assert!(ui.r.changes.picked.is_empty(), "no line picks while whitespace is ignored");
+        assert!(ui.notice.as_ref().is_some_and(|n| n.contains("Whitespace is ignored")), "{:?}", ui.notice);
+
+        // Shown again: the indentation change and the hunk buttons are back.
+        let b = hit(&ui, CHit::Whitespace).unwrap();
+        ui.click(b.x + b.w / 2, b.y + b.h / 2);
+        ui.last_click = None;
+        pump(&mut ui, "the diff with whitespace", &indented);
+        ui.paint(&mut Canvas::new(&mut screen, 1280, 800), true);
+        // The cursor took the view down; the strip brings it back up.
+        let s = ui.r.changes.strip;
+        ui.click(s.x + s.w / 2, s.y);
+        ui.release(s.x + s.w / 2, s.y);
+        ui.last_click = None;
+        ui.paint(&mut Canvas::new(&mut screen, 1280, 800), true);
+        assert!(hit(&ui, CHit::Hunk(0)).is_some(), "hunk buttons are back");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -7348,6 +7532,14 @@ mod tests {
         ui.click(s.x + 2, s.y + (last as i32));
         assert!(ui.r.diff_top > 200, "the click jumps near the bottom: {}", ui.r.diff_top);
         assert_partial_paint_is_full(&mut ui, &mut screen, "strip click");
+        // Held down, the strip is a scrollbar: the view follows the pointer
+        // until the release.
+        ui.pointer(s.x, s.y);
+        assert_eq!(ui.r.diff_top, 0, "dragged to the top");
+        assert_partial_paint_is_full(&mut ui, &mut screen, "strip drag");
+        ui.release(s.x, s.y);
+        ui.pointer(s.x, s.bottom() - 1);
+        assert_eq!(ui.r.diff_top, 0, "no drag after the release");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

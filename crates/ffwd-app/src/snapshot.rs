@@ -91,6 +91,9 @@ pub fn run(args: &Args, t0: Instant) -> i32 {
     if let Some(name) = &args.side {
         ui.snapshot_side(name);
     }
+    if args.diff_ignore_ws {
+        ui.diff_opts.ignore_whitespace = true;
+    }
     if args.changes {
         // The view loads its state on workers; wait (bounded) for the
         // list and the first diff.

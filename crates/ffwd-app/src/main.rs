@@ -88,6 +88,8 @@ pub struct Args {
     pub diff_split: bool,
     /// Snapshot: whitespace characters shown in the diff.
     pub diff_ws: bool,
+    /// Snapshot: changes in whitespace only left out of the Local Changes diff.
+    pub diff_ignore_ws: bool,
     /// Snapshot: wrap long diff lines.
     pub diff_wrap: bool,
     /// Snapshot: the code text size in points.
@@ -133,6 +135,7 @@ fn parse_args() -> Result<Args, String> {
         find: None,
         diff_split: false,
         diff_ws: false,
+        diff_ignore_ws: false,
         diff_wrap: false,
         code_size: None,
         file: None,
@@ -187,6 +190,7 @@ fn parse_args() -> Result<Args, String> {
             "--find" => a.find = Some(val("--find")?),
             "--diff-split" => a.diff_split = true,
             "--diff-ws" => a.diff_ws = true,
+            "--diff-ignore-ws" => a.diff_ignore_ws = true,
             "--diff-wrap" => a.diff_wrap = true,
             "--code-size" => a.code_size = Some(val("--code-size")?.parse().map_err(|_| "bad size")?),
             "--file" => a.file = Some(val("--file")?.parse().map_err(|_| "bad file index")?),
