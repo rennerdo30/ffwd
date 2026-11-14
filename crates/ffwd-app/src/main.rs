@@ -63,6 +63,8 @@ pub struct Args {
     pub files_tab: Option<String>,
     /// Snapshot with the selected commit's context menu open.
     pub menu: bool,
+    /// Sidebar keys picked for a batch, `;` between (FF-36).
+    pub pick: Option<String>,
     /// Snapshot with the "create branch" prompt open.
     pub prompt: bool,
     /// Opens the stash dialog (Ctrl+Shift+S).
@@ -111,6 +113,7 @@ fn parse_args() -> Result<Args, String> {
         files: None,
         files_tab: None,
         menu: false,
+        pick: None,
         prompt: false,
         stash_dialog: false,
         ai_preview: false,
@@ -160,6 +163,7 @@ fn parse_args() -> Result<Args, String> {
             "--files" => a.files = Some(val("--files")?),
             "--files-tab" => a.files_tab = Some(val("--files-tab")?),
             "--menu" => a.menu = true,
+            "--pick" => a.pick = Some(val("--pick")?),
             "--prompt" => a.prompt = true,
             "--stash-dialog" => a.stash_dialog = true,
             "--ai-preview" => a.ai_preview = true,

@@ -425,6 +425,9 @@ pub struct RepoState {
     side: Vec<SideItem>,
     /// The sidebar's own selection (an item key), separate from the history.
     side_sel: String,
+    /// Refs and stashes picked for a batch (FF-36): Ctrl+click, Shift+click
+    /// or the menu's "Select for several". Item keys.
+    pub(super) side_multi: std::collections::BTreeSet<String>,
     side_top: usize,
     pub status: Option<StatusSummary>,
     pub log_done: bool,
@@ -652,6 +655,8 @@ pub struct Ui {
     /// This click follows the last one at the same place (a double click).
     double: bool,
     last_click: Option<(std::time::Instant, i32, i32)>,
+    /// Ctrl (Cmd on macOS) and Shift held at the last click.
+    pub click_mods: (bool, bool),
     cursor: Cursor,
     pointer_at: Option<(i32, i32)>,
     pub damage: Damage,
@@ -799,6 +804,7 @@ impl Ui {
             pressed: None,
             double: false,
             last_click: None,
+            click_mods: (false, false),
             cursor: Cursor::Default,
             pointer_at: None,
             damage: Damage { full: true, ..Default::default() },
@@ -1028,6 +1034,8 @@ impl Ui {
         let (files_view, files) = (self.r.files_view, std::mem::take(&mut self.r.files));
         let activity_view = self.r.activity_view;
         let reflog_view = self.r.reflog_view;
+        // Refs picked for a batch stay picked across the reload (FF-36).
+        let side_multi = std::mem::take(&mut self.r.side_multi);
         self.r = RepoState {
             repo_name: name,
             git,
@@ -1039,6 +1047,7 @@ impl Ui {
             files,
             activity_view,
             reflog_view,
+            side_multi,
             ..Default::default()
         };
         self.notice = notice;
@@ -6290,6 +6299,120 @@ mod tests {
         });
         assert!(!on_hub("refs/heads/topic"));
         assert!(ui.notice.as_deref().is_some_and(|n| n.contains("git push origin ")));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Several refs at once (FF-36): Ctrl+click and Shift+click pick
+    /// branches and tags in the sidebar; their menu pushes them all in one
+    /// push and deletes them after asking; a plain click clears the pick.
+    #[test]
+    fn several_refs_from_the_sidebar() {
+        use std::sync::mpsc;
+        let mut te = TextEngine::new();
+        let Some(f) = load_fonts(&mut te) else { return };
+        let base = std::env::temp_dir().join(format!("ffwd-ui-many-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let g = Git { root: base.join("work") };
+        std::fs::create_dir_all(&g.root).unwrap();
+        for a in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.name", "ffwd test"],
+            &["config", "user.email", "test@example.invalid"],
+            &["config", "commit.gpgsign", "false"],
+        ] {
+            g.output(a).unwrap();
+        }
+        std::fs::write(g.root.join("a.txt"), "a").unwrap();
+        g.output(&["add", "."]).unwrap();
+        g.output(&["commit", "-q", "-m", "first"]).unwrap();
+        for a in [&["branch", "topic"][..], &["tag", "v1"], &["tag", "v2"], &["tag", "v3"]] {
+            g.output(a).unwrap();
+        }
+        let hub = base.join("hub.git");
+        Git { root: base.clone() }.output(&["init", "-q", "--bare", "hub.git"]).unwrap();
+        g.output(&["remote", "add", "origin", &hub.to_string_lossy()]).unwrap();
+        let on_hub = |r: &str| Git { root: hub.clone() }.output(&["rev-parse", "--verify", "--quiet", r]).is_ok();
+        let here = |r: &str| g.output(&["rev-parse", "--verify", "--quiet", r]).is_ok();
+        let (tx, rx) = mpsc::channel::<(u64, Msg)>();
+        let tx = Arc::new(std::sync::Mutex::new(tx));
+        let sinks: SinkFactory = Arc::new(move |id| {
+            let tx = tx.clone();
+            Arc::new(move |m| {
+                if let Ok(t) = tx.lock() {
+                    let _ = t.send((id, m));
+                }
+            })
+        });
+        crate::work::start(g.root.clone(), &sinks(1));
+        let empty = crate::settings::Settings::parse("");
+        let mut ui = Ui::new(te, f, empty.clone(), empty, Some((1, g.root.clone())), sinks, 1280, 900, 1.0);
+        let pump = |ui: &mut Ui, what: &str, done: &dyn Fn(&Ui) -> bool| {
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while !done(ui) {
+                let left = until.saturating_duration_since(std::time::Instant::now());
+                assert!(!left.is_zero(), "timed out waiting for {what}; notice: {:?}", ui.notice);
+                if let Ok((id, m)) = rx.recv_timeout(left) {
+                    ui.on_tab_msg(id, m);
+                }
+            }
+        };
+        pump(&mut ui, "refs", &|u| u.r.log_done && u.r.side.iter().any(|i| i.key == "t:v3"));
+        let mut screen = vec![0u32; 1280 * 900];
+        ui.paint(&mut Canvas::new(&mut screen, 1280, 900), true);
+        let click = |ui: &mut Ui, key: &str, mods: (bool, bool)| {
+            let i = ui.r.side.iter().position(|it| it.key == key).unwrap();
+            let l = ui.side_list_rect();
+            let rh = ui.side_row_h();
+            let y = l.y + (i - ui.r.side_top) as i32 * rh + rh / 2;
+            ui.click_mods = mods;
+            ui.click(l.x + l.w / 2, y);
+            // Not a double click next time.
+            ui.last_click = None;
+        };
+        // Select v1, Shift+click v3 (a range), Ctrl+click topic.
+        click(&mut ui, "t:v1", (false, false));
+        click(&mut ui, "t:v3", (false, true));
+        click(&mut ui, "b:topic", (true, false));
+        let picked: Vec<&str> = ui.r.side_multi.iter().map(String::as_str).collect();
+        assert_eq!(picked, ["b:topic", "t:v1", "t:v2", "t:v3"]);
+        assert_partial_paint_is_full(&mut ui, &mut screen, "picked");
+        // Ctrl+click again takes one out.
+        click(&mut ui, "t:v2", (true, false));
+        assert!(!ui.r.side_multi.contains("t:v2"));
+        let run = |ui: &mut Ui, key: &str, label: &str| {
+            let items = ui.ref_menu(key);
+            let k = items.iter().position(|i| i.label.starts_with(label)).unwrap_or_else(|| {
+                panic!("{label} missing: {:?}", items.iter().map(|i| i.label.clone()).collect::<Vec<_>>())
+            });
+            ui.open_menu(100, 100, items);
+            ui.menu_activate(k);
+        };
+        run(&mut ui, "t:v1", "Push 1 branch and 2 tags to origin");
+        pump(&mut ui, "the push", &|u| u.notice.as_deref() == Some("Pushed 1 branch and 2 tags to origin"));
+        assert!(
+            on_hub("refs/heads/topic") && on_hub("refs/tags/v1") && on_hub("refs/tags/v3") && !on_hub("refs/tags/v2")
+        );
+        pump(&mut ui, "refs again", &|u| u.r.log_done && !u.r.refs.remotes.is_empty());
+        assert_eq!(ui.r.side_multi.len(), 3, "the pick survives the reload");
+        run(&mut ui, "b:topic", "Delete 1 branch and 2 tags");
+        assert!(ui.dialog.as_ref().is_some_and(|d| matches!(d.kind, DialogKind::Ask(_))), "it asks first");
+        ui.key(Key::Enter);
+        pump(&mut ui, "the delete", &|u| {
+            u.notice.as_deref().is_some_and(|n| n.starts_with("Deleted 1 branch and 2 tags."))
+        });
+        assert!(!here("refs/heads/topic") && !here("refs/tags/v1") && here("refs/tags/v2"));
+        assert!(ui.notice.as_deref().is_some_and(|n| n.contains("git tag v1 ")));
+        pump(&mut ui, "refs after the delete", &|u| {
+            u.r.log_done && !u.r.side.iter().any(|i| i.key == "t:v1") && u.r.side.iter().any(|i| i.key == "t:v2")
+        });
+        assert!(ui.r.side_multi.is_empty(), "deleted refs leave the pick");
+        // Clickable too: the menu picks, and a plain click clears.
+        run(&mut ui, "h:tags", "Select all tags");
+        assert_eq!(ui.r.side_multi.len(), 1);
+        run(&mut ui, "b:main", "Select for several");
+        assert_eq!(ui.r.side_multi.len(), 2);
+        click(&mut ui, "t:v2", (false, false));
+        assert!(ui.r.side_multi.is_empty());
         let _ = std::fs::remove_dir_all(&base);
     }
 

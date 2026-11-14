@@ -719,7 +719,10 @@ impl ApplicationHandler<UserEvent> for App {
             }
             WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
                 let (x, y) = self.cursor;
+                let ctrl = if cfg!(target_os = "macos") { self.mods.super_key() } else { self.mods.control_key() };
+                let shift = self.mods.shift_key();
                 if let Some(ui) = &mut self.ui {
+                    ui.click_mods = (ctrl, shift);
                     ui.click(x, y);
                 }
                 self.sync_cursor();

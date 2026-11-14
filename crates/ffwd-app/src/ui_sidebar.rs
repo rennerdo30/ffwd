@@ -420,8 +420,54 @@ impl Ui {
                 return self.run_refop(crate::work::RefOp::Checkout(name));
             }
         }
+        // Ctrl+click picks refs for a batch, Shift+click a range (FF-36).
+        let (ctrl, shift) = std::mem::take(&mut self.click_mods);
+        if (ctrl || shift) && self.r.side.get(i).is_some_and(|it| multi_kind(it.kind)) {
+            self.side_pick(i, shift);
+            return;
+        }
+        if !self.r.side_multi.is_empty() {
+            self.r.side_multi.clear();
+            self.damage.rects.push(self.lay.side);
+        }
         // The chevron toggles; elsewhere the item activates (folders toggle too).
         self.side_activate(i);
+    }
+
+    /// Adds item `i` to the batch selection or takes it out (Ctrl+click);
+    /// with `range`, everything from the sidebar selection to it of a kind
+    /// that can be picked (Shift+click). The selection itself joins first.
+    pub(super) fn side_pick(&mut self, i: usize, range: bool) {
+        let Some(it) = self.r.side.get(i).cloned() else { return };
+        let anchor = self.side_index(&self.r.side_sel.clone());
+        if self.r.side_multi.is_empty()
+            && let Some(a) = anchor
+            && a != i
+            && self.r.side.get(a).is_some_and(|s| multi_kind(s.kind))
+        {
+            self.r.side_multi.insert(self.r.side[a].key.clone());
+        }
+        match anchor.filter(|_| range) {
+            Some(a) => {
+                let (lo, hi) = if a <= i { (a, i) } else { (i, a) };
+                for s in &self.r.side[lo..=hi] {
+                    if multi_kind(s.kind) {
+                        self.r.side_multi.insert(s.key.clone());
+                    }
+                }
+            }
+            None => {
+                if !self.r.side_multi.remove(&it.key) {
+                    self.r.side_multi.insert(it.key.clone());
+                }
+            }
+        }
+        self.r.side_sel = it.key.clone();
+        let n = self.r.side_multi.len();
+        if n > 1 {
+            self.set_notice(format!("{n} selected: right-click one of them for push, delete or drop"));
+        }
+        self.damage.rects.push(self.lay.side);
     }
 
     pub(super) fn side_wheel(&mut self, n: i64) {
@@ -476,6 +522,10 @@ impl Ui {
                 self.side_select(&key);
             }
             Key::Enter | Key::Char(' ') => self.side_activate(cur),
+            Key::Esc if !self.r.side_multi.is_empty() => {
+                self.r.side_multi.clear();
+                self.damage.rects.push(self.lay.side);
+            }
             Key::Right => {
                 if self.r.side.get(cur).and_then(|i| i.expander) == Some(false) {
                     self.toggle_side(cur);
@@ -560,10 +610,21 @@ impl Ui {
                 continue;
             }
             let selected = it.key == self.r.side_sel;
+            let picked = self.r.side_multi.contains(&it.key);
             if selected {
                 cv.fill_round(row, self.pf(6.0), if focus { BG_SELECT } else { BG_SELECT_DIM });
+            } else if picked {
+                cv.fill_round(row, self.pf(6.0), BG_SELECT_DIM);
             } else if self.side_hover == Some(k) {
                 cv.fill_round(row, self.pf(6.0), BG_HOVER);
+            }
+            if picked {
+                // Picked for a batch: an accent bar on the left edge.
+                cv.fill_round(
+                    Rect::new(row.x, row.y + self.px(5.0), self.px(3.0).max(2), row.h - self.px(10.0)),
+                    self.pf(1.5),
+                    ACCENT,
+                );
             }
             let cy = y as f32 + rh as f32 / 2.0;
             let base = (cy + self.pf(4.5)).round();
@@ -776,6 +837,12 @@ impl Ui {
 }
 
 /// Descending order that compares digit runs as numbers (v0.10 > v0.9).
+/// Items that can be picked for a batch (FF-36): branches, remote
+/// branches, tags and stashes.
+pub(super) fn multi_kind(k: SideKind) -> bool {
+    matches!(k, SideKind::Branch | SideKind::RemoteBranch | SideKind::Tag | SideKind::Stash)
+}
+
 pub(super) fn natural_desc(a: &str, b: &str) -> std::cmp::Ordering {
     natural(b, a)
 }

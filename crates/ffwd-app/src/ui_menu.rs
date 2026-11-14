@@ -49,6 +49,12 @@ pub enum MenuAct {
     CreatePr,
     /// Select a commit in the history view.
     ShowCommit(String),
+    /// Pick a sidebar item for a batch, or take it out (FF-36).
+    SidePick(String),
+    /// Pick every item under a sidebar header (`t:`, `b:`, `s:` prefix).
+    SidePickAll(&'static str),
+    /// Clear the batch selection.
+    SidePickClear,
     /// Files (FF-47): open in the editor (or the default app), show in
     /// the folder, external diff and merge tools.
     OpenFile(PathBuf, bool),
@@ -287,6 +293,172 @@ impl Ui {
 
     /// The menu for a sidebar ref (`b:name`, `r:remote/name`, `t:name`).
     pub(super) fn ref_menu(&self, key: &str) -> Vec<MenuItem> {
+        if self.r.side_multi.contains(key) && self.side_multi_live().len() > 1 {
+            return self.batch_menu();
+        }
+        let mut v = self.ref_menu_one(key);
+        // Every ref and stash can join a batch, by click too (FF-36).
+        let pickable = ["b:", "t:", "s:"].iter().any(|p| key.starts_with(p))
+            || key.strip_prefix("r:").is_some_and(|n| !n.ends_with('/'));
+        if pickable {
+            let pick = if cfg!(target_os = "macos") {
+                "Select for several (Cmd+click)"
+            } else {
+                "Select for several (Ctrl+click)"
+            };
+            let label = if self.r.side_multi.contains(key) { "Unselect" } else { pick };
+            v.push(sep());
+            v.push(item(label, MenuAct::SidePick(key.into())));
+        }
+        let all = match key {
+            "h:tags" => Some(("Select all tags", "t:")),
+            "h:branches" => Some(("Select all branches", "b:")),
+            "h:stashes" => Some(("Select all stashes", "s:")),
+            _ => None,
+        };
+        if let Some((label, prefix)) = all {
+            if !v.is_empty() {
+                v.push(sep());
+            }
+            v.push(item(label, MenuAct::SidePickAll(prefix)));
+        }
+        v
+    }
+
+    /// The menu for several picked refs and stashes (FF-36): push them,
+    /// delete them here or on the remote, drop the stashes.
+    fn batch_menu(&self) -> Vec<MenuItem> {
+        use ffwd_core::refops::count_refs;
+        let head = self.head_name();
+        let mut branches = Vec::new();
+        let mut tags = Vec::new();
+        let mut stashes = Vec::new();
+        let mut remote: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+        for k in &self.side_multi_live() {
+            if let Some(b) = k.strip_prefix("b:") {
+                branches.push(b.to_string());
+            } else if let Some(t) = k.strip_prefix("t:") {
+                tags.push(t.to_string());
+            } else if let Some(s) = k.strip_prefix("s:") {
+                stashes.push(s.to_string());
+            } else if let Some((rm, b)) = k.strip_prefix("r:").and_then(|n| n.split_once('/'))
+                && b != "HEAD"
+            {
+                remote.entry(rm.to_string()).or_default().push(b.to_string());
+            }
+        }
+        let list = |v: &[String]| {
+            let mut s = v.iter().take(12).cloned().collect::<Vec<_>>().join(", ");
+            if v.len() > 12 {
+                s += &format!(" and {} more", v.len() - 12);
+            }
+            s
+        };
+        let mut v = Vec::new();
+        let local = count_refs(branches.len(), tags.len());
+        if (!branches.is_empty() || !tags.is_empty())
+            && let Some(rm) = self.default_remote()
+        {
+            v.push(item(
+                format!("Push {local} to {rm}"),
+                MenuAct::Run(RefOp::PushMany(rm.clone(), branches.clone(), tags.clone())),
+            ));
+            if !tags.is_empty() {
+                let n = count_refs(0, tags.len());
+                v.push(danger(
+                    format!("Delete {n} on {rm}…"),
+                    MenuAct::Ask(Box::new(Ask {
+                        title: format!("Delete {n} on {rm}?"),
+                        text: format!(
+                            "{} are removed from the remote for everyone. Your local tags stay, so pushing them again brings them back.",
+                            list(&tags)
+                        ),
+                        choices: vec![(format!("Delete on {rm}"), RefOp::DeleteRemoteMany(rm, vec![], tags.clone()), true)],
+                    })),
+                ));
+            }
+        }
+        for (rm, bs) in &remote {
+            let n = count_refs(bs.len(), 0);
+            v.push(danger(
+                format!("Delete {n} on {rm}…"),
+                MenuAct::Ask(Box::new(Ask {
+                    title: format!("Delete {n} on {rm}?"),
+                    text: format!(
+                        "{} are removed from the remote {rm} for everyone. ffwd names the commands that push them back from your copies.",
+                        list(bs)
+                    ),
+                    choices: vec![(format!("Delete on {rm}"), RefOp::DeleteRemoteMany(rm.clone(), bs.clone(), vec![]), true)],
+                })),
+            ));
+        }
+        // The checked-out branch is never deleted.
+        let deletable: Vec<String> = branches.iter().filter(|b| head.as_deref() != Some(b.as_str())).cloned().collect();
+        if !deletable.is_empty() || !tags.is_empty() {
+            let n = count_refs(deletable.len(), tags.len());
+            let names: Vec<String> = deletable.iter().chain(&tags).cloned().collect();
+            let mut text = format!(
+                "{} are deleted in this repository only; pushed copies stay on the remote. ffwd names the commands that restore them.",
+                list(&names)
+            );
+            if deletable.len() < branches.len() {
+                text += " The checked-out branch stays.";
+            }
+            let mut choices =
+                vec![(format!("Delete {n}"), RefOp::DeleteMany(deletable.clone(), tags.clone(), false), true)];
+            if !deletable.is_empty() {
+                text += " Branches with commits on no other branch are kept, unless you delete them anyway.";
+                choices.push(("Delete, unmerged too".into(), RefOp::DeleteMany(deletable, tags.clone(), true), true));
+            }
+            v.push(danger(
+                format!("Delete {n}…"),
+                MenuAct::Ask(Box::new(Ask { title: format!("Delete {n}?"), text, choices })),
+            ));
+        }
+        if !stashes.is_empty() {
+            let n = stashes.len();
+            v.push(danger(
+                format!("Drop {n} stashes…"),
+                MenuAct::Ask(Box::new(Ask {
+                    title: format!("Drop {n} stashes?"),
+                    text: format!(
+                        "{} are removed from the stash list. ffwd keeps each commit under refs/ffwd/backup/ and names the commands that bring them back.",
+                        list(&stashes)
+                    ),
+                    choices: vec![(format!("Drop {n} stashes"), RefOp::StashDropMany(stashes), true)],
+                })),
+            ));
+        }
+        if !v.is_empty() {
+            v.push(sep());
+        }
+        v.push(item("Clear the selection", MenuAct::SidePickClear));
+        v
+    }
+
+    /// The picked refs and stashes that still exist (a reload or another
+    /// tool may have removed some).
+    pub(super) fn side_multi_live(&self) -> Vec<String> {
+        let refs = &self.r.refs;
+        self.r
+            .side_multi
+            .iter()
+            .filter(|k| {
+                let has = |kind: RefKind, n: &str| refs.refs.iter().any(|r| r.kind == kind && &*r.name == n);
+                let n = k.get(2..).unwrap_or("");
+                match k.get(..2) {
+                    Some("b:") => has(RefKind::Local, n),
+                    Some("t:") => has(RefKind::Tag, n),
+                    Some("r:") => has(RefKind::Remote, n),
+                    Some("s:") => refs.stashes.iter().any(|s| &*s.0 == n),
+                    _ => false,
+                }
+            })
+            .cloned()
+            .collect()
+    }
+
+    fn ref_menu_one(&self, key: &str) -> Vec<MenuItem> {
         let head = self.head_name();
         let mut v = Vec::new();
         let merge_rebase = |v: &mut Vec<MenuItem>, name: &str| {
@@ -639,6 +811,28 @@ impl Ui {
                     self.side_select("all");
                     self.select(row as usize);
                 }
+            }
+            Some(MenuAct::SidePick(key)) => {
+                if let Some(i) = self.r.side.iter().position(|it| it.key == key) {
+                    self.side_pick(i, false);
+                }
+            }
+            Some(MenuAct::SidePickAll(prefix)) => {
+                let keys: Vec<String> = self
+                    .r
+                    .side
+                    .iter()
+                    .filter(|it| super::sidebar::multi_kind(it.kind) && it.key.starts_with(prefix))
+                    .map(|it| it.key.clone())
+                    .collect();
+                let n = keys.len();
+                self.r.side_multi.extend(keys);
+                self.set_notice(format!("{n} selected: right-click one of them for push, delete or drop"));
+                self.damage.rects.push(self.lay.side);
+            }
+            Some(MenuAct::SidePickClear) => {
+                self.r.side_multi.clear();
+                self.damage.rects.push(self.lay.side);
             }
             Some(MenuAct::RebaseFrom(sha)) => self.open_rebase(sha),
             Some(MenuAct::OpenSubmodule(name)) => self.open_submodule(&name),
@@ -1314,6 +1508,11 @@ impl Ui {
     }
 
     pub(super) fn run_refop(&mut self, op: RefOp) {
+        // A batch delete or drop uses up the pick (FF-36); a push keeps it.
+        if matches!(op, RefOp::DeleteMany(..) | RefOp::DeleteRemoteMany(..) | RefOp::StashDropMany(_)) {
+            self.r.side_multi.clear();
+            self.damage.rects.push(self.lay.side);
+        }
         if let RefOp::Sync(o) = op {
             self.close_dialog();
             return self.start_op(o);
@@ -1765,6 +1964,19 @@ impl Ui {
         if let Some(m) = &mut self.menu {
             m.sel = m.items.iter().position(|i| i.act.is_some());
         }
+    }
+
+    /// Snapshot only: sidebar items picked for a batch (FF-36), with the
+    /// batch menu open at the first one.
+    pub fn snapshot_pick(&mut self, keys: &str) {
+        let keys: Vec<String> = keys.split(';').map(str::trim).filter(|k| !k.is_empty()).map(String::from).collect();
+        self.r.side_multi.extend(keys.iter().cloned());
+        let Some(first) = keys.first() else { return };
+        let Some(i) = self.r.side.iter().position(|it| &it.key == first) else { return };
+        let l = self.side_list_rect();
+        let y = l.y + (i.saturating_sub(self.r.side_top)) as i32 * self.side_row_h() + self.side_row_h() / 2;
+        let items = self.ref_menu(first);
+        self.open_menu(l.x + l.w / 2, y, items);
     }
 
     /// Snapshot only: the "new branch" prompt with a typed name.
