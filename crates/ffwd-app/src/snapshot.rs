@@ -238,6 +238,9 @@ pub fn run(args: &Args, t0: Instant) -> i32 {
     if let Some(p) = args.settings_page {
         ui.open_settings_page(p);
     }
+    if let Some(s) = &args.settings_section {
+        ui.open_settings_named(s);
+    }
     if args.agents_demo {
         ui.snapshot_agents_demo();
     }

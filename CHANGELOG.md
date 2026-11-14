@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Settings, redesigned:** a page of its own with sections in a sidebar, cards with full descriptions, switches and dropdowns instead of rows of buttons, search, and a clear **Applies to** picker for agent settings: every row set for one repository says so and can be reset. The agent sections show what is in effect for the open repository.
 ## 0.2.0-beta.6
 
 A fix release for the experimental agents' terminal sessions.

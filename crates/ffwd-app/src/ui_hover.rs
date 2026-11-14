@@ -26,7 +26,6 @@ pub enum Hot {
     Palette(usize),
     /// An entry of the settings view's hit list (row, choice).
     Setting(usize, usize),
-    SettingsPage(usize),
     /// An entry of the agents panel's hit list.
     Agent(usize),
     /// An entry of the Local Changes view's hit list.
@@ -170,7 +169,7 @@ impl Ui {
             Hot::Row(r) => self.row_rect(r).unwrap_or_default(),
             Hot::File(k) => self.file_row_rect(k),
             Hot::Palette(_) => self.palette_rect(10),
-            Hot::Setting(..) | Hot::SettingsPage(_) => self.settings_rect(),
+            Hot::Setting(..) => self.settings_rect(),
             Hot::Agent(_) => self.agents_rect(),
             Hot::Menu(_) => self.menu_rect(),
             Hot::Find(_) => self.lay.list_head,

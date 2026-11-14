@@ -2999,7 +2999,8 @@ impl Ui {
         }
         // A modal panel dims what is behind it, so the eye goes to the
         // panel. Remote sessions get no translucency (performance rule 6).
-        if (self.agent_view.is_some() || self.settings_view.is_some() || self.dialog.is_some()) && !self.remote {
+        // Settings is a page of its own: nothing behind it to dim.
+        if (self.agent_view.is_some() || self.dialog.is_some()) && !self.remote {
             cv.fill_alpha(clip, 0x000000, 100);
         }
         if self.agent_view.is_some() && !clip.intersect(self.agents_rect()).is_empty() {
@@ -8669,8 +8670,23 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The WSL distribution (FF-23): the Agents page lists the installed
-    /// ones as choices; picking one sets agents.wsl_distro, Default clears it.
+    /// Clicks a settings row's control; a dropdown then picks choice `i`
+    /// from its menu, a segmented row clicks segment `i`.
+    fn settings_pick(ui: &mut Ui, screen: &mut [u32], row: settings_view::Row, i: usize) {
+        let (w, h) = (ui.w, ui.h);
+        ui.paint(&mut Canvas::new(screen, w, h), true);
+        let seg = ui.settings_target(row, i).filter(|_| i > 0);
+        let r = seg.or_else(|| ui.settings_target(row, 0)).unwrap_or_else(|| panic!("{row:?} is on screen"));
+        ui.click(r.x + r.w / 2, r.y + r.h / 2);
+        ui.last_click = None;
+        if ui.menu.is_some() {
+            ui.menu_activate(i);
+        }
+    }
+
+    /// The WSL distribution (FF-23): a dropdown of the installed ones
+    /// (without WSL's own helper distributions); picking one sets
+    /// agents.wsl_distro, the default clears it.
     #[test]
     fn wsl_distribution_is_a_choice() {
         let mut te = TextEngine::new();
@@ -8678,23 +8694,19 @@ mod tests {
         let empty = crate::settings::Settings::parse("");
         let sinks: SinkFactory = Arc::new(|_| Arc::new(|_| {}));
         let mut ui = Ui::new(te, f, empty.clone(), empty, None, sinks, 1280, 800, 1.0);
-        ui.wsl_distros = vec!["Ubuntu-24.04".into(), "Debian".into()];
+        ui.wsl_distros = vec!["Ubuntu-24.04".into(), "docker-desktop".into(), "Debian".into()];
         ui.open_settings_page(1);
+        ui.settings_go("Sandbox");
+        assert_eq!(ui.row_choices(settings_view::Row::WslDistro), ["Default", "Ubuntu-24.04", "Debian"]);
         let mut screen = vec![0u32; 1280 * 800];
-        ui.paint(&mut Canvas::new(&mut screen, 1280, 800), true);
-        let choices = ui.row_choices(settings_view::Row::WslDistro);
-        assert_eq!(choices, ["Default", "Ubuntu-24.04", "Debian"]);
-        let hits = ui.settings_view.as_ref().unwrap().hits.clone();
-        let row = settings_view::AGENT_ROWS.iter().position(|r| *r == settings_view::Row::WslDistro).unwrap();
-        let (_, _, r) = *hits.iter().find(|h| h.0 == row && h.1 == 1).expect("the Ubuntu choice is on screen");
-        ui.click(r.x + r.w / 2, r.y + r.h / 2);
+        settings_pick(&mut ui, &mut screen, settings_view::Row::WslDistro, 1);
         assert_eq!(ui.settings.get("agents.wsl_distro"), Some("Ubuntu-24.04"));
-        let (_, _, r) = *hits.iter().find(|h| h.0 == row && h.1 == 0).unwrap();
-        ui.click(r.x + r.w / 2, r.y + r.h / 2);
-        assert_eq!(ui.settings.get("agents.wsl_distro").unwrap_or(""), "", "Default clears it");
+        assert!(ui.menu.is_none(), "the dropdown closes");
+        settings_pick(&mut ui, &mut screen, settings_view::Row::WslDistro, 0);
+        assert_eq!(ui.settings.get("agents.wsl_distro").unwrap_or(""), "", "the default clears it");
     }
 
-    /// Per-path access (FF-23): the Agents page lists the preset's own
+    /// Per-path access (FF-23): the Access section lists the preset's own
     /// paths (Off / Read / Write) and the user's (Remove / Read / Write);
     /// a typed path is added read-only.
     #[test]
@@ -8707,6 +8719,7 @@ mod tests {
         let sinks: SinkFactory = Arc::new(|_| Arc::new(|_| {}));
         let mut ui = Ui::new(te, f, s, empty, None, sinks, 1280, 900, 1.0);
         ui.open_settings_page(1);
+        ui.settings_go("Access");
         let mut screen = vec![0u32; 1280 * 900];
         ui.paint(&mut Canvas::new(&mut screen, 1280, 900), true);
         let g = ui.grants();
@@ -8714,19 +8727,10 @@ mod tests {
             g.iter().map(|g| (g.path.as_str(), g.level)).collect::<Vec<_>>(),
             [("~/.claude", 2), ("~/.claude.json", 2)]
         );
-        let rows = ui.rows();
-        let row = rows.iter().position(|r| *r == Row::Grant(0)).expect("a row per path");
+        assert!(ui.rows().contains(&Row::Grant(0)), "a row per path");
         assert_eq!(ui.row_choices(Row::Grant(0)), ["Off", "Read", "Write"]);
-        // The preset's path to Read, by its button.
-        ui.settings_view.as_mut().unwrap().sel = row;
-        ui.settings_follow();
-        ui.paint(&mut Canvas::new(&mut screen, 1280, 900), true);
-        let hits = ui.settings_view.as_ref().unwrap().hits.clone();
-        let (_, _, r) = *hits
-            .iter()
-            .find(|h| h.0 == row && h.1 == 1)
-            .unwrap_or_else(|| panic!("its Read choice: row {row} rows {rows:?} hits {hits:?}"));
-        ui.click(r.x + r.w / 2, r.y + r.h / 2);
+        // The preset's path to Read, by its segment.
+        settings_pick(&mut ui, &mut screen, Row::Grant(0), 1);
         assert_eq!(ui.settings.get("agents.preset_access"), Some("~/.claude=read"));
         assert_partial_paint_is_full(&mut ui, &mut screen, "preset path read");
         // Add a file: Enter on the add row, type, Enter.
@@ -8756,8 +8760,8 @@ mod tests {
         assert_eq!(ui.settings.get("agents.preset_access").unwrap_or(""), "");
     }
 
-    /// Merge and diff tools (FF-42): Settings lists the tools Git can
-    /// start; picking one sets tools.merge_tool, "Git config" clears it.
+    /// Merge and diff tools (FF-42): dropdowns of the tools Git can start;
+    /// picking one sets tools.merge_tool, "Git config" clears it.
     #[test]
     fn merge_and_diff_tools_are_choices() {
         let mut te = TextEngine::new();
@@ -8766,23 +8770,80 @@ mod tests {
         let sinks: SinkFactory = Arc::new(|_| Arc::new(|_| {}));
         let mut ui = Ui::new(te, f, empty.clone(), empty, None, sinks, 1280, 900, 1.0);
         ui.open_settings_page(0);
+        ui.settings_go("Git & tools");
         ui.on_tab_msg(0, Msg::Tools(vec!["tool-a".into(), "tool-b".into()], vec!["tool-c".into()]));
         assert_eq!(ui.row_choices(settings_view::Row::MergeTool), ["Git config", "tool-a", "tool-b"]);
         assert_eq!(ui.row_choices(settings_view::Row::DiffTool), ["Git config", "tool-c"]);
         let mut screen = vec![0u32; 1280 * 900];
-        ui.paint(&mut Canvas::new(&mut screen, 1280, 900), true);
-        let rows = ui.rows();
-        let row = rows.iter().position(|r| *r == settings_view::Row::MergeTool).unwrap();
-        ui.settings_view.as_mut().unwrap().sel = row;
-        ui.settings_follow();
-        ui.paint(&mut Canvas::new(&mut screen, 1280, 900), true);
-        let hits = ui.settings_view.as_ref().unwrap().hits.clone();
-        let (_, _, r) = *hits.iter().find(|h| h.0 == row && h.1 == 2).expect("tool-b is on screen");
-        ui.click(r.x + r.w / 2, r.y + r.h / 2);
+        settings_pick(&mut ui, &mut screen, settings_view::Row::MergeTool, 2);
         assert_eq!(ui.settings.get("tools.merge_tool"), Some("tool-b"));
         assert_partial_paint_is_full(&mut ui, &mut screen, "merge tool chosen");
         ui.set_choice(settings_view::Row::MergeTool, 0);
         assert_eq!(ui.settings.get("tools.merge_tool").unwrap_or(""), "");
+    }
+
+    /// The settings page (FF-57): sections in a sidebar, switches, search,
+    /// and the scope picker with overrides that say so and reset.
+    #[test]
+    fn settings_page_sections_search_and_scope() {
+        use settings_view::Row;
+        let mut te = TextEngine::new();
+        let Some(f) = load_fonts(&mut te) else { return };
+        let dir = std::env::temp_dir().join(format!("ffwd-ui-settings-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let empty = crate::settings::Settings::parse("");
+        let sinks: SinkFactory = Arc::new(|_| Arc::new(|_| {}));
+        let mut ui = Ui::new(te, f, empty.clone(), empty, Some((1, dir.clone())), sinks, 1280, 860, 1.0);
+        let mut screen = vec![0u32; 1280 * 860];
+        ui.open_settings();
+        ui.paint(&mut Canvas::new(&mut screen, 1280, 860), true);
+        assert_eq!(ui.settings_section_now(), Some("Appearance"));
+        // Ctrl+Tab goes to the next section.
+        ui.key(Key::NextTab);
+        assert_eq!(ui.settings_section_now(), Some("Updates"));
+        ui.settings_go("Agent");
+        // A switch: Agents on.
+        assert_eq!(ui.settings.get("agents.enabled"), None);
+        settings_pick(&mut ui, &mut screen, Row::AgentsOn, 0);
+        assert_eq!(ui.settings.get("agents.enabled"), Some("true"));
+        assert_partial_paint_is_full(&mut ui, &mut screen, "switch on");
+        // The agent as a dropdown: Codex.
+        settings_pick(&mut ui, &mut screen, Row::Preset, 2);
+        assert_eq!(ui.settings.get("agents.preset"), Some("codex"));
+        // Typing searches every section.
+        for c in "network".chars() {
+            ui.key(Key::Char(c));
+        }
+        assert_eq!(ui.rows(), [Row::Network]);
+        assert_partial_paint_is_full(&mut ui, &mut screen, "search");
+        ui.key(Key::Esc);
+        assert!(ui.rows().len() > 1, "Esc clears the search");
+        // The scope picker: this repository only, then an override that
+        // says so and resets.
+        ui.key(Key::Esc);
+        ui.settings_go("Sandbox");
+        ui.set_settings_scope(true);
+        settings_pick(&mut ui, &mut screen, Row::Network, 0);
+        let repo = ui.current_repo_settings().unwrap().get("agents.network").map(str::to_string);
+        assert_eq!(repo.as_deref(), Some("false"), "set for this repository only");
+        assert_eq!(ui.settings.get("agents.network"), None, "not for all repositories");
+        ui.paint(&mut Canvas::new(&mut screen, 1280, 860), true);
+        let reset = ui
+            .settings_view
+            .as_ref()
+            .unwrap()
+            .hits
+            .iter()
+            .find(|h| matches!(h.1, settings_view::SHit::Reset(_)))
+            .map(|h| h.0);
+        let r = reset.expect("an overridden row offers Reset");
+        ui.click(r.x + r.w / 2, r.y + r.h / 2);
+        assert_eq!(ui.current_repo_settings().unwrap().get("agents.network"), None, "reset");
+        assert_partial_paint_is_full(&mut ui, &mut screen, "reset");
+        ui.key(Key::Esc);
+        assert!(ui.settings_view.is_none(), "Esc closes");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Terminal sessions (FF-23) and the worktree menu (FF-45): the agents

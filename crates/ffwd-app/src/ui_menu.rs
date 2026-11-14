@@ -64,6 +64,10 @@ pub enum MenuAct {
         sandboxed: bool,
         preset: Option<&'static str>,
     },
+    /// A settings row's choice from its dropdown, and the agent settings'
+    /// scope (true: this repository only).
+    SettingChoice(super::settings_view::Row, usize),
+    SettingScope(bool),
     /// Open a folder (a worktree) in a new tab.
     OpenTab(PathBuf),
     /// Pick a sidebar item for a batch, or take it out (FF-36).
@@ -861,6 +865,8 @@ impl Ui {
                 self.agent_terminal(path, worktree, sandboxed, preset)
             }
             Some(MenuAct::OpenTab(p)) => self.open_tab(p),
+            Some(MenuAct::SettingChoice(row, i)) => self.set_choice(row, i),
+            Some(MenuAct::SettingScope(repo)) => self.set_settings_scope(repo),
             Some(MenuAct::SidePick(key)) => {
                 if let Some(i) = self.r.side.iter().position(|it| it.key == key) {
                     self.side_pick(i, false);

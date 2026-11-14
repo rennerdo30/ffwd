@@ -304,7 +304,15 @@ The capture above is the real PoC UI. `ffwd --snapshot` rendered it offscreen fr
 
 ## Settings
 
-The gear in the top bar (or `Ctrl+,`) opens Settings: details layout, automatic updates and channel, repository folders, AI endpoint and model, **Open settings.toml**, **Check for updates now**. Changes save at once; the file keeps your comments.
+The gear in the top bar (or `Ctrl+,`) opens Settings as a page of its own: the whole window below the top bar. Changes save at once; the file keeps your comments.
+
+- **Sidebar:** sections in two groups. General: Appearance, Updates, Repositories, Git & tools, Remotes, AI, Advanced. Agents (experimental): Agent, Sandbox, Access, Scripts & limits. `Ctrl+Tab` goes to the next section.
+- **Cards:** each section has a heading, a sentence on what it is for, and a card of rows. Every row has its label, a full description (up to three lines, never cut mid-word) and its control on the right.
+- **Controls:** on/off settings are switches with their state written next to them; long lists (agent, sandbox, WSL distribution, merge and diff tools, fetch interval) are dropdowns with readable names; only two or three short choices are segmented; text settings are fields.
+- **Search:** the field at the top, or just typing, finds any setting across every section; `Esc` clears it.
+- **Scope (agent sections):** **Applies to: all repositories ▾** in the header switches to the open repository's own values. A row set for this repository says "Set for <repo>" with **Reset**; seen from all repositories, it says "<repo> has its own value" with **Show it**.
+- **Status (agent sections):** a box says what is in effect for the open repository (on or off, the tool, the sandbox, and why it cannot run). When agents are off it has a **Turn on** button.
+- **Done** (or `Esc`) closes Settings.
 
 ## Agents panel (experimental)
 
@@ -318,7 +326,7 @@ The gear in the top bar (or `Ctrl+,`) opens Settings: details layout, automatic 
 - **Keys:** `↑ ↓`, `Enter` shows the branch, `m` merges, `d` discards, `c` cancels, `o` opens the folder, `l` opens the log, `PageUp`/`PageDown` scroll the log, and typing starts a new task.
 - **Tab badge:** a dot after the tab's name. Accent while an agent runs; green or red when a run ended and you have not opened the panel since.
 
-Settings has two pages, **General** and **Agents** (`Ctrl+Tab` switches between them). From the agents panel, `Ctrl+,` opens the Agents page. Its first row, **Applies to**, switches between the global values and the current repository's overrides. An overridden row carries a dot (accent in repository scope, dim in global scope), and `Delete` resets it. The **Agent** row picks a preset; while the command is empty, the command field shows the preset's command in grey. Below **Home folder**, the access list has one row per path the agent may use: the preset's own paths (its login and settings, hint names the tool) with **Off / Read / Write**, then the paths you added with **Remove / Read / Write**. The last row, **Add a folder or file**, adds a typed path read-only on `Enter` (files work too, for example `~/.gitconfig`).
+The Access section lists one row per path the agent may use: the agent's own paths (its login and settings) with **Off / Read / Write**, then the paths you added with **Remove / Read / Write**. **Add a folder or file** adds a typed path read-only on `Enter` (files work too, for example `~/.gitconfig`). While the command is empty, its field shows the agent's built-in command in grey.
 
 ## Repository tabs
 

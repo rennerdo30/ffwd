@@ -1142,7 +1142,7 @@ write_paths = \"/data/shared\"
 ";
         self.repo_settings.insert(key.clone(), crate::settings::Settings::parse(demo));
         self.repo_settings_requested.insert(key);
-        self.open_settings_page(1);
+        self.open_settings_named("Access");
         self.agent_scope_repo = true;
         let add = self.rows().iter().position(|r| *r == settings_view::Row::AddGrant).unwrap_or(0);
         if let Some(v) = &mut self.settings_view {
