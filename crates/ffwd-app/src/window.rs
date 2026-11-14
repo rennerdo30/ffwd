@@ -189,6 +189,8 @@ impl App {
                 crate::ui::Cursor::Default => CursorIcon::Default,
                 crate::ui::Cursor::Pointer => CursorIcon::Pointer,
                 crate::ui::Cursor::Text => CursorIcon::Text,
+                crate::ui::Cursor::ColResize => CursorIcon::ColResize,
+                crate::ui::Cursor::RowResize => CursorIcon::RowResize,
             });
             self.shown_cursor = want;
         }

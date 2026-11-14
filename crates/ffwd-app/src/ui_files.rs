@@ -149,7 +149,10 @@ impl Ui {
         let side = self.lay.side;
         let area =
             Rect::new(side.right(), self.lay.list.y, self.w as i32 - side.right(), self.lay.status.y - self.lay.list.y);
-        let tw = ((area.w as f32 * 0.30) as i32).clamp(self.px(260.0), self.px(460.0)).min(area.w / 2);
+        let tw = match self.split_get(Split::FilesTree) {
+            Some(v) => self.px(v).max(self.px(200.0)).min((area.w - self.px(300.0)).max(0)),
+            None => ((area.w as f32 * 0.30) as i32).clamp(self.px(260.0), self.px(460.0)).min(area.w / 2),
+        };
         let fh = self.px(40.0);
         FLayout {
             area,

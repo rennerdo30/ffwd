@@ -57,6 +57,10 @@ pub enum Cursor {
     Pointer,
     /// A text field.
     Text,
+    /// A vertical pane border (FF-57).
+    ColResize,
+    /// A horizontal pane border.
+    RowResize,
 }
 
 impl Ui {

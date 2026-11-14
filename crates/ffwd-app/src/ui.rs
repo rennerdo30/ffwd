@@ -16,7 +16,10 @@ use std::collections::HashSet;
 
 #[path = "ui_sidebar.rs"]
 mod sidebar;
+#[path = "ui_split.rs"]
+mod split_view;
 use sidebar::SideItem;
+pub use split_view::Split;
 #[path = "ui_activity.rs"]
 mod activity_view;
 #[path = "ui_agents.rs"]
@@ -635,6 +638,9 @@ pub struct Ui {
     cap_pressed: Option<u8>,
     /// The pointer is over the sidebar's "here" card.
     pub(super) side_here_hot: bool,
+    /// A pane border being dragged, and the one under the pointer (FF-57).
+    pub(super) split_drag: Option<Split>,
+    pub(super) split_hot: Option<Split>,
     /// Hover and press of the maximise button, reported by the frame.
     pub max_state: (bool, bool),
     pub maximized: bool,
@@ -801,6 +807,8 @@ impl Ui {
             cap_hover: None,
             cap_pressed: None,
             side_here_hot: false,
+            split_drag: None,
+            split_hot: None,
             max_state: (false, false),
             maximized: false,
             active: true,
@@ -1295,7 +1303,10 @@ impl Ui {
         let tabs_h = self.px(32.0);
         let top_h = bar_h + tabs_h;
         let status_h = self.px(26.0);
-        let side_w = self.px(236.0).min(wi / 4);
+        let side_w = match self.split_get(Split::Side) {
+            Some(v) => self.px(v).max(self.px(150.0)).min((wi / 2).max(self.px(150.0))),
+            None => self.px(236.0).min(wi / 4),
+        };
         let mid_h = (hi - top_h - status_h).max(0);
         let list_x = side_w;
         let (list_w, list_h, details) = match self.layout {
@@ -1305,20 +1316,32 @@ impl Ui {
                 (list_w, 0, Rect::new(list_x, top_h, list_w, mid_h))
             }
             DetailsLayout::Beside => {
-                let det_w = ((wi as f32 * 0.40) as i32).clamp(self.px(420.0), self.px(780.0)).min(wi / 2);
+                let room = (wi - side_w).max(0);
+                let det_w = match self.split_get(Split::List) {
+                    Some(f) => {
+                        room - ((room as f32 * f) as i32).max(self.px(300.0)).min((room - self.px(320.0)).max(0))
+                    }
+                    None => ((wi as f32 * 0.40) as i32).clamp(self.px(420.0), self.px(780.0)).min(wi / 2),
+                };
                 let list_w = (wi - side_w - det_w).max(0);
                 (list_w, mid_h, Rect::new(list_x + list_w, top_h, det_w, mid_h))
             }
             DetailsLayout::Below => {
                 let list_w = (wi - side_w).max(0);
-                let list_h = ((mid_h as f32 * 0.46) as i32).max(self.px(150.0)).min(mid_h);
+                let list_h = match self.split_get(Split::List) {
+                    Some(f) => ((mid_h as f32 * f) as i32).max(self.px(120.0)).min((mid_h - self.px(160.0)).max(0)),
+                    None => ((mid_h as f32 * 0.46) as i32).max(self.px(150.0)).min(mid_h),
+                };
                 (list_w, list_h, Rect::new(list_x, top_h + list_h, list_w, mid_h - list_h))
             }
         };
         let info = match self.layout {
             DetailsLayout::Beside => details,
             DetailsLayout::Below => {
-                let iw = ((details.w as f32 * 0.38) as i32).clamp(self.px(360.0), self.px(620.0)).min(details.w);
+                let iw = match self.split_get(Split::Info) {
+                    Some(v) => self.px(v).max(self.px(240.0)).min((details.w - self.px(240.0)).max(0)),
+                    None => ((details.w as f32 * 0.38) as i32).clamp(self.px(360.0), self.px(620.0)).min(details.w),
+                };
                 Rect::new(details.x, details.y, iw, details.h)
             }
         };
@@ -2114,6 +2137,9 @@ impl Ui {
         });
         self.last_click = Some((now, x, y));
         self.press_at(x, y);
+        if self.palette.is_none() && self.split_press(x, y) {
+            return;
+        }
         if self.settings_view.is_some() {
             return self.settings_click(x, y);
         }
@@ -3002,6 +3028,7 @@ impl Ui {
         if !clip.intersect(l.status).is_empty() {
             self.paint_status(cv);
         }
+        self.paint_split(cv);
         if self.palette.is_some() && !clip.intersect(self.palette_rect(10)).is_empty() {
             self.paint_palette(cv);
         }
@@ -3333,7 +3360,13 @@ impl Ui {
 
     /// Pointer moved in the client area (hover for minimise and close).
     pub fn pointer(&mut self, x: i32, y: i32) {
+        if self.split_drag.is_some() {
+            self.split_move(x, y);
+            self.split_hover(x, y);
+            return;
+        }
         self.update_hot(x, y);
+        self.split_hover(x, y);
         self.side_pointer(x, y);
         let th = self.tab_at(x, y);
         if th != self.tab_hover {
@@ -3382,6 +3415,9 @@ impl Ui {
     /// started on it and the pointer is still over it (as on Windows).
     pub fn release(&mut self, x: i32, y: i32) {
         self.release_press();
+        if self.split_release() {
+            self.refresh_hot();
+        }
         if let Some(b) = self.cap_pressed.take() {
             if self.caption_button_at(x, y) == Some(b) {
                 self.win_action = Some(if b == 0 { WinAction::Minimize } else { WinAction::Close });
@@ -8907,6 +8943,64 @@ mod tests {
         ui.click(again.x + 4, again.y + 4);
         assert_eq!(ui.agent_input(), "Fix the tab close button hit area");
         assert_partial_paint_is_full(&mut ui, &mut screen, "run again");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Movable pane borders (FF-57): the sidebar's edge, the history /
+    /// details border and Local Changes' column follow a drag, show the
+    /// resize cursor, are kept in the window state, and a double click
+    /// resets them.
+    #[test]
+    fn pane_borders_follow_a_drag() {
+        let mut te = TextEngine::new();
+        let Some(f) = load_fonts(&mut te) else { return };
+        let dir = std::env::temp_dir().join(format!("ffwd-ui-split-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let empty = crate::settings::Settings::parse("");
+        let sinks: SinkFactory = Arc::new(|_| Arc::new(|_| {}));
+        let mut ui = Ui::new(te, f, empty.clone(), empty, Some((1, dir.clone())), sinks, 1400, 900, 1.0);
+        let mut screen = vec![0u32; 1400 * 900];
+        ui.paint(&mut Canvas::new(&mut screen, 1400, 900), true);
+        // The sidebar's edge.
+        let w0 = ui.lay.side.w;
+        let (x, y) = (ui.lay.side.right() - 1, ui.lay.side.y + 300);
+        ui.pointer(x, y);
+        assert_eq!(ui.cursor, Cursor::ColResize);
+        ui.click(x, y);
+        ui.pointer(x + 120, y);
+        ui.release(x + 120, y);
+        ui.last_click = None;
+        assert!((ui.lay.side.w - (w0 + 120)).abs() <= 2, "{} → {}", w0, ui.lay.side.w);
+        assert!(ui.state.get("ui.split.side").is_some(), "kept");
+        assert_partial_paint_is_full(&mut ui, &mut screen, "sidebar wider");
+        // The history / details border (details below): a row cursor.
+        let d = ui.lay.details;
+        ui.pointer(d.x + 200, d.y);
+        assert_eq!(ui.cursor, Cursor::RowResize);
+        ui.click(d.x + 200, d.y);
+        ui.pointer(d.x + 200, d.y - 100);
+        ui.release(d.x + 200, d.y - 100);
+        ui.last_click = None;
+        assert!((ui.lay.details.y - (d.y - 100)).abs() <= 3, "{} → {}", d.y, ui.lay.details.y);
+        // A double click puts the sidebar back.
+        let (x, y) = (ui.lay.side.right() - 1, ui.lay.side.y + 300);
+        ui.click(x, y);
+        ui.release(x, y);
+        ui.click(x, y);
+        ui.release(x, y);
+        assert_eq!(ui.lay.side.w, w0, "reset");
+        assert!(ui.state.get("ui.split.side").is_none());
+        // Local Changes: its column.
+        ui.enter_changes();
+        let l = ui.changes_layout();
+        let (x, y) = (l.left.right(), l.area.y + 200);
+        ui.pointer(x, y);
+        assert_eq!(ui.cursor, Cursor::ColResize);
+        ui.click(x, y);
+        ui.pointer(x + 80, y);
+        ui.release(x + 80, y);
+        assert!((ui.changes_layout().left.w - (l.left.w + 80)).abs() <= 2);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -300,10 +300,14 @@ impl Ui {
         Rect::new(s.right(), s.y, (self.w as i32 - s.right()).max(1), s.h)
     }
 
-    fn agents_rail(&self) -> Rect {
+    pub(super) fn agents_rail(&self) -> Rect {
         let r = self.agents_rect();
         let head = self.px(64.0);
-        Rect::new(r.x, r.y + head, self.px(360.0).min(r.w / 2), r.h - head)
+        let w = match self.split_get(Split::AgentsRail) {
+            Some(v) => self.px(v).max(self.px(260.0)).min((r.w - self.px(360.0)).max(self.px(260.0))),
+            None => self.px(360.0).min(r.w / 2),
+        };
+        Rect::new(r.x, r.y + head, w, r.h - head)
     }
 
     fn agents_dirty(&mut self) {

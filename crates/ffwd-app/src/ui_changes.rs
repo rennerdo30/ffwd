@@ -142,9 +142,15 @@ impl Ui {
         let side = self.lay.side;
         let area =
             Rect::new(side.right(), self.lay.list.y, self.w as i32 - side.right(), self.lay.status.y - self.lay.list.y);
-        let lw = ((area.w as f32 * 0.38) as i32).clamp(self.px(320.0), self.px(560.0)).min(area.w / 2);
+        let lw = match self.split_get(Split::ChangesLeft) {
+            Some(v) => self.px(v).max(self.px(260.0)).min((area.w - self.px(300.0)).max(0)),
+            None => ((area.w as f32 * 0.38) as i32).clamp(self.px(320.0), self.px(560.0)).min(area.w / 2),
+        };
         let left = Rect::new(area.x, area.y, lw, area.h);
-        let ch = self.px(172.0).min(left.h / 2);
+        let ch = match self.split_get(Split::ChangesCommit) {
+            Some(v) => self.px(v).max(self.px(120.0)).min((left.h - self.px(200.0)).max(self.px(120.0))),
+            None => self.px(172.0).min(left.h / 2),
+        };
         let commit = Rect::new(left.x, left.bottom() - ch, left.w, ch);
         let head = self.px(32.0);
         // The stopped-operation banner: two rows (state, then buttons)
@@ -163,7 +169,10 @@ impl Ui {
         let need = |n: usize| (n.max(1) as i32 * rh + self.px(12.0)) as i64;
         let (n0, n1) = (need(self.side_len(Side::Unstaged)), need(self.side_len(Side::Staged)));
         let min = self.px(96.0).min(lists_h / 2);
-        let uh = ((lists_h as i64 * n0 / (n0 + n1).max(1)) as i32).clamp(min, (lists_h - min).max(min));
+        let uh = match self.split_get(Split::ChangesLists) {
+            Some(f) => ((lists_h as f32 * f) as i32).clamp(min, (lists_h - min).max(min)),
+            None => ((lists_h as i64 * n0 / (n0 + n1).max(1)) as i32).clamp(min, (lists_h - min).max(min)),
+        };
         let h0 = Rect::new(left.x, left.y + bh, left.w, head);
         let l0 = Rect::new(left.x, h0.bottom(), left.w, uh);
         let h1 = Rect::new(left.x, l0.bottom(), left.w, head);
