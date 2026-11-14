@@ -103,11 +103,26 @@ pub fn load(git: &Git) -> Result<Refs, GitError> {
         refs.head = Oid::from_hex(h.trim_ascii());
     }
     // The reflog message (%gs), which a rename changes, not the commit subject.
-    if let Ok(s) = git.output_limited(&["stash", "list", "--format=%gd%x1f%gs"], 1 << 20) {
+    // Each stash is also a ref of kind Stash on its commit, for the chips
+    // of stash rows in the history (FF-33).
+    if let Ok(s) = git.output_limited(&["stash", "list", "--format=%gd%x1f%H%x1f%gs"], 1 << 20) {
         for line in s.split(|&b| b == b'\n').filter(|l| !l.is_empty()) {
-            let mut it = line.splitn(2, |&b| b == 0x1f);
-            if let (Some(a), Some(b)) = (it.next(), it.next()) {
+            let mut it = line.splitn(3, |&b| b == 0x1f);
+            if let (Some(a), Some(h), Some(b)) = (it.next(), it.next(), it.next()) {
                 refs.stashes.push((text(a), text(b)));
+                if let Some(target) = Oid::from_hex(h.trim_ascii()) {
+                    refs.refs.push(Ref {
+                        kind: RefKind::Stash,
+                        name: text(a),
+                        target,
+                        upstream: None,
+                        upstream_gone: false,
+                        ahead: 0,
+                        behind: 0,
+                        is_head: false,
+                        time: 0,
+                    });
+                }
             }
         }
     }

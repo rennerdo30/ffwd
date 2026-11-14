@@ -14,7 +14,7 @@ What a complete desktop Git client offers, grouped in 18 areas, with ffwd's stat
 |---|---|---|
 | Commit list with branch graph, ref labels, avatars | **Built** | Streamed; avatars are initials so far |
 | Labels in their graph colours, compact labels | Partial | Chips are coloured by kind |
-| Stashes shown in the commit list (can be hidden) | M1 | |
+| Stashes shown in the commit list (can be hidden) | **Built** | Each stash is a row on its base commit with a stash label and the stash menu; the list title's menu hides them |
 | Highlight commits to push and to pull | **Built** | ↑ before commits to push, ↓ before commits to pull (against the upstream) |
 | Branch filter: active branch (`Ctrl+Shift+A`), several branches, auto-switch on checkout | Partial | The list title switches to the current branch only (per tab; follows checkouts); several branches come later |
 | Hide branches, folders or remotes; filter folders and remotes | M2 | |

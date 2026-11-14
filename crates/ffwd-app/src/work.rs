@@ -586,11 +586,12 @@ pub fn spawn(name: &str, sink: &Sink, f: impl FnOnce(&Sink) + Send + 'static) {
 
 /// Opens the repository and starts the loaders. Returns immediately.
 pub fn start(path: PathBuf, sink: &Sink) {
-    start_scoped(path, false, sink)
+    start_scoped(path, false, true, sink)
 }
 
 /// [`start`]; `head_only` loads only the current branch's history.
-pub fn start_scoped(path: PathBuf, head_only: bool, sink: &Sink) {
+/// With `stashes` the stashes are rows of the history (FF-33).
+pub fn start_scoped(path: PathBuf, head_only: bool, stashes: bool, sink: &Sink) {
     // All loaders start at once: git finds the repository from any folder
     // inside it, so nothing waits for discovery.
     let git = Git { root: path.clone() };
@@ -630,7 +631,7 @@ pub fn start_scoped(path: PathBuf, head_only: bool, sink: &Sink) {
     });
     spawn("history", sink, move |sink| {
         let t = Instant::now();
-        let r = log::stream_scoped(&git, head_only, 200, Duration::from_millis(100), |batch, done| {
+        let r = log::stream_with(&git, head_only, stashes, 200, Duration::from_millis(100), |batch, done| {
             sink(Msg::Log { batch, done, elapsed_ms: t.elapsed().as_secs_f64() * 1000.0 });
         });
         if let Err(e) = r {

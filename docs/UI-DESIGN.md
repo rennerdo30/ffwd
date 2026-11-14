@@ -158,6 +158,9 @@ The capture above is the real PoC UI. `ffwd --snapshot` rendered it offscreen fr
 
 ## History list (FF-33)
 
+- **Title menu:** the list title ("All commits · n") opens a menu: **All commits**, **Current branch only**, and **Show stashes** (setting `history.stashes`, on by default).
+- **Stash rows:** each stash is a row on its base commit, with a stash label; the index and untracked-files commits inside it never show. Its menu is the stash's (apply, pop, rename, drop, copy as patch), and the sidebar's stash jumps to it.
+
 - **To push and to pull:** an amber ↑ before commits your branch has and its upstream lacks, a blue ↓ before commits the upstream has and your branch lacks.
 - **Current branch only:** click the list title ("All commits · n") to show only HEAD's history ("Current branch · n", amber), and click again for all. The palette has the same toggle; each tab remembers its own.
 - **Web link:** the commit menu has "Open on <host>" and "Copy web link" when the remote is on GitHub, GitLab, Bitbucket, Azure DevOps or a Gitea-style host.

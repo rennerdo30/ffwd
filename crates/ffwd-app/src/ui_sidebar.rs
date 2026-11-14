@@ -237,7 +237,10 @@ impl Ui {
             let n = fmt::num(stashes.len());
             if header(&mut v, "Stashes", "h:stashes", n) {
                 for (name, msg) in stashes {
-                    v.push(SideItem::new(0, SideKind::Stash, msg, format!("s:{name}")));
+                    let mut it = SideItem::new(0, SideKind::Stash, msg, format!("s:{name}"));
+                    // Its row in the history, when stashes show there (FF-33).
+                    it.target = refs.iter().find(|r| r.kind == RefKind::Stash && *r.name == **name).map(|r| r.target);
+                    v.push(it);
                 }
             }
         }
@@ -325,6 +328,7 @@ impl Ui {
             RefKind::Local => format!("b:{name}"),
             RefKind::Remote => format!("r:{name}"),
             RefKind::Tag => format!("t:{name}"),
+            RefKind::Stash => format!("s:{name}"),
             _ => return,
         };
         // Open the folders on the way so the item is visible.
