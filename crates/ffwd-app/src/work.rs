@@ -45,6 +45,8 @@ pub enum Msg {
     /// The automatic fetch is due (FF-39).
     AutoFetchTick,
     OpProgress(String),
+    /// A branch or history operation's progress, ready to show (FF-48).
+    RefProgress(String),
     OpDone(ffwd_core::ops::Outcome),
     /// An agent run's progress (experimental agents).
     Agent(ffwd_agent::Event),
@@ -333,53 +335,59 @@ pub fn refop(git: Git, op: RefOp, sink: &Sink) {
     spawn("refop", sink, move |sink| {
         use ffwd_core::refops as r;
         let t = std::time::Instant::now();
-        let (res, ran) = ffwd_core::git::recording(|| match &op {
-            RefOp::Checkout(t) => r::checkout(&git, t),
-            RefOp::CreateBranch(n, at, sw) => r::create_branch(&git, n, at, *sw),
-            RefOp::Rename(o, n) => r::rename_branch(&git, o, n),
-            RefOp::UnsetUpstream(b) => r::unset_upstream(&git, b),
-            RefOp::SetUpstream(b, u) => r::set_upstream(&git, b, u),
-            RefOp::DeleteBranch(n, f) => r::delete_branch(&git, n, *f),
-            RefOp::CreateTag(n, at) => r::create_tag(&git, n, at, None),
-            RefOp::DeleteTag(n) => r::delete_tag(&git, n),
-            RefOp::Merge(w, m) => r::merge(&git, w, *m),
-            RefOp::Rebase(o) => r::rebase(&git, o),
-            RefOp::CherryPick(c) => r::cherry_pick(&git, c),
-            RefOp::Revert(c) => r::revert(&git, c),
-            RefOp::Reset(to, m) => r::reset(&git, to, *m),
-            RefOp::Abort(kind) => ffwd_core::conflict::abort_op(&git, kind).map_err(r::OpError::Failed),
-            RefOp::StashSave(m, o) => ffwd_core::stash::save(&git, m, *o),
-            RefOp::StashApply(n, pop) => ffwd_core::stash::apply(&git, n, *pop),
-            RefOp::StashDrop(n) => ffwd_core::stash::drop(&git, n),
-            RefOp::StashRename(n, m) => ffwd_core::stash::rename(&git, n, m),
-            RefOp::RemoteAdd(n, u) => ffwd_core::remotes::add(&git, n, u),
-            RefOp::RemoteSetUrl(n, u) => ffwd_core::remotes::set_url(&git, n, u),
-            RefOp::RemoteRename(o, n) => ffwd_core::remotes::rename(&git, o, n),
-            RefOp::RemoteRemove(n) => ffwd_core::remotes::remove(&git, n),
-            RefOp::RemoteFetch(n) => ffwd_core::remotes::fetch(&git, n),
-            RefOp::RemoteTest(n) => {
-                ffwd_core::remotes::test(&git, n, std::time::Duration::from_secs(30), Default::default())
-            }
-            RefOp::Sync(_) => Err(r::OpError::Failed("internal: a sync runs through start_op".into())),
-            RefOp::TakeSideAll(paths, ours) => {
-                ffwd_core::conflict::take_side_all(&git, paths, *ours).map_err(r::OpError::Failed)
-            }
-            RefOp::PushTag(rm, t) => r::push_tag(&git, rm, t),
-            RefOp::PushMany(rm, b, t) => r::push_many(&git, rm, b, t),
-            RefOp::DeleteMany(b, t, f) => r::delete_many(&git, b, t, *f),
-            RefOp::DeleteRemoteMany(rm, b, t) => r::delete_remote_many(&git, rm, b, t),
-            RefOp::StashDropMany(v) => ffwd_core::stash::drop_many(&git, v),
-            RefOp::DeleteRemoteTag(rm, t) => r::delete_remote_tag(&git, rm, t),
-            RefOp::PushBranch(rm, b) => r::push_branch(&git, rm, b),
-            RefOp::DeleteRemoteBranch(rm, b) => r::delete_remote_branch(&git, rm, b),
-            RefOp::ApplyPatch(p, three) => ffwd_core::patches::apply(&git, p, *three),
-            RefOp::PrCheckout(remote, n) => ffwd_core::hosting::checkout(&git, remote, *n),
-            RefOp::RebaseInteractive(base, steps) => ffwd_core::rebase::run_plan(&git, base.as_deref(), steps),
-            RefOp::SubUpdate(p) => ffwd_core::submodules::update(&git, p.as_deref()),
-            RefOp::SubAdd(u, p) => ffwd_core::submodules::add(&git, u, p),
-            RefOp::SubMove(p, n) => ffwd_core::submodules::move_to(&git, p, n),
-            RefOp::SubRelative(n) => ffwd_core::submodules::make_relative(&git, n.as_deref()),
-            RefOp::SubAbsolute(n) => ffwd_core::submodules::make_absolute(&git, n),
+        // Long checkouts show git's progress in the status bar (FF-48).
+        let verb = op.verb();
+        let s2 = sink.clone();
+        let hook: ffwd_core::git::ProgressHook = Arc::new(move |line| s2(Msg::RefProgress(format!("{verb}… {line}"))));
+        let (res, ran) = ffwd_core::git::with_progress(hook, || {
+            ffwd_core::git::recording(|| match &op {
+                RefOp::Checkout(t) => r::checkout(&git, t),
+                RefOp::CreateBranch(n, at, sw) => r::create_branch(&git, n, at, *sw),
+                RefOp::Rename(o, n) => r::rename_branch(&git, o, n),
+                RefOp::UnsetUpstream(b) => r::unset_upstream(&git, b),
+                RefOp::SetUpstream(b, u) => r::set_upstream(&git, b, u),
+                RefOp::DeleteBranch(n, f) => r::delete_branch(&git, n, *f),
+                RefOp::CreateTag(n, at) => r::create_tag(&git, n, at, None),
+                RefOp::DeleteTag(n) => r::delete_tag(&git, n),
+                RefOp::Merge(w, m) => r::merge(&git, w, *m),
+                RefOp::Rebase(o) => r::rebase(&git, o),
+                RefOp::CherryPick(c) => r::cherry_pick(&git, c),
+                RefOp::Revert(c) => r::revert(&git, c),
+                RefOp::Reset(to, m) => r::reset(&git, to, *m),
+                RefOp::Abort(kind) => ffwd_core::conflict::abort_op(&git, kind).map_err(r::OpError::Failed),
+                RefOp::StashSave(m, o) => ffwd_core::stash::save(&git, m, *o),
+                RefOp::StashApply(n, pop) => ffwd_core::stash::apply(&git, n, *pop),
+                RefOp::StashDrop(n) => ffwd_core::stash::drop(&git, n),
+                RefOp::StashRename(n, m) => ffwd_core::stash::rename(&git, n, m),
+                RefOp::RemoteAdd(n, u) => ffwd_core::remotes::add(&git, n, u),
+                RefOp::RemoteSetUrl(n, u) => ffwd_core::remotes::set_url(&git, n, u),
+                RefOp::RemoteRename(o, n) => ffwd_core::remotes::rename(&git, o, n),
+                RefOp::RemoteRemove(n) => ffwd_core::remotes::remove(&git, n),
+                RefOp::RemoteFetch(n) => ffwd_core::remotes::fetch(&git, n),
+                RefOp::RemoteTest(n) => {
+                    ffwd_core::remotes::test(&git, n, std::time::Duration::from_secs(30), Default::default())
+                }
+                RefOp::Sync(_) => Err(r::OpError::Failed("internal: a sync runs through start_op".into())),
+                RefOp::TakeSideAll(paths, ours) => {
+                    ffwd_core::conflict::take_side_all(&git, paths, *ours).map_err(r::OpError::Failed)
+                }
+                RefOp::PushTag(rm, t) => r::push_tag(&git, rm, t),
+                RefOp::PushMany(rm, b, t) => r::push_many(&git, rm, b, t),
+                RefOp::DeleteMany(b, t, f) => r::delete_many(&git, b, t, *f),
+                RefOp::DeleteRemoteMany(rm, b, t) => r::delete_remote_many(&git, rm, b, t),
+                RefOp::StashDropMany(v) => ffwd_core::stash::drop_many(&git, v),
+                RefOp::DeleteRemoteTag(rm, t) => r::delete_remote_tag(&git, rm, t),
+                RefOp::PushBranch(rm, b) => r::push_branch(&git, rm, b),
+                RefOp::DeleteRemoteBranch(rm, b) => r::delete_remote_branch(&git, rm, b),
+                RefOp::ApplyPatch(p, three) => ffwd_core::patches::apply(&git, p, *three),
+                RefOp::PrCheckout(remote, n) => ffwd_core::hosting::checkout(&git, remote, *n),
+                RefOp::RebaseInteractive(base, steps) => ffwd_core::rebase::run_plan(&git, base.as_deref(), steps),
+                RefOp::SubUpdate(p) => ffwd_core::submodules::update(&git, p.as_deref()),
+                RefOp::SubAdd(u, p) => ffwd_core::submodules::add(&git, u, p),
+                RefOp::SubMove(p, n) => ffwd_core::submodules::move_to(&git, p, n),
+                RefOp::SubRelative(n) => ffwd_core::submodules::make_relative(&git, n.as_deref()),
+                RefOp::SubAbsolute(n) => ffwd_core::submodules::make_absolute(&git, n),
+            })
         });
         let (ok, summary) = match &res {
             Ok(m) => (true, m.clone()),

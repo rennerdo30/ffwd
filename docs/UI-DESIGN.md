@@ -108,6 +108,8 @@ The capture above is the real PoC UI. `ffwd --snapshot` rendered it offscreen fr
 
 ## Activity log (FF-48)
 
+- **Progress:** branch and history operations pass Git's progress lines to the status bar while they run (for example "Checking out… Updating files: 45% (900/2000)"), at most every 150 ms. The automatic fetch stays quiet.
+
 - **Where:** the sidebar's Workspace section has **Activity**; the palette has "Activity log". A red "n failed" badge counts failures since the log was last open.
 - **What:** every operation the user starts, in every tab: fetch, pull, push; branch, tag and history operations; stashes; Local Changes actions.
 - **List (left):** newest first, with a tick or cross, the title and repository, the result line, the time and the duration.

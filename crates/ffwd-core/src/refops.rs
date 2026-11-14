@@ -86,23 +86,24 @@ fn exists(git: &Git, full_ref: &str) -> bool {
 
 /// Checks out a local branch; a remote branch (`origin/x`) gets a local
 /// tracking branch (or switches to it when it exists); anything else
-/// (a tag, a SHA) is checked out detached.
+/// (a tag, a SHA) is checked out detached. Git's progress ("Updating
+/// files") reaches a hook set with `git::with_progress` (FF-48).
 pub fn checkout(git: &Git, target: &str) -> R {
     if exists(git, &format!("refs/heads/{target}")) {
-        run(git, &["switch", target])?;
+        run(git, &["switch", "--progress", target])?;
         return Ok(format!("Checked out {target}"));
     }
     if let Some((remote, name)) = target.split_once('/')
         && exists(git, &format!("refs/remotes/{target}"))
     {
         if exists(git, &format!("refs/heads/{name}")) {
-            run(git, &["switch", name])?;
+            run(git, &["switch", "--progress", name])?;
             return Ok(format!("Checked out {name} (it already tracks a branch; pull to update it)"));
         }
-        run(git, &["switch", "--track", target])?;
+        run(git, &["switch", "--progress", "--track", target])?;
         return Ok(format!("Checked out {name}, tracking {remote}/{name}"));
     }
-    run(git, &["switch", "--detach", target])?;
+    run(git, &["switch", "--progress", "--detach", target])?;
     Ok(format!("Checked out {} (detached HEAD: create a branch before committing)", short(git, "HEAD")))
 }
 
