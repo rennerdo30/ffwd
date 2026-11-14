@@ -700,6 +700,8 @@ enum Req {
         seq: u64,
         entry: Box<ffwd_core::changes::Entry>,
         side: ffwd_core::changes::Side,
+        /// Changes in whitespace only left out (for reading, not staging).
+        ignore_ws: bool,
     },
 }
 
@@ -746,9 +748,10 @@ impl DetailWorker {
                             .map_err(|e| e.to_string());
                         sink(Msg::Diff { seq, file, result });
                     }
-                    Req::ChangeDiff { seq, entry, side } => {
-                        let result =
-                            ffwd_core::changes::diff(&git, &entry, side).map(Box::new).map_err(|e| e.to_string());
+                    Req::ChangeDiff { seq, entry, side, ignore_ws } => {
+                        let result = ffwd_core::changes::diff_with(&git, &entry, side, ignore_ws)
+                            .map(Box::new)
+                            .map_err(|e| e.to_string());
                         sink(Msg::ChangesDiff { seq, result });
                     }
                 }
@@ -785,10 +788,16 @@ impl DetailWorker {
 
 impl DetailWorker {
     /// The diff of a changed file; replaces any waiting diff request.
-    pub fn change_diff(&self, seq: u64, entry: ffwd_core::changes::Entry, side: ffwd_core::changes::Side) {
+    pub fn change_diff(
+        &self,
+        seq: u64,
+        entry: ffwd_core::changes::Entry,
+        side: ffwd_core::changes::Side,
+        ignore_ws: bool,
+    ) {
         let (m, cv) = &*self.slot;
         if let Ok(mut g) = m.lock() {
-            g.2 = Some(Req::ChangeDiff { seq, entry: Box::new(entry), side });
+            g.2 = Some(Req::ChangeDiff { seq, entry: Box::new(entry), side, ignore_ws });
             cv.notify_one();
         }
     }
@@ -842,7 +851,7 @@ mod tests {
         });
         let w = DetailWorker::new(g.clone(), &sink);
         for round in 0..20u64 {
-            w.change_diff(round * 2, entry.clone(), ffwd_core::changes::Side::Unstaged);
+            w.change_diff(round * 2, entry.clone(), ffwd_core::changes::Side::Unstaged, false);
             w.details(round * 2 + 1, head);
             let (mut diff, mut details) = (false, false);
             let until = std::time::Instant::now() + Duration::from_secs(20);

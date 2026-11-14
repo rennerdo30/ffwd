@@ -219,7 +219,7 @@ impl Ui {
                 if let Some(label) = hunk_label {
                     let w = self.te.measure(semi, self.pf(11.0), label) + self.pf(18.0);
                     let b = Rect::new(
-                        body.right() - self.px(10.0) - w as i32,
+                        body.right() - self.px(16.0) - w as i32,
                         y + self.px(2.0),
                         w as i32,
                         lh - self.px(4.0),
@@ -728,6 +728,11 @@ impl Ui {
                 let v = if self.diff_opts.ignore_whitespace { "true" } else { "false" };
                 self.settings.set_string("diff.ignore_whitespace", v);
                 self.request_diff();
+                if self.r.changes_view {
+                    // Local Changes shows the same choice.
+                    self.request_change_diff();
+                    self.damage.full = true;
+                }
             }
         }
         let r = self.diff_rect();

@@ -33,6 +33,8 @@ pub enum CHit {
     StageLines,
     /// Unified or side by side (FF-35; the same choice as the history's).
     Layout,
+    /// Whitespace shown or ignored (the same choice as the history's).
+    Whitespace,
     Commit,
     /// AI draft: a commit message from the staged changes (FF-50).
     Ai,
@@ -56,6 +58,8 @@ pub struct Changes {
     pub sel: usize,
     tops: [usize; 2],
     pub diff: Option<Box<FileDiff>>,
+    /// The diff's overview strip and scrollbar, as last painted.
+    pub strip: Rect,
     /// A stopped merge, rebase, cherry-pick or revert.
     pub in_progress: Option<&'static str>,
     /// The selected conflicted file's conflicts.
@@ -102,6 +106,7 @@ impl Default for Changes {
             in_progress: None,
             conflict: None,
             diff_top: 0,
+            strip: Rect::default(),
             seq: 0,
             subject: TextField::default(),
             desc: TextArea::default(),
@@ -290,7 +295,7 @@ impl Ui {
         self.side_rows(self.r.changes.side, self.r.changes.sel, 1).pop()
     }
 
-    fn request_change_diff(&mut self) {
+    pub(super) fn request_change_diff(&mut self) {
         let Some(e) = self.selected_entry() else {
             self.r.changes.diff = None;
             return;
@@ -303,7 +308,7 @@ impl Ui {
         self.r.changes.seq += 1;
         let (seq, side) = (self.r.changes.seq, self.r.changes.side);
         if let Some(w) = &self.r.worker {
-            w.change_diff(seq, e, side);
+            w.change_diff(seq, e, side, self.diff_opts.ignore_whitespace);
         }
     }
 
@@ -496,7 +501,22 @@ impl Ui {
         }
     }
 
+    /// Hunks and lines stage only from the exact diff: with whitespace
+    /// ignored, the shown hunks are not the ones Git would apply.
+    pub(super) fn partial_staging_off(&mut self) -> bool {
+        if !self.diff_opts.ignore_whitespace {
+            return false;
+        }
+        self.set_notice(
+            "Whitespace is ignored: click Whitespace ignored to show it, then stage hunks or lines.".into(),
+        );
+        true
+    }
+
     fn toggle_hunk(&mut self, hunk: usize) {
+        if self.partial_staging_off() {
+            return;
+        }
         let Some(e) = self.selected_entry() else { return };
         let side = self.r.changes.side;
         self.run_change_op(crate::work::ChangeOp::Hunk(Box::new(e), side, hunk), "Staging");
@@ -636,6 +656,9 @@ impl Ui {
     }
 
     fn stage_picked(&mut self) {
+        if self.partial_staging_off() {
+            return;
+        }
         let picks = self.picked_by_hunk();
         let Some(e) = self.selected_entry() else { return };
         if picks.is_empty() {
@@ -659,7 +682,7 @@ impl Ui {
         }
         let r = self.changes_layout().diff;
         let body_y = r.y + self.px(32.0);
-        if !r.contains(x, y) || y < body_y {
+        if !r.contains(x, y) || y < body_y || self.r.changes.strip.contains(x, y) {
             return None;
         }
         let d = self.r.changes.diff.clone()?;
@@ -699,6 +722,9 @@ impl Ui {
     fn toggle_pick(&mut self, i: usize) {
         let Some(d) = &self.r.changes.diff else { return };
         if !matches!(d.lines.get(i).map(|l| l.kind), Some(LineKind::Add | LineKind::Del)) {
+            return;
+        }
+        if self.partial_staging_off() {
             return;
         }
         let p = &mut self.r.changes.picked;
@@ -955,6 +981,26 @@ impl Ui {
         }
     }
 
+    /// The strip shows (a text diff, not the AI pane or the resolver).
+    fn changes_strip_live(&self) -> bool {
+        self.r.changes.ai.is_none()
+            && self.r.changes.conflict.is_none()
+            && self.r.changes.diff.as_ref().is_some_and(|d| !d.binary)
+    }
+
+    /// A click or drag on the Local Changes diff's strip scrolls there.
+    pub(super) fn changes_strip_click(&mut self, y: i32) {
+        let Some(d) = self.r.changes.diff.clone() else { return };
+        let split = self.changes_split();
+        let n = self.rows_of(&d, split);
+        let top = self.strip_top(self.r.changes.strip, y, n);
+        if n > 0 && top != self.r.changes.diff_top {
+            self.r.changes.diff_top = top;
+            let r = self.changes_layout().diff;
+            self.damage.rects.push(r);
+        }
+    }
+
     pub(super) fn changes_wheel(&mut self, x: i32, y: i32, n: i64) {
         let l = self.changes_layout();
         if l.diff.contains(x, y) {
@@ -995,6 +1041,11 @@ impl Ui {
         if !l.area.contains(x, y) {
             return false;
         }
+        if self.r.changes.diff.is_some() && self.r.changes.strip.contains(x, y) && self.changes_strip_live() {
+            self.strip_drag = Some(super::StripDrag::Changes);
+            self.changes_strip_click(y);
+            return true;
+        }
         let hit = self.r.changes.hits.iter().find(|h| h.0.contains(x, y)).map(|h| h.1);
         match hit {
             Some(CHit::Row(side, i)) => {
@@ -1008,6 +1059,7 @@ impl Ui {
             Some(CHit::UnstageAll) => self.stage_all(false),
             Some(CHit::Hunk(h)) => self.toggle_hunk(h),
             Some(CHit::Layout) => self.set_changes_split(!self.diff_split),
+            Some(CHit::Whitespace) => self.apply_diff_bar(diff_view::DiffBar::Whitespace),
             Some(CHit::Subject) => self.r.changes.focus = CFocus::Subject,
             Some(CHit::Desc) => self.r.changes.focus = CFocus::Desc,
             Some(CHit::SkipHooks) => self.r.changes.skip_hooks = !self.r.changes.skip_hooks,
@@ -1225,6 +1277,17 @@ impl Ui {
                     );
                 }
                 hits.push((row.intersect(list), CHit::Row(side, k)));
+            }
+            // A scroll thumb when the list is longer than its pane (in the
+            // gap right of the rows).
+            if fit > 0 && n_side > fit {
+                let th = ((list.h as f32 * fit as f32 / n_side as f32) as i32).max(self.px(20.0));
+                let ty = list.y + ((list.h - th) as f32 * top as f32 / (n_side - fit) as f32) as i32;
+                cv.fill_round(
+                    Rect::new(list.right() - self.px(5.0), ty, self.px(3.0), th),
+                    self.pf(1.5),
+                    BORDER_HOVER(),
+                );
             }
             cv.set_clip(old);
         }
@@ -1530,16 +1593,6 @@ impl Ui {
         let sel = self.selected_entry();
         let title = sel.as_ref().map_or_else(String::new, |e| e.path.to_string());
         let focus = self.r.changes.focus == CFocus::Diff;
-        self.te.draw(
-            cv,
-            semi,
-            self.pf(12.5),
-            r.x as f32 + pad,
-            base,
-            &title,
-            if focus { ACCENT() } else { TEXT() },
-            r.w as f32 - self.pf(200.0),
-        );
         // Unified or side by side, clickable (FF-35).
         let lt = if self.diff_split { "Unified" } else { "Side by side" };
         let lw = self.te.measure(semi, self.pf(11.5), lt) + self.pf(16.0);
@@ -1550,15 +1603,47 @@ impl Ui {
         cv.round_border(layout_btn, self.pf(5.0), lborder, lbg);
         self.te.draw(cv, semi, self.pf(11.5), layout_btn.x as f32 + self.pf(8.0), base, lt, TEXT_2(), lw);
         hits.push((layout_btn, CHit::Layout));
-        let hint = match side {
-            Side::Unstaged => "unstaged · Space or click picks lines · S stages them",
-            Side::Staged => "staged · Space or click picks lines · S unstages them",
+        // Whitespace shown or ignored: the history's switch, the same look.
+        // On a narrow pane it gives way to the file name.
+        let ws = self.diff_opts.ignore_whitespace;
+        let wt = if ws { "Whitespace ignored" } else { "Whitespace shown" };
+        let ww = self.te.measure(semi, self.pf(11.5), wt) + self.pf(16.0);
+        let ws_btn = Rect::new(layout_btn.x - self.px(6.0) - ww as i32, layout_btn.y, ww as i32, layout_btn.h);
+        let mut left = layout_btn.x as f32;
+        if ws_btn.x > r.x + self.px(140.0) {
+            let hot = Hot::Change(hits.len());
+            if ws {
+                cv.fill_round(ws_btn, self.pf(5.0), BG_CHOSEN());
+            } else if self.is_hot(hot) {
+                cv.fill_round(ws_btn, self.pf(5.0), CONTROL_HOVER());
+            }
+            let wc = if ws { TEXT() } else { TEXT_2() };
+            self.te.draw(cv, semi, self.pf(11.5), ws_btn.x as f32 + self.pf(8.0), base, wt, wc, ww);
+            hits.push((ws_btn, CHit::Whitespace));
+            left = ws_btn.x as f32;
+        }
+        let hint = match (ws, side) {
+            (true, _) => "show whitespace to stage hunks or lines",
+            (false, Side::Unstaged) => "unstaged · Space or click picks lines · S stages them",
+            (false, Side::Staged) => "staged · Space or click picks lines · S unstages them",
         };
         let hw = self.te.measure(ui, self.pf(11.0), hint);
-        let hint_right = layout_btn.x as f32 - self.pf(12.0);
+        let hint_right = left - self.pf(12.0);
         if hint_right - hw > r.x as f32 + self.pf(260.0) {
             self.te.draw(cv, ui, self.pf(11.0), hint_right - hw, base, hint, TEXT_4(), hw + 2.0);
+            left = hint_right - hw;
         }
+        let title_w = (left - r.x as f32 - pad - self.pf(8.0)).max(0.0);
+        self.te.draw(
+            cv,
+            semi,
+            self.pf(12.5),
+            r.x as f32 + pad,
+            base,
+            &title,
+            if focus { ACCENT() } else { TEXT() },
+            title_w,
+        );
         let body = Rect::new(r.x, bar.bottom(), r.w, r.bottom() - bar.bottom());
         let Some(diff) = self.r.changes.diff.clone() else {
             let t = if sel.is_some() { "Loading the diff…" } else { "Select a file to see its changes" };
@@ -1587,14 +1672,18 @@ impl Ui {
             );
             return;
         }
-        let label = if side == Side::Unstaged { "Stage hunk" } else { "Unstage hunk" };
+        // No hunk buttons while whitespace is ignored: the shown hunks are
+        // not the ones staging applies.
+        let label = (!ws).then_some(if side == Side::Unstaged { "Stage hunk" } else { "Unstage hunk" });
         let top = self.r.changes.diff_top;
         let split = self.changes_split();
         let buttons = if split {
-            self.paint_diff_split(cv, body, &diff, top, Some(label), hits.len())
+            self.paint_diff_split(cv, body, &diff, top, label, hits.len())
         } else {
-            self.paint_diff_body(cv, body, &diff, top, Some(label), hits.len())
+            self.paint_diff_body(cv, body, &diff, top, label, hits.len())
         };
+        self.r.changes.strip =
+            if diff.binary { Rect::default() } else { self.paint_strip_of(cv, body, &diff, top, split) };
         // Picked lines and the line cursor, over the painted lines (side
         // by side: at the left edge of their half).
         let lh = self.code_lh();
