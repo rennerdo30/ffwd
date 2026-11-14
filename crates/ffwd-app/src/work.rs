@@ -51,6 +51,8 @@ pub enum Msg {
     AgentNotice(Result<String, String>),
     /// The automatic fetch is due (FF-39).
     AutoFetchTick,
+    /// A line for the status bar from a worker (Settings → About).
+    Notice(String),
     OpProgress(String),
     /// A branch or history operation's progress, ready to show (FF-48).
     RefProgress(String),

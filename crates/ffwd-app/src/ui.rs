@@ -635,6 +635,8 @@ pub struct Ui {
     /// The newest search; older search workers stop when it moves on.
     search_seq: Arc<std::sync::atomic::AtomicU64>,
     pub notice: Option<String>,
+    /// The last update check's answer (Settings → Updates).
+    pub(super) update_line: String,
     update_available: bool,
     update_requested: bool,
     update_check_requested: bool,
@@ -803,6 +805,7 @@ impl Ui {
             diff_opts: diff_view::opts_from(&settings).1,
             diff_bar_hits: Vec::new(),
             pairs_cache: None,
+            update_line: String::new(),
             update_available: false,
             update_requested: false,
             update_check_requested: false,
@@ -1120,6 +1123,9 @@ impl Ui {
         if let Msg::AutoFetchTick = m {
             return self.auto_fetch_due();
         }
+        if let Msg::Notice(n) = m {
+            return self.set_notice(n);
+        }
         if let Msg::GitConf(v) = m {
             self.git_conf.extend(v);
             if self.settings_view.is_some() {
@@ -1312,7 +1318,17 @@ impl Ui {
 
     pub fn request_update_check(&mut self) {
         self.update_check_requested = true;
+        self.set_update_line("Checking for updates…".into());
         self.set_notice("Checking for updates…".into());
+    }
+
+    /// What the last update check said, for Settings → Updates.
+    fn set_update_line(&mut self, line: String) {
+        self.update_line = line;
+        if self.settings_view.is_some() {
+            let r = self.settings_rect();
+            self.damage.rects.push(r);
+        }
     }
 
     pub fn take_update_check_requested(&mut self) -> bool {
@@ -1476,6 +1492,7 @@ impl Ui {
             Msg::Log { batch, done, elapsed_ms } => {
                 let was_empty = self.r.commits.is_empty();
                 let start = self.r.commits.len();
+                let lanes = self.graph_lanes_shown();
                 for c in batch {
                     self.r.graph.push(&c);
                     self.r.by_id.insert(c.id, self.r.commits.len() as u32);
@@ -1504,6 +1521,9 @@ impl Ui {
                 // Only rows that became visible need paint.
                 let end = (self.r.top + self.visible_rows() + 1).min(self.r.commits.len());
                 self.damage.rows.extend(start.max(self.r.top)..end);
+                if self.graph_lanes_shown() != lanes {
+                    self.damage.rects.push(self.lay.list_body);
+                }
                 self.damage.rects.extend([self.lay.status, self.lay.scrollbar, self.lay.list_head]);
             }
             Msg::Compared { seq, result } => match result {
@@ -1621,6 +1641,7 @@ impl Ui {
             | Msg::GitConfSaved(_)
             | Msg::Picked(..)
             | Msg::AgentNotice(_)
+            | Msg::Notice(_)
             | Msg::AutoFetchTick => {}
             Msg::Agent(e) => self.on_agent_event(e),
             Msg::RepoSettings(p, s) => self.on_repo_settings(p, s),
@@ -1747,10 +1768,13 @@ impl Ui {
 
     pub fn offer_update(&mut self, version: &ffwd_update::Version) {
         self.update_available = true;
-        self.set_notice_with(crate::update::notice(version), NoticeAct::InstallUpdate);
+        let n = crate::update::notice(version);
+        self.set_update_line(n.clone());
+        self.set_notice_with(n, NoticeAct::InstallUpdate);
     }
 
     pub fn set_update_message(&mut self, message: String) {
+        self.set_update_line(message.clone());
         self.set_notice(message);
     }
 
@@ -1880,8 +1904,10 @@ impl Ui {
         if d == 0 {
             return;
         }
+        let lanes = self.graph_lanes_shown();
         self.r.top = top;
-        if d.unsigned_abs() as usize >= self.visible_rows() {
+        // The message column moved with the lanes: no pixel copy then.
+        if d.unsigned_abs() as usize >= self.visible_rows() || self.graph_lanes_shown() != lanes {
             self.damage.rects.push(self.lay.list_body);
             self.damage_visible_rows();
         } else {
@@ -3616,8 +3642,14 @@ impl Ui {
         self.pf(14.0)
     }
 
+    /// The graph column holds the lanes of the rows on screen, not of the
+    /// whole history: one long-lived side branch far down must not push
+    /// every message to the right (at most 10 lanes; more are clipped).
     fn graph_lanes_shown(&self) -> u16 {
-        self.r.graph.max_width.clamp(1, 10)
+        let rows = &self.r.graph.rows;
+        let top = self.r.top.min(rows.len());
+        let end = (top + self.visible_rows() + 1).min(rows.len());
+        rows[top..end].iter().map(|g| g.width.max(g.node + 1)).max().unwrap_or(1).clamp(1, 10)
     }
 
     fn list_columns(&self) -> (f32, f32, f32, f32) {
@@ -8811,6 +8843,34 @@ mod tests {
         ui.last_click = None;
         if ui.menu.is_some() {
             ui.menu_activate(i);
+        }
+    }
+
+    /// Check for updates keeps Settings open and answers under its button;
+    /// About names the version and offers the licences.
+    #[test]
+    fn update_check_stays_in_settings_and_about_shows_the_version() {
+        use settings_view::Row;
+        let mut te = TextEngine::new();
+        let Some(f) = load_fonts(&mut te) else { return };
+        let empty = crate::settings::Settings::parse("");
+        let sinks: SinkFactory = Arc::new(|_| Arc::new(|_| {}));
+        let mut ui = Ui::new(te, f, empty.clone(), empty, None, sinks, 1280, 800, 1.0);
+        let mut screen = vec![0u32; 1280 * 800];
+        ui.open_settings();
+        ui.settings_go("Updates");
+        settings_pick(&mut ui, &mut screen, Row::CheckUpdates, 0);
+        assert!(ui.settings_view.is_some(), "Settings stays open");
+        assert!(ui.take_update_check_requested());
+        assert_eq!(ui.row_hint(Row::CheckUpdates), "Checking for updates…");
+        ui.set_update_message("ffwd 1.0.0 is the newest version.".into());
+        assert_eq!(ui.row_hint(Row::CheckUpdates), "ffwd 1.0.0 is the newest version.");
+        assert_partial_paint_is_full(&mut ui, &mut screen, "update answer");
+        ui.settings_go("About");
+        assert_eq!(ui.rows(), [Row::AboutVersion, Row::AboutLicense, Row::AboutNotices, Row::AboutSource]);
+        ui.paint(&mut Canvas::new(&mut screen, 1280, 800), true);
+        for row in [Row::AboutLicense, Row::AboutNotices, Row::AboutSource] {
+            assert!(ui.settings_target(row, 0).is_some(), "{row:?} has its button");
         }
     }
 

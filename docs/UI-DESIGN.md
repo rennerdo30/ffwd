@@ -318,7 +318,7 @@ The capture above is the real PoC UI. `ffwd --snapshot` rendered it offscreen fr
 
 The gear in the top bar (or `Ctrl+,`) opens Settings as a page of its own: the whole window below the top bar. Changes save at once; the file keeps your comments.
 
-- **Sidebar:** sections in two groups. General: Appearance (theme: System, Dark, Light; commit details), Updates, Repositories, Git (name and email for every repository and for the open one, the Git program and its version, credential helper, certificate checks, CA file, TLS backend: Git's own settings, read and written on a worker), Tools (editor, merge and diff tools), Remotes, AI, Advanced. Path rows have **Browse…** (the system's picker). Agents (experimental): Agent, Sandbox, Access, Scripts & limits. `Ctrl+Tab` goes to the next section.
+- **Sidebar:** sections in two groups. General: Appearance (theme: System, Dark, Light; commit details), Updates, Repositories, Git (name and email for every repository and for the open one, the Git program and its version, credential helper, certificate checks, CA file, TLS backend: Git's own settings, read and written on a worker), Tools (editor, merge and diff tools), Remotes, AI, Advanced, About (version, licence, third-party licences, source). **Check for updates** answers under its button and Settings stays open. Path rows have **Browse…** (the system's picker). Agents (experimental): Agent, Sandbox, Access, Scripts & limits. `Ctrl+Tab` goes to the next section.
 - **Cards:** each section has a heading, a sentence on what it is for, and a card of rows. Every row has its label, a full description (up to three lines, never cut mid-word) and its control on the right.
 - **Controls:** on/off settings are switches with their state written next to them; long lists (agent, sandbox, WSL distribution, merge and diff tools, fetch interval) are dropdowns with readable names; only two or three short choices are segmented; text settings are fields.
 - **Search:** the field at the top, or just typing, finds any setting across every section; `Esc` clears it.
@@ -404,6 +404,7 @@ Planned M1 keys follow common Git-client conventions (for example `Ctrl+Shift+G`
   - Depth comes from value steps, never from shadows, blur or gradients. That keeps remote sessions cheap and the screen calm.
 - **One accent:** amber `#E8A33E`. It marks only what is active: the current tab, focus, the selection bar, HEAD, the primary button and the logo.
   - Graph lanes use ten hues at one muted saturation.
+  - The graph column is as wide as the lanes of the rows on screen (at most ten), so a long-lived branch further down does not push every message to the right; when scrolling changes that width, the list repaints instead of copying pixels.
   - Ref chips and diff colours are tinted, never neon.
 - **Text contrast:** four steps.
   - `#ECEAE6` for primary text.

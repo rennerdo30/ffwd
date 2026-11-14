@@ -63,6 +63,11 @@ pub enum Row {
     OnDone,
     Timeout,
     AgentsFile,
+    /// About: the version, the licences and the source.
+    AboutVersion,
+    AboutLicense,
+    AboutNotices,
+    AboutSource,
 }
 
 /// One section: its place in the sidebar, its heading and its rows.
@@ -144,6 +149,13 @@ const SECTIONS: &[Section] = &[
         rows: &[Row::OpenFile, Row::AgentsFile],
     },
     Section {
+        nav: "About",
+        about: "ffwd (say fast-forward): a fast Git client, free and open source under the MIT licence.",
+        glyph: Glyph::Head,
+        agents: false,
+        rows: &[Row::AboutVersion, Row::AboutLicense, Row::AboutNotices, Row::AboutSource],
+    },
+    Section {
         nav: "Agent",
         about: "A coding agent works on a task in its own worktree and branch, inside a sandbox. You review and merge its commits.",
         glyph: Glyph::Terminal,
@@ -174,10 +186,10 @@ const SECTIONS: &[Section] = &[
 ];
 
 /// The first agent section (the agents panel opens Settings there).
-const FIRST_AGENT_SECTION: usize = 8;
+const FIRST_AGENT_SECTION: usize = 9;
 
 /// The sidebar groups: (title, first section, end).
-const GROUPS: [(&str, usize, usize); 2] = [("General", 0, FIRST_AGENT_SECTION), ("Agents", FIRST_AGENT_SECTION, 12)];
+const GROUPS: [(&str, usize, usize); 2] = [("General", 0, FIRST_AGENT_SECTION), ("Agents", FIRST_AGENT_SECTION, 13)];
 
 /// How a row is edited.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -235,6 +247,10 @@ impl Row {
             Row::OnDone => "When a run ends",
             Row::Timeout => "Time limit (minutes)",
             Row::AgentsFile => "All agent settings",
+            Row::AboutVersion => "Version",
+            Row::AboutLicense => "Licence",
+            Row::AboutNotices => "Third-party licences",
+            Row::AboutSource => "Source code",
         }
     }
 
@@ -299,6 +315,10 @@ impl Row {
             Row::OnDone => "Runs on your machine when a run ends, for example a notification.",
             Row::Timeout => "The agent is stopped after this, from 1 to 1440 minutes.",
             Row::AgentsFile => "Environment, folders, branch prefix, prompt template, shells.",
+            Row::AboutVersion => "The version you are running.",
+            Row::AboutLicense => "MIT: use, change and share ffwd freely; keep the copyright notice.",
+            Row::AboutNotices => "The open-source libraries ffwd is built from, each with its licence text.",
+            Row::AboutSource => "The repository: code, releases and issues.",
         }
     }
 
@@ -386,7 +406,7 @@ impl Row {
 
     fn ctl(self) -> Ctl {
         match self {
-            Row::GitVersion => Ctl::Info,
+            Row::GitVersion | Row::AboutVersion => Ctl::Info,
             Row::Updates | Row::AgentsOn | Row::AllowUnsandboxed | Row::Network | Row::SslVerify => Ctl::Toggle,
             Row::Preset
             | Row::Sandbox
@@ -395,7 +415,12 @@ impl Row {
             | Row::DiffTool
             | Row::AutoFetch
             | Row::SslBackend => Ctl::Dropdown,
-            Row::OpenFile | Row::CheckUpdates | Row::AgentsFile => Ctl::Button,
+            Row::OpenFile
+            | Row::CheckUpdates
+            | Row::AgentsFile
+            | Row::AboutLicense
+            | Row::AboutNotices
+            | Row::AboutSource => Ctl::Button,
             r if r.key().is_some() => Ctl::Text,
             _ => Ctl::Segmented,
         }
@@ -631,7 +656,7 @@ impl Ui {
         }
     }
 
-    fn row_hint(&self, row: Row) -> String {
+    pub(super) fn row_hint(&self, row: Row) -> String {
         match row {
             Row::Grant(k) => match self.grants().get(k as usize).and_then(|g| g.tool) {
                 Some(tool) => format!("{tool} keeps its login and settings here."),
@@ -644,8 +669,45 @@ impl Ui {
                     self.r.repo_name
                 )
             }
+            // The last check's answer, once there is one.
+            Row::CheckUpdates if !self.update_line.is_empty() => self.update_line.clone(),
+            Row::AboutVersion => {
+                let os = match std::env::consts::OS {
+                    "windows" => "Windows",
+                    "macos" => "macOS",
+                    "linux" => "Linux",
+                    o => o,
+                };
+                format!("{os}, {}. {}", std::env::consts::ARCH, Row::AboutVersion.hint())
+            }
             r => r.hint().to_string(),
         }
+    }
+
+    /// Opens a file that ships next to ffwd (installer and archives). A
+    /// build without it: the licence from inside ffwd; the notices, a word
+    /// on where they come from.
+    fn open_beside_exe(&mut self, name: &'static str) {
+        if cfg!(test) {
+            return;
+        }
+        let sink = (self.sinks)(0);
+        std::thread::spawn(move || {
+            let beside = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join(name)));
+            match beside.filter(|p| p.is_file()) {
+                Some(p) => open_target(p.to_string_lossy().into_owned()),
+                None if name == "LICENSE.txt" => {
+                    let p = std::env::temp_dir().join("ffwd-LICENSE.txt");
+                    match std::fs::write(&p, LICENSE) {
+                        Ok(()) => open_target(p.to_string_lossy().into_owned()),
+                        Err(e) => sink(Msg::Notice(format!("Could not show the licence: {e}"))),
+                    }
+                }
+                None => sink(Msg::Notice(format!(
+                    "{name} comes with installed copies of ffwd, next to the program; this build has none."
+                ))),
+            }
+        });
     }
 
     /// The rows on screen with their section: the current section's, or
@@ -1001,11 +1063,13 @@ impl Ui {
         let Some(&row) = self.rows().get(i) else { return };
         match row.ctl() {
             Ctl::Button => match row {
-                Row::CheckUpdates => {
-                    self.close_settings();
-                    self.request_update_check();
-                    return;
-                }
+                // The answer shows under the button and in the status bar;
+                // Settings stays open.
+                Row::CheckUpdates if self.update_available => self.request_update_install(),
+                Row::CheckUpdates => self.request_update_check(),
+                Row::AboutLicense => self.open_beside_exe("LICENSE.txt"),
+                Row::AboutNotices => self.open_beside_exe("THIRD-PARTY-NOTICES.txt"),
+                Row::AboutSource => open_target(SOURCE_URL.to_string()),
                 _ => open_settings_file(),
             },
             Ctl::Info => {}
@@ -1824,7 +1888,10 @@ impl Ui {
                     }
                 }
                 Ctl::Info => {
-                    let v = self.sget("git:version").unwrap_or("…").to_string();
+                    let v = match row {
+                        Row::AboutVersion => format!("ffwd {}", env!("CARGO_PKG_VERSION")),
+                        _ => self.sget("git:version").unwrap_or("…").to_string(),
+                    };
                     let tw = self.te.measure(mono, self.pf(12.5), &v).min(ctl.w as f32);
                     self.te.draw(cv, mono, self.pf(12.5), ctl.right() as f32 - tw, cbase, &v, TEXT_2(), ctl.w as f32);
                 }
@@ -1911,7 +1978,11 @@ impl Ui {
                 }
                 Ctl::Button => {
                     let label = match row {
+                        Row::CheckUpdates if self.update_available => "Install update",
                         Row::CheckUpdates => "Check for updates",
+                        Row::AboutLicense => "Open licence",
+                        Row::AboutNotices => "Open licences",
+                        Row::AboutSource => "Open repository",
                         _ => "Open settings.toml",
                     };
                     let w = self.te.measure(semi, self.pf(12.5), label) + self.pf(28.0);
@@ -2057,6 +2128,35 @@ impl Ui {
 /// Opens settings.toml in the default editor (creating it with a short,
 /// commented template first). Runs on a worker: file and process work stay
 /// off the UI thread.
+/// ffwd's own licence, for builds without LICENSE.txt beside them.
+const LICENSE: &str = include_str!("../../../LICENSE");
+
+/// Where ffwd's source lives.
+const SOURCE_URL: &str = "https://github.com/rennerdo30/ffwd";
+
+/// Opens a file or a web address with the system's handler, off the UI
+/// thread.
+fn open_target(target: String) {
+    if cfg!(test) {
+        return;
+    }
+    std::thread::spawn(move || {
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            // CREATE_NO_WINDOW: no console flashes up.
+            let _ = std::process::Command::new("cmd")
+                .args(["/C", "start", "", &target])
+                .creation_flags(0x0800_0000)
+                .spawn();
+        }
+        #[cfg(target_os = "macos")]
+        let _ = std::process::Command::new("open").arg(&target).spawn();
+        #[cfg(not(any(windows, target_os = "macos")))]
+        let _ = std::process::Command::new("xdg-open").arg(&target).spawn();
+    });
+}
+
 fn open_settings_file() {
     let Some(path) = crate::settings::path() else { return };
     std::thread::spawn(move || {
