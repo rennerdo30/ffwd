@@ -906,7 +906,7 @@ impl Ui {
         let sink = (self.sinks)(id);
         if start {
             let head_only = self.tabs.get(self.cur_tab).is_some_and(|t| t.head_only);
-            crate::work::start_scoped(path.clone(), head_only, &sink);
+            crate::work::start_scoped(path.clone(), head_only, self.show_stashes(), &sink);
         }
         if self.r.worker.is_none() {
             // Git finds the repository from any folder inside it.
@@ -2140,7 +2140,9 @@ impl Ui {
             && self.r.search.is_none()
             && self.scope_rect.contains(x, y)
         {
-            return self.toggle_scope();
+            let items = self.scope_menu();
+            let r = self.scope_rect;
+            return self.open_menu(r.x, r.bottom(), items);
         }
         if self.notice_btn.contains(x, y) {
             return self.notice_click();
@@ -2290,6 +2292,7 @@ impl Ui {
                     RefKind::Local => "branch",
                     RefKind::Remote => "remote branch",
                     RefKind::Tag => "tag",
+                    RefKind::Stash => "stash",
                     _ => "",
                 };
                 scored.push((
@@ -2446,6 +2449,48 @@ impl Ui {
                 self.close_tab(i);
             }
         }
+    }
+
+    /// Stashes as rows of the history (setting `history.stashes`, default
+    /// on; FF-33).
+    pub(super) fn show_stashes(&self) -> bool {
+        self.settings.get("history.stashes") != Some("false")
+    }
+
+    pub(super) fn set_show_stashes(&mut self, on: bool) {
+        self.settings.set_string("history.stashes", if on { "true" } else { "false" });
+        self.set_notice(if on {
+            "Stashes show in the history".into()
+        } else {
+            "Stashes are hidden in the history".into()
+        });
+        self.reload_current();
+    }
+
+    /// The history title's menu: all branches or the current one, and
+    /// whether stashes show (FF-33).
+    pub(super) fn scope_menu(&self) -> Vec<menu::MenuItem> {
+        let head_only = self.tabs.get(self.cur_tab).is_some_and(|t| t.head_only);
+        let mark = |on: bool, t: &str| if on { format!("✓ {t}") } else { t.to_string() };
+        let stashes = self.show_stashes();
+        vec![
+            menu::MenuItem {
+                label: mark(!head_only, "All commits"),
+                act: Some(menu::MenuAct::Scope(false)),
+                danger: false,
+            },
+            menu::MenuItem {
+                label: mark(head_only, "Current branch only"),
+                act: Some(menu::MenuAct::Scope(true)),
+                danger: false,
+            },
+            menu::MenuItem { label: String::new(), act: None, danger: false },
+            menu::MenuItem {
+                label: mark(stashes, "Show stashes"),
+                act: Some(menu::MenuAct::ShowStashes(!stashes)),
+                danger: false,
+            },
+        ]
     }
 
     /// Shows only the current branch's history, or all again.
@@ -5742,6 +5787,8 @@ mod tests {
         // upstream's commit leave the list.
         let t = ui.scope_rect;
         ui.click(t.x + 4, t.y + 4);
+        let k = ui.menu.as_ref().and_then(|m| m.items.iter().position(|i| i.label.ends_with("Current branch only")));
+        ui.menu_activate(k.expect("the title opens its menu"));
         pump(&mut ui, "the current branch", &|u| u.r.log_done && u.r.commits.len() == 2);
         assert!(ui.r.commits.iter().all(|c| &*c.subject != "side work"));
         ui.paint(&mut Canvas::new(&mut screen, 1280, 800), true);
@@ -6414,6 +6461,85 @@ mod tests {
         click(&mut ui, "t:v2", (false, false));
         assert!(ui.r.side_multi.is_empty());
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Stashes in the history (FF-33): a stash is a row on its base
+    /// commit with a stash chip and the stash's menu; the title's menu
+    /// hides them; the sidebar's stash jumps to its row.
+    #[test]
+    fn stashes_show_in_the_history() {
+        use std::sync::mpsc;
+        let mut te = TextEngine::new();
+        let Some(f) = load_fonts(&mut te) else { return };
+        let dir = std::env::temp_dir().join(format!("ffwd-ui-stashrows-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = Git { root: dir.clone() };
+        for a in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.name", "ffwd test"],
+            &["config", "user.email", "test@example.invalid"],
+            &["config", "commit.gpgsign", "false"],
+        ] {
+            g.output(a).unwrap();
+        }
+        for (k, m) in ["one", "two"].iter().enumerate() {
+            std::fs::write(dir.join("a.txt"), format!("{k}")).unwrap();
+            g.output(&["add", "."]).unwrap();
+            g.output(&["commit", "-q", "-m", m]).unwrap();
+        }
+        std::fs::write(dir.join("a.txt"), "wip").unwrap();
+        g.output(&["stash", "push", "-q", "-m", "half done"]).unwrap();
+        let (tx, rx) = mpsc::channel::<(u64, Msg)>();
+        let tx = Arc::new(std::sync::Mutex::new(tx));
+        let sinks: SinkFactory = Arc::new(move |id| {
+            let tx = tx.clone();
+            Arc::new(move |m| {
+                if let Ok(t) = tx.lock() {
+                    let _ = t.send((id, m));
+                }
+            })
+        });
+        crate::work::start(dir.clone(), &sinks(1));
+        let empty = crate::settings::Settings::parse("");
+        let mut ui = Ui::new(te, f, empty.clone(), empty, Some((1, dir.clone())), sinks, 1280, 800, 1.0);
+        let pump = |ui: &mut Ui, what: &str, done: &dyn Fn(&Ui) -> bool| {
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while !done(ui) {
+                let left = until.saturating_duration_since(std::time::Instant::now());
+                assert!(!left.is_zero(), "timed out waiting for {what}; notice: {:?}", ui.notice);
+                if let Ok((id, m)) = rx.recv_timeout(left) {
+                    ui.on_tab_msg(id, m);
+                }
+            }
+        };
+        pump(&mut ui, "history", &|u| u.r.log_done && !u.r.refs.stashes.is_empty() && u.r.commits.len() == 3);
+        let row = ui.r.commits.iter().position(|c| c.subject.contains("half done")).expect("the stash is a row");
+        let id = ui.r.commits[row].id;
+        assert_eq!(ui.r.commits[row].parents.len(), 1, "on its base only");
+        let chips = ui.r.chips.get(&id).cloned().unwrap_or_default();
+        assert!(chips.iter().any(|&i| ui.r.refs.refs[i as usize].kind == RefKind::Stash), "a stash chip");
+        let labels: Vec<String> = ui.commit_menu(row).iter().map(|i| i.label.clone()).collect();
+        assert!(labels.iter().any(|l| l == "Apply stash@{0}"), "{labels:?}");
+        assert!(!labels.iter().any(|l| l.starts_with("Cherry-pick")), "{labels:?}");
+        let mut screen = vec![0u32; 1280 * 800];
+        ui.paint(&mut Canvas::new(&mut screen, 1280, 800), true);
+        // The sidebar's stash jumps to its row.
+        ui.select(0);
+        let i = ui.r.side.iter().position(|it| it.key == "s:stash@{0}").unwrap();
+        let l = ui.side_list_rect();
+        let y = l.y + (i - ui.r.side_top) as i32 * ui.side_row_h() + ui.side_row_h() / 2;
+        ui.click(l.x + l.w / 2, y);
+        assert_eq!(ui.r.sel, row);
+        assert_partial_paint_is_full(&mut ui, &mut screen, "stash selected");
+        // The title's menu hides stashes.
+        let t = ui.scope_rect;
+        ui.click(t.x + 4, t.y + 4);
+        let k = ui.menu.as_ref().and_then(|m| m.items.iter().position(|i| i.label.ends_with("Show stashes")));
+        ui.menu_activate(k.expect("the title's menu has Show stashes"));
+        assert_eq!(ui.settings.get("history.stashes"), Some("false"));
+        pump(&mut ui, "history without stashes", &|u| u.r.log_done && u.r.commits.len() == 2);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Image diffs (FF-41): a changed PNG shows its old and new version

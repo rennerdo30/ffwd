@@ -49,6 +49,10 @@ pub enum MenuAct {
     CreatePr,
     /// Select a commit in the history view.
     ShowCommit(String),
+    /// The history's scope (true: the current branch only) and whether
+    /// stashes show in it (FF-33).
+    Scope(bool),
+    ShowStashes(bool),
     /// Pick a sidebar item for a batch, or take it out (FF-36).
     SidePick(String),
     /// Pick every item under a sidebar header (`t:`, `b:`, `s:` prefix).
@@ -204,6 +208,12 @@ impl Ui {
     /// The menu for the commit at `row`.
     pub(super) fn commit_menu(&self, row: usize) -> Vec<MenuItem> {
         let Some(c) = self.r.commits.get(row) else { return Vec::new() };
+        // A stash row has the stash's menu (FF-33).
+        if let Some(s) = self.r.refs.refs.iter().find(|r| r.kind == RefKind::Stash && r.target == c.id) {
+            let mut v = self.ref_menu(&format!("s:{}", s.name));
+            v.push(item("Copy SHA", MenuAct::Copy(c.id.to_string())));
+            return v;
+        }
         let sha = c.id.to_string();
         let short = sha[..sha.len().min(8)].to_string();
         let head = self.head_name();
@@ -834,6 +844,12 @@ impl Ui {
                 self.r.side_multi.clear();
                 self.damage.rects.push(self.lay.side);
             }
+            Some(MenuAct::Scope(head_only)) => {
+                if self.tabs.get(self.cur_tab).is_some_and(|t| t.head_only != head_only) {
+                    self.toggle_scope();
+                }
+            }
+            Some(MenuAct::ShowStashes(on)) => self.set_show_stashes(on),
             Some(MenuAct::RebaseFrom(sha)) => self.open_rebase(sha),
             Some(MenuAct::OpenSubmodule(name)) => self.open_submodule(&name),
             Some(MenuAct::Ask(a)) => self.open_dialog(DialogKind::Ask(*a)),

@@ -115,6 +115,60 @@ pub fn stream_scoped(
     interval: Duration,
     sink: impl FnMut(Vec<Commit>, bool),
 ) -> Result<usize, GitError> {
+    stream_with(git, head_only, false, first, interval, sink)
+}
+
+/// [`stream_scoped`]; with `stashes` (all branches only) the stashes are
+/// rows too (FF-33): each on its base commit, without the index and
+/// untracked-files commits git keeps inside it.
+pub fn stream_with(
+    git: &Git,
+    head_only: bool,
+    stashes: bool,
+    first: usize,
+    interval: Duration,
+    mut sink: impl FnMut(Vec<Commit>, bool),
+) -> Result<usize, GitError> {
+    let ids: Vec<String> = if stashes && !head_only {
+        git.output_limited(&["stash", "list", "--format=%H"], 1 << 20)
+            .map(|b| {
+                b.split(|&c| c == b'\n').filter_map(|l| Oid::from_hex(l.trim_ascii())).map(|o| o.to_string()).collect()
+            })
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    if ids.is_empty() {
+        return stream_refs(git, head_only, &[], first, interval, sink);
+    }
+    let stash: std::collections::HashSet<Oid> = ids.iter().filter_map(|h| Oid::from_hex(h.as_bytes())).collect();
+    // Topological order shows a stash before its inner commits, so they
+    // are known by the time they arrive.
+    let mut inner = std::collections::HashSet::new();
+    let extra: Vec<&str> = ids.iter().map(String::as_str).collect();
+    stream_refs(git, head_only, &extra, first, interval, |batch, done| {
+        let mut out = Vec::with_capacity(batch.len());
+        for mut c in batch {
+            if inner.contains(&c.id) {
+                continue;
+            }
+            if stash.contains(&c.id) && c.parents.len() > 1 {
+                inner.extend(c.parents.drain(1..));
+            }
+            out.push(c);
+        }
+        sink(out, done)
+    })
+}
+
+fn stream_refs(
+    git: &Git,
+    head_only: bool,
+    extra: &[&str],
+    first: usize,
+    interval: Duration,
+    sink: impl FnMut(Vec<Commit>, bool),
+) -> Result<usize, GitError> {
     // Branches, remotes, tags and HEAD. Not `--all`: tools add
     // private refs (for example refs/t3/*) that are not part of the history
     // the user works with.
@@ -122,6 +176,7 @@ pub fn stream_scoped(
     let refs: &[&str] = if head_only { &["HEAD"] } else { all };
     let mut args = vec!["log"];
     args.extend_from_slice(refs);
+    args.extend_from_slice(extra);
     args.extend_from_slice(&["--topo-order", "--no-show-signature", LOG_FORMAT]);
     let mut child = git.spawn(&args)?;
     let Some(out) = child.stdout.take() else {
@@ -209,6 +264,42 @@ pub fn stream_from<R: Read>(
 
 #[cfg(test)]
 mod tests {
+
+    /// Stashes as rows (FF-33): the stash on its base commit, without the
+    /// index and untracked-files commits inside it.
+    #[test]
+    fn stashes_stream_as_rows_on_their_base() {
+        let dir = std::env::temp_dir().join(format!("ffwd-log-stash-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = Git { root: dir.clone() };
+        for a in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.name", "ffwd test"],
+            &["config", "user.email", "test@example.invalid"],
+            &["config", "commit.gpgsign", "false"],
+        ] {
+            g.output(a).unwrap();
+        }
+        std::fs::write(dir.join("a.txt"), "1").unwrap();
+        g.output(&["add", "."]).unwrap();
+        g.output(&["commit", "-q", "-m", "base"]).unwrap();
+        std::fs::write(dir.join("a.txt"), "2").unwrap();
+        std::fs::write(dir.join("new.txt"), "n").unwrap();
+        g.output(&["stash", "push", "-u", "-q", "-m", "wip"]).unwrap();
+        let all = |stashes: bool| {
+            let mut v = Vec::new();
+            stream_with(&g, false, stashes, 1, Duration::from_millis(10), |b, _| v.extend(b)).unwrap();
+            v
+        };
+        assert_eq!(all(false).len(), 1, "hidden by default in stream_scoped");
+        let v = all(true);
+        assert_eq!(v.len(), 2, "the stash and its base, no inner commits: {v:?}");
+        let base = v.iter().find(|c| &*c.subject == "base").unwrap().id;
+        let stash = v.iter().find(|c| c.subject.contains("wip")).unwrap();
+        assert_eq!(stash.parents, [base]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
     use super::*;
     use std::sync::{Arc, Mutex};
 
