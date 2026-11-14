@@ -455,6 +455,8 @@ impl App {
             window.scale_factor() as f32,
         );
         ui.remote = platform::is_remote_session();
+        // Fetches the open repository in the background (FF-39).
+        ui.start_auto_fetch_clock();
         if ui.chrome == Chrome::Windows11 && !framed {
             // Without the frame hook the system caption stays; no second set of buttons.
             ui.chrome = Chrome::Native;

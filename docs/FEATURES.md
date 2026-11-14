@@ -119,7 +119,7 @@ What a complete desktop Git client offers, grouped in 18 areas, with ffwd's stat
 |---|---|---|
 | Fetch, pull, push with progress | **Built** | |
 | Cancel a running operation | **Built** | The busy button (or the palette) cancels; git and every helper it started end (job object on Windows) |
-| Automatic fetch; prune on fetch | M1 | Fetch already prunes |
+| Automatic fetch; prune on fetch | **Built** | Every 10 minutes by default (Settings: Off, 5, 10, 30 min); quiet unless something new arrives; never asks for credentials; fetch prunes |
 | Ahead and behind badges on the toolbar | **Built** | |
 | Push several branches or tags; push to a branch of another name | Partial | Push or delete on the remote one branch or tag from its menu, or several picked in the sidebar in one push (asks before deleting, names the restore commands); other names come later |
 | Set an upstream on the first push | **Built** | |

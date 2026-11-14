@@ -40,6 +40,8 @@ pub enum Msg {
     Repos(Vec<PathBuf>),
     /// The installed WSL distributions (Windows; for the agents' sandbox).
     WslDistros(Vec<String>),
+    /// The automatic fetch is due (FF-39).
+    AutoFetchTick,
     OpProgress(String),
     OpDone(ffwd_core::ops::Outcome),
     /// An agent run's progress (experimental agents).

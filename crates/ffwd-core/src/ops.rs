@@ -13,6 +13,9 @@ use std::time::{Duration, Instant};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Op {
     Fetch,
+    /// A fetch ffwd starts on its own (FF-39): it never asks for
+    /// credentials, and the UI stays quiet unless something arrives.
+    AutoFetch,
     Pull,
     /// Pull and merge (diverged branches, the user chose).
     PullMerge,
@@ -24,7 +27,7 @@ pub enum Op {
 impl Op {
     pub fn verb(self) -> &'static str {
         match self {
-            Op::Fetch => "Fetching",
+            Op::Fetch | Op::AutoFetch => "Fetching",
             Op::Pull | Op::PullMerge => "Pulling",
             Op::PullRebase => "Pulling with rebase",
             Op::Push => "Pushing",
@@ -32,7 +35,7 @@ impl Op {
     }
     pub fn name(self) -> &'static str {
         match self {
-            Op::Fetch => "Fetch",
+            Op::Fetch | Op::AutoFetch => "Fetch",
             Op::Pull | Op::PullMerge | Op::PullRebase => "Pull",
             Op::Push => "Push",
         }
@@ -42,6 +45,7 @@ impl Op {
     pub fn button(self) -> Op {
         match self {
             Op::PullMerge | Op::PullRebase => Op::Pull,
+            Op::AutoFetch => Op::Fetch,
             o => o,
         }
     }
@@ -76,6 +80,9 @@ const MAX_OUTPUT: usize = 64 * 1024;
 fn args(git: &Git, op: Op) -> Result<Vec<String>, GitError> {
     Ok(match op {
         Op::Fetch => vec!["fetch".into(), "--all".into(), "--prune".into(), "--progress".into()],
+        // No credential prompt or window (GIT_TERMINAL_PROMPT=0 is always
+        // set; this covers credential helpers with their own UI).
+        Op::AutoFetch => ["-c", "credential.interactive=false", "fetch", "--all", "--prune"].map(String::from).to_vec(),
         Op::Pull => vec!["pull".into(), "--progress".into()],
         Op::PullMerge => vec!["pull".into(), "--no-rebase".into(), "--progress".into()],
         Op::PullRebase => vec!["pull".into(), "--rebase".into(), "--progress".into()],
@@ -205,8 +212,8 @@ pub fn summarize(op: Op, ok: bool, output: &str) -> String {
         l.contains("->") || l.starts_with("Updating") || l.starts_with("Fast-forward") || l.contains("Merge made")
     });
     match op {
-        Op::Fetch if quiet => "Fetched: everything is up to date".into(),
-        Op::Fetch => {
+        Op::Fetch | Op::AutoFetch if quiet => "Fetched: everything is up to date".into(),
+        Op::Fetch | Op::AutoFetch => {
             let n = lines.iter().filter(|l| l.contains("->")).count();
             format!("Fetched: {n} ref{} updated", if n == 1 { "" } else { "s" })
         }
@@ -240,6 +247,11 @@ mod tests {
     #[test]
     fn summaries() {
         assert_eq!(summarize(Op::Fetch, true, ""), "Fetched: everything is up to date");
+        assert_eq!(summarize(Op::AutoFetch, true, ""), "Fetched: everything is up to date");
+        assert_eq!(Op::AutoFetch.button(), Op::Fetch);
+        let g = Git { root: std::env::temp_dir() };
+        let a = args(&g, Op::AutoFetch).unwrap();
+        assert_eq!(a[..3], ["-c", "credential.interactive=false", "fetch"], "never asks for credentials");
         assert_eq!(
             summarize(
                 Op::Fetch,

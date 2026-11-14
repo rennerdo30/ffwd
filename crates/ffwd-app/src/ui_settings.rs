@@ -9,6 +9,8 @@ pub(super) enum Row {
     Layout,
     Updates,
     Channel,
+    /// Fetch automatically (FF-39).
+    AutoFetch,
     Roots,
     AiEndpoint,
     AiModel,
@@ -44,6 +46,7 @@ const GENERAL: &[Row] = &[
     Row::Layout,
     Row::Updates,
     Row::Channel,
+    Row::AutoFetch,
     Row::Roots,
     Row::AiEndpoint,
     Row::AiModel,
@@ -81,6 +84,7 @@ impl Row {
         match self {
             Row::Layout => "Commit details",
             Row::Updates => "Automatic updates",
+            Row::AutoFetch => "Fetch automatically",
             Row::Channel => "Update channel",
             Row::Roots => "Repository folders",
             Row::AiEndpoint => "AI endpoint",
@@ -114,6 +118,7 @@ impl Row {
         match self {
             Row::Layout => "Where the selected commit's details and diff go",
             Row::Updates => "Installed copies check once a day",
+            Row::AutoFetch => "All remotes of the open repository; never asks for a password",
             Row::Channel => "Automatic follows the running version",
             Row::Roots => "Folders searched for repositories in Open repository (; between folders)",
             Row::AiEndpoint => "OpenAI-compatible URL; local servers first (Ollama, LM Studio, llama.cpp)",
@@ -197,6 +202,7 @@ impl Row {
         match self {
             Row::Layout => &["Below the history", "Beside the history"],
             Row::Updates => &["On", "Off"],
+            Row::AutoFetch => &["Off", "5 min", "10 min", "30 min"],
             Row::Channel => &["Automatic", "Stable", "Beta"],
             Row::Scope => &["All repositories", "This repository"],
             Row::AgentsOn => &["Off", "On (experimental)"],
@@ -473,6 +479,12 @@ impl Ui {
         match row {
             Row::Layout => (self.layout == DetailsLayout::Beside) as usize,
             Row::Updates => (self.sget("update.check") == Some("false")) as usize,
+            Row::AutoFetch => match self.auto_fetch_setting() {
+                0 => 0,
+                1..=5 => 1,
+                6..=10 => 2,
+                _ => 3,
+            },
             Row::Channel => match self.sget("update.channel") {
                 Some("stable") => 1,
                 Some("beta") => 2,
@@ -517,6 +529,11 @@ impl Ui {
         match row {
             Row::Layout => self.set_layout(if i == 1 { DetailsLayout::Beside } else { DetailsLayout::Below }),
             Row::Updates => self.sset("update.check", if i == 1 { "false" } else { "true" }),
+            Row::AutoFetch => {
+                let m = [0u64, 5, 10, 30][i.min(3)];
+                self.sset("remotes.auto_fetch", &m.to_string());
+                self.auto_fetch_minutes.store(m, std::sync::atomic::Ordering::Relaxed);
+            }
             Row::Channel => self.sset("update.channel", ["auto", "stable", "beta"][i.min(2)]),
             Row::Scope => {
                 let has_tab = !self.tabs.is_empty();
