@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.2.0-beta.6
+
+A fix release for the experimental agents' terminal sessions.
+
 - **Agents (experimental), fix:** a sandboxed terminal session closed at once (the tool had no terminal inside bubblewrap). It now keeps its terminal, and a tool that fails leaves its window open with the exit code.
 - **Agents (experimental):** **Open in terminal** lists every built-in agent, not only the configured one.
 ## 0.2.0-beta.5
