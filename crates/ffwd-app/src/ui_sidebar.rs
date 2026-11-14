@@ -46,6 +46,46 @@ pub(super) enum SideKind {
     Submodule,
 }
 
+/// How the sidebar offers the views (setting `ui.sidebar`, FF-57).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SideStyle {
+    /// A rail of labelled icons along the left edge.
+    Rail,
+    /// Tabs over the content, right of the sidebar.
+    Tabs,
+    /// One row per view under the card.
+    List,
+    /// A row of icons under the card, the open view named beneath.
+    Bar,
+}
+
+impl SideStyle {
+    pub const KEYS: [&'static str; 4] = ["rail", "tabs", "list", "bar"];
+
+    pub fn from_setting(s: Option<&str>) -> SideStyle {
+        match s {
+            Some("tabs") => SideStyle::Tabs,
+            Some("list") => SideStyle::List,
+            Some("bar") => SideStyle::Bar,
+            _ => SideStyle::Rail,
+        }
+    }
+}
+
+/// A view the sidebar (or the tabs) opens, with its live figure.
+pub(super) struct View {
+    pub key: &'static str,
+    pub name: &'static str,
+    pub glyph: Glyph,
+    /// The figure in words: "3 changed", "1 failed".
+    pub stat: String,
+    /// The figure as a count for a badge; empty when calm.
+    pub count: String,
+    pub color: u32,
+    /// The figure asks for attention.
+    pub alert: bool,
+}
+
 impl SideItem {
     fn new(depth: u8, kind: SideKind, label: &str, key: String) -> SideItem {
         SideItem {
@@ -144,84 +184,183 @@ impl Ui {
         self.px(SIDE_ROW)
     }
 
+    /// How the sidebar offers the views (setting `ui.sidebar`).
+    pub(super) fn side_style(&self) -> SideStyle {
+        SideStyle::from_setting(self.settings.get("ui.sidebar"))
+    }
+
+    /// Switches the sidebar style ("rail", "tabs", "list", "bar").
+    pub fn set_side_style(&mut self, key: &str) {
+        self.settings.set_string("ui.sidebar", key);
+        self.side_view_hot = None;
+        self.resize(self.w, self.h, self.s);
+        self.rebuild_side();
+    }
+
+    /// The icon rail's width (Rail style), else 0.
+    fn rail_w(&self) -> i32 {
+        if self.side_style() == SideStyle::Rail { self.px(64.0) } else { 0 }
+    }
+
+    /// The sidebar without the rail and without its right border.
+    fn side_panel(&self) -> Rect {
+        let s = self.lay.side;
+        let rw = self.rail_w();
+        Rect::new(s.x + rw, s.y, (s.w - rw - 1).max(0), s.h)
+    }
+
     /// Where you are, at the top of the sidebar (FF-57): the branch, its
     /// sync with the upstream, the changes and a stopped operation.
     pub(super) fn side_here_rect(&self) -> Rect {
+        let p = self.side_panel();
+        Rect::new(p.x + self.px(10.0), p.y + self.px(10.0), p.w - self.px(20.0), self.px(62.0))
+    }
+
+    /// The views, with their live figures (FF-57).
+    pub(super) fn views(&self) -> Vec<View> {
+        let calm = |key, name, glyph, stat: &str| View {
+            key,
+            name,
+            glyph,
+            stat: stat.to_string(),
+            count: String::new(),
+            color: TEXT_4(),
+            alert: false,
+        };
+        let loud = |key, name, glyph, stat: String, n: usize, color| View {
+            key,
+            name,
+            glyph,
+            stat,
+            count: fmt::num(n),
+            color,
+            alert: true,
+        };
+        let changes = match self.r.status {
+            Some(s) if s.conflicted > 0 => {
+                let n = s.conflicted as usize;
+                loud("changes", "Changes", Glyph::Edit, format!("{} conflicts", fmt::num(n)), n, DEL())
+            }
+            Some(s) if s.total() > 0 => {
+                let n = s.total() as usize;
+                loud("changes", "Changes", Glyph::Edit, format!("{} changed", fmt::num(n)), n, MOD())
+            }
+            Some(_) => calm("changes", "Changes", Glyph::Edit, "clean"),
+            None => calm("changes", "Changes", Glyph::Edit, "…"),
+        };
+        let n = self.r.commits.len();
+        let history = if self.r.log_done { format!("{} commits", fmt::num(n)) } else { format!("{}…", fmt::num(n)) };
+        let activity = match self.activity.unseen_failures {
+            0 => calm("activity", "Activity", Glyph::Text, "all fine"),
+            f => loud("activity", "Activity", Glyph::Text, format!("{f} failed"), f as usize, DEL()),
+        };
+        let agents = if !self.agent_config().0.enabled {
+            calm("agents", "Agents", Glyph::Terminal, "off")
+        } else {
+            match self.agent_counts() {
+                (0, 0) => calm("agents", "Agents", Glyph::Terminal, "idle"),
+                (0, r) => loud("agents", "Agents", Glyph::Terminal, format!("{r} to review"), r, ADD()),
+                (n, _) => loud("agents", "Agents", Glyph::Terminal, format!("{n} running"), n, ACCENT_FG()),
+            }
+        };
+        vec![
+            changes,
+            calm("all", "History", Glyph::Commit, &history),
+            calm("files", "Files", Glyph::Folder, "browse the tree"),
+            activity,
+            calm("reflog", "Reflog", Glyph::Clock, "undo trail"),
+            agents,
+        ]
+    }
+
+    /// The view on screen.
+    pub(super) fn current_view(&self) -> &'static str {
+        if self.agent_view.is_some() {
+            return "agents";
+        }
+        match self.r.side_sel.as_str() {
+            "changes" => "changes",
+            "files" => "files",
+            "activity" => "activity",
+            "reflog" => "reflog",
+            _ => "all",
+        }
+    }
+
+    /// The rail's buttons (Rail style).
+    fn rail_rects(&self) -> Vec<Rect> {
         let s = self.lay.side;
-        Rect::new(s.x + self.px(10.0), s.y + self.px(10.0), s.w - self.px(20.0), self.px(62.0))
-    }
-
-    /// The workspace dock under the card (FF-57): a tile per view with a
-    /// live figure, three or two to a row.
-    pub(super) fn side_dock_rect(&self) -> Rect {
-        let s = self.lay.side;
-        let top = self.side_here_rect().bottom() + self.px(8.0);
-        let rows = 6_usize.div_ceil(self.dock_cols()) as i32;
-        let h = rows * self.px(52.0) + (rows - 1) * self.px(6.0);
-        Rect::new(s.x + self.px(10.0), top, s.w - self.px(20.0), h)
-    }
-
-    fn dock_cols(&self) -> usize {
-        if self.lay.side.w >= self.px(250.0) { 3 } else { 2 }
-    }
-
-    /// The tile rects, in the order of `dock_tiles`.
-    fn dock_tile_rects(&self) -> Vec<Rect> {
-        let d = self.side_dock_rect();
-        let cols = self.dock_cols() as i32;
-        let gap = self.px(6.0);
-        let tw = (d.w - (cols - 1) * gap) / cols;
-        let th = self.px(52.0);
+        let (h, gap) = (self.px(50.0), self.px(4.0));
         (0..6)
             .map(|k| {
-                let (c, r) = (k % cols, k / cols);
-                Rect::new(d.x + c * (tw + gap), d.y + r * (th + gap), tw, th)
+                Rect::new(s.x + self.px(6.0), s.y + self.px(10.0) + k * (h + gap), self.rail_w() - self.px(12.0), h)
             })
             .collect()
     }
 
-    /// The dock's tiles: (key, name, icon, live figure, its colour).
-    pub(super) fn dock_tiles(&self) -> Vec<(&'static str, &'static str, super::Glyph, String, u32)> {
-        use super::Glyph as G;
-        let st = self.r.status;
-        let (changes, cc) = match st {
-            Some(s) if s.conflicted > 0 => (format!("{} conflicts", s.conflicted), DEL()),
-            Some(s) if s.total() > 0 => (format!("{} changed", fmt::num(s.total() as usize)), MOD()),
-            Some(_) => ("clean".to_string(), TEXT_4()),
-            None => ("…".to_string(), TEXT_4()),
-        };
-        let n = self.r.commits.len();
-        let history = if self.r.log_done { format!("{} commits", fmt::num(n)) } else { format!("{}…", fmt::num(n)) };
-        let (activity, ac) = match self.activity.unseen_failures {
-            0 => ("all fine".to_string(), TEXT_4()),
-            f => (format!("{f} failed"), DEL()),
-        };
-        let (agents, gc) = if !self.agent_config().0.enabled {
-            ("off".to_string(), TEXT_4())
-        } else {
-            match self.agent_counts() {
-                (0, 0) => ("idle".to_string(), TEXT_4()),
-                (0, r) => (format!("{r} to review"), ADD()),
-                (n, _) => (format!("{n} running"), ACCENT_FG()),
-            }
-        };
-        vec![
-            ("changes", "Changes", G::Edit, changes, cc),
-            ("all", "History", G::Commit, history, TEXT_3()),
-            ("files", "Files", G::Folder, "browse".to_string(), TEXT_4()),
-            ("activity", "Activity", G::Text, activity, ac),
-            ("reflog", "Reflog", G::Clock, "undo trail".to_string(), TEXT_4()),
-            ("agents", "Agents", G::Terminal, agents, gc),
-        ]
+    /// The rows under the card (List style).
+    fn view_list_rects(&self) -> Vec<Rect> {
+        let p = self.side_panel();
+        let top = self.side_here_rect().bottom() + self.px(8.0);
+        let h = self.px(28.0);
+        (0..6).map(|k| Rect::new(p.x + self.px(6.0), top + k * h, p.w - self.px(12.0), h)).collect()
     }
 
-    /// The tile under the pointer.
-    fn dock_tile_at(&self, x: i32, y: i32) -> Option<usize> {
-        self.dock_tile_rects().iter().position(|r| r.contains(x, y))
+    /// The icon bar under the card (Bar style), and its segments.
+    fn view_bar_rect(&self) -> Rect {
+        let p = self.side_panel();
+        Rect::new(
+            p.x + self.px(10.0),
+            self.side_here_rect().bottom() + self.px(8.0),
+            p.w - self.px(20.0),
+            self.px(36.0),
+        )
     }
 
-    /// Opens a tile's view.
-    pub(super) fn dock_activate(&mut self, key: &str) {
+    fn view_bar_rects(&self) -> Vec<Rect> {
+        let b = self.view_bar_rect().inset(self.px(3.0), self.px(3.0));
+        (0..6)
+            .map(|k| {
+                let x0 = b.x + b.w * k / 6;
+                let x1 = b.x + b.w * (k + 1) / 6;
+                Rect::new(x0, b.y, x1 - x0, b.h)
+            })
+            .collect()
+    }
+
+    /// The tabs over the content (Tabs style): equal widths, so they stay
+    /// put while their figures change.
+    fn view_tab_rects(&self) -> Vec<Rect> {
+        let v = self.lay.views;
+        let w = self.px(124.0).min((v.w - self.px(16.0)) / 6).max(1);
+        (0..6).map(|k| Rect::new(v.x + self.px(8.0) + k * w, v.y, w, v.h)).collect()
+    }
+
+    /// The view buttons of the current style, in the order of `views`.
+    pub(super) fn view_rects(&self) -> Vec<Rect> {
+        match self.side_style() {
+            SideStyle::Rail => self.rail_rects(),
+            SideStyle::Tabs => self.view_tab_rects(),
+            SideStyle::List => self.view_list_rects(),
+            SideStyle::Bar => self.view_bar_rects(),
+        }
+    }
+
+    /// The view button under the pointer.
+    fn view_at(&self, x: i32, y: i32) -> Option<usize> {
+        self.view_rects().iter().position(|r| r.contains(x, y))
+    }
+
+    /// A click in the tabs strip over the content.
+    pub(super) fn view_click(&mut self, x: i32, y: i32) {
+        if let Some(k) = self.view_at(x, y) {
+            let key = self.views()[k].key;
+            self.view_activate(key);
+        }
+    }
+
+    /// Opens a view.
+    pub(super) fn view_activate(&mut self, key: &str) {
         if key != "agents" {
             self.close_agents();
         }
@@ -239,82 +378,243 @@ impl Ui {
                 self.side_select("all");
             }
         }
-        self.damage.rects.push(self.lay.side);
+        self.damage.rects.extend([self.lay.side, self.lay.views]);
     }
 
-    /// Tests: a tile's live figure.
+    /// Tests: a view's live figure.
     #[cfg(test)]
-    pub(super) fn dock_stat(&self, key: &str) -> Option<String> {
-        self.dock_tiles().into_iter().find(|t| t.0 == key).map(|t| t.3)
+    pub(super) fn view_stat(&self, key: &str) -> Option<String> {
+        self.views().into_iter().find(|t| t.key == key).map(|t| t.stat)
     }
 
-    fn paint_dock(&mut self, cv: &mut Canvas) {
-        let (ui, semi) = (self.f.ui, self.f.semi);
-        let tiles = self.dock_tiles();
-        let rects = self.dock_tile_rects();
-        let agents_open = self.agent_view.is_some();
-        for (k, ((key, name, glyph, stat, color), r)) in tiles.into_iter().zip(rects).enumerate() {
-            let on = if agents_open { key == "agents" } else { self.r.side_sel == key };
-            let hot = self.side_dock_hot == Some(k);
-            let (bg, border) = match (on, hot) {
-                (true, _) => (BG_SELECT_DIM(), ACCENT_BORDER()),
-                (false, true) => (BG_HOVER(), BORDER_HOVER()),
-                (false, false) => (BG_PANEL(), BORDER_SOFT()),
-            };
-            cv.round_border(r, self.pf(9.0), border, bg);
+    /// A count badge: a pill in the view's colour.
+    fn view_badge(&mut self, cv: &mut Canvas, right: f32, cy: f32, v: &View) {
+        let semi = self.f.semi;
+        let fs = self.pf(10.0);
+        let tw = self.te.measure(semi, fs, &v.count);
+        let h = self.pf(15.0);
+        let w = (tw + self.pf(9.0)).max(h);
+        let r = Rect::new((right - w) as i32, (cy - h / 2.0) as i32, w as i32, h as i32);
+        cv.fill_round(r, h / 2.0, v.color);
+        let fg = if crate::theme::is_light() { 0xffffff } else { BG() };
+        self.te.draw(cv, semi, fs, right - w + (w - tw) / 2.0, cy + self.pf(3.5), &v.count, fg, w);
+    }
+
+    fn paint_views(&mut self, cv: &mut Canvas) {
+        match self.side_style() {
+            SideStyle::Rail => self.paint_rail(cv),
+            SideStyle::Tabs => {}
+            SideStyle::List => self.paint_view_list(cv),
+            SideStyle::Bar => self.paint_view_bar(cv),
+        }
+    }
+
+    /// Rail: a labelled icon per view down the left edge; the open one
+    /// lit, with an accent bar at the edge; counts as pills on the icon.
+    fn paint_rail(&mut self, cv: &mut Canvas) {
+        let s = self.lay.side;
+        let rw = self.rail_w();
+        cv.fill(Rect::new(s.x, s.y, rw, s.h), BG_BAR());
+        cv.fill(Rect::new(s.x + rw - 1, s.y, 1, s.h), BORDER_SOFT());
+        let cur = self.current_view();
+        let ui = self.f.ui;
+        for (k, (v, r)) in self.views().into_iter().zip(self.rail_rects()).enumerate() {
+            let on = v.key == cur;
+            let hot = self.side_view_hot == Some(k);
             if on {
+                cv.fill_round(r, self.pf(9.0), ACCENT_SOFT());
                 cv.fill_round(
-                    Rect::new(r.x + self.px(10.0), r.bottom() - self.px(3.0), r.w - self.px(20.0), self.px(2.0)),
-                    self.pf(1.0),
+                    Rect::new(s.x, r.y + self.px(12.0), self.px(3.0), r.h - self.px(24.0)),
+                    self.pf(1.5),
                     ACCENT(),
                 );
+            } else if hot {
+                cv.fill_round(r, self.pf(9.0), BG_HOVER());
             }
-            let gx = r.x as f32 + self.pf(16.0);
+            let cx = r.x as f32 + r.w as f32 / 2.0;
             let gy = r.y as f32 + self.pf(18.0);
-            self.glyph(cv, glyph, gx, gy, self.pf(5.5), if on { ACCENT() } else { TEXT_3() });
-            let w = r.w as f32 - self.pf(34.0);
-            self.te.draw(
-                cv,
-                semi,
-                self.pf(12.5),
-                gx + self.pf(12.0),
-                gy + self.pf(4.5),
-                name,
-                if on { TEXT() } else { TEXT_2() },
-                w,
-            );
-            // The live figure: a dot when it asks for attention.
-            let attention = color != TEXT_4() && color != TEXT_3();
-            let mut sx = r.x as f32 + self.pf(10.0);
-            let sy = r.y as f32 + self.pf(40.0);
-            if attention {
-                cv.fill_circle(sx + self.pf(3.0), sy - self.pf(4.0), self.pf(3.0), color);
-                sx += self.pf(10.0);
+            let gc = if on {
+                ACCENT_FG()
+            } else if hot {
+                TEXT()
+            } else {
+                TEXT_3()
+            };
+            self.glyph(cv, v.glyph, cx, gy, self.pf(7.0), gc);
+            if v.alert {
+                self.view_badge(cv, r.right() as f32 - self.pf(3.0), r.y as f32 + self.pf(9.0), &v);
             }
+            let fs = self.pf(10.5);
+            let tw = self.te.measure(ui, fs, v.name);
+            let tc = if on { ACCENT_FG() } else { TEXT_3() };
+            self.te.draw(cv, ui, fs, cx - tw / 2.0, r.y as f32 + self.pf(41.0), v.name, tc, r.w as f32);
+        }
+    }
+
+    /// List: one row per view, its figure at the right.
+    fn paint_view_list(&mut self, cv: &mut Canvas) {
+        let (ui, semi) = (self.f.ui, self.f.semi);
+        let cur = self.current_view();
+        for (k, (v, r)) in self.views().into_iter().zip(self.view_list_rects()).enumerate() {
+            let on = v.key == cur;
+            let hot = self.side_view_hot == Some(k);
+            if on {
+                cv.fill_round(r, self.pf(6.0), BG_SELECT_DIM());
+                cv.fill_round(
+                    Rect::new(r.x, r.y + self.px(6.0), self.px(3.0), r.h - self.px(12.0)),
+                    self.pf(1.5),
+                    ACCENT(),
+                );
+            } else if hot {
+                cv.fill_round(r, self.pf(6.0), BG_HOVER());
+            }
+            let cy = r.y as f32 + r.h as f32 / 2.0;
+            let base = (cy + self.pf(4.5)).round();
+            let gx = r.x as f32 + self.pf(16.0);
+            self.glyph(cv, v.glyph, gx, cy, self.pf(5.5), if on { ACCENT() } else { TEXT_3() });
+            let font = if on { semi } else { ui };
             self.te.draw(
                 cv,
-                if attention { semi } else { ui },
-                self.pf(11.5),
-                sx,
-                sy,
-                &stat,
-                color,
-                r.right() as f32 - sx - self.pf(6.0),
+                font,
+                self.pf(13.0),
+                gx + self.pf(14.0),
+                base,
+                v.name,
+                if on { TEXT() } else { TEXT_2() },
+                r.w as f32,
+            );
+            let fs = self.pf(11.5);
+            let f2 = if v.alert { semi } else { ui };
+            let tw = self.te.measure(f2, fs, &v.stat);
+            let mut sx = r.right() as f32 - tw - self.pf(10.0);
+            self.te.draw(cv, f2, fs, sx, base - self.pf(0.5), &v.stat, v.color, tw + 2.0);
+            if v.alert {
+                sx -= self.pf(9.0);
+                cv.fill_circle(sx, cy, self.pf(3.0), v.color);
+            }
+        }
+        // A quiet rule between the views and the refs.
+        let rs = self.view_list_rects();
+        if let Some(last) = rs.last() {
+            let p = self.side_panel();
+            cv.fill(
+                Rect::new(p.x + self.px(14.0), last.bottom() + self.px(5.0), p.w - self.px(28.0), 1),
+                BORDER_SOFT(),
             );
         }
     }
 
-    /// The filter field under the dock.
+    /// Bar: a segmented row of icons, the open view (or the hovered one)
+    /// named with its figure beneath.
+    fn paint_view_bar(&mut self, cv: &mut Canvas) {
+        let (ui, semi) = (self.f.ui, self.f.semi);
+        let bar = self.view_bar_rect();
+        cv.round_border(bar, self.pf(9.0), BORDER_SOFT(), BG_PANEL());
+        let cur = self.current_view();
+        let views = self.views();
+        for (k, (v, r)) in views.iter().zip(self.view_bar_rects()).enumerate() {
+            let on = v.key == cur;
+            let hot = self.side_view_hot == Some(k);
+            if on {
+                cv.fill_round(r, self.pf(7.0), ACCENT_SOFT());
+            } else if hot {
+                cv.fill_round(r, self.pf(7.0), BG_HOVER());
+            }
+            let cx = r.x as f32 + r.w as f32 / 2.0;
+            let cy = r.y as f32 + r.h as f32 / 2.0;
+            let gc = if on {
+                ACCENT_FG()
+            } else if hot {
+                TEXT()
+            } else {
+                TEXT_3()
+            };
+            self.glyph(cv, v.glyph, cx, cy, self.pf(6.5), gc);
+            if v.alert {
+                cv.fill_circle(cx + self.pf(8.0), cy - self.pf(7.0), self.pf(3.5), v.color);
+            }
+        }
+        // The caption: what the hovered (else the open) view is and holds.
+        let k = self.side_view_hot.unwrap_or_else(|| views.iter().position(|v| v.key == cur).unwrap_or(0));
+        if let Some(v) = views.get(k) {
+            let base = bar.bottom() as f32 + self.pf(17.0);
+            let x = bar.x as f32 + self.pf(6.0);
+            let end = self.te.draw(cv, semi, self.pf(12.0), x, base, v.name, TEXT_2(), bar.w as f32);
+            self.te.draw(
+                cv,
+                if v.alert { semi } else { ui },
+                self.pf(12.0),
+                end + self.pf(8.0),
+                base,
+                &v.stat,
+                v.color,
+                bar.right() as f32 - end - self.pf(8.0),
+            );
+        }
+    }
+
+    /// Tabs: the views over the content, right of the sidebar.
+    pub(super) fn paint_view_tabs(&mut self, cv: &mut Canvas) {
+        let v = self.lay.views;
+        if v.h == 0 {
+            return;
+        }
+        let (ui, semi) = (self.f.ui, self.f.semi);
+        cv.fill(v, BG_BAR());
+        cv.fill(Rect::new(v.x, v.bottom() - 1, v.w, 1), BORDER());
+        let cur = self.current_view();
+        for (k, (t, r)) in self.views().into_iter().zip(self.view_tab_rects()).enumerate() {
+            let on = t.key == cur;
+            let hot = self.side_view_hot == Some(k);
+            let inner = Rect::new(r.x + self.px(2.0), r.y + self.px(5.0), r.w - self.px(4.0), r.h - self.px(10.0));
+            if on {
+                cv.fill_round(inner, self.pf(7.0), BG());
+                cv.fill(
+                    Rect::new(r.x + self.px(10.0), r.bottom() - self.px(2.0), r.w - self.px(20.0), self.px(2.0)),
+                    ACCENT(),
+                );
+            } else if hot {
+                cv.fill_round(inner, self.pf(7.0), BG_HOVER());
+            }
+            let cy = r.y as f32 + r.h as f32 / 2.0;
+            let gx = r.x as f32 + self.pf(18.0);
+            self.glyph(cv, t.glyph, gx, cy, self.pf(5.5), if on { ACCENT() } else { TEXT_3() });
+            let font = if on { semi } else { ui };
+            let right = r.right() as f32 - self.pf(8.0);
+            let end = self.te.draw(
+                cv,
+                font,
+                self.pf(12.5),
+                gx + self.pf(13.0),
+                (cy + self.pf(4.5)).round(),
+                t.name,
+                if on { TEXT() } else { TEXT_2() },
+                right - gx,
+            );
+            if t.alert {
+                let fs = self.pf(10.0);
+                let w = (self.te.measure(semi, fs, &t.count) + self.pf(9.0)).max(self.pf(15.0));
+                self.view_badge(cv, (end + self.pf(6.0) + w).min(right), cy, &t);
+            }
+        }
+    }
+
+    /// The filter field under the card (and the views, when they live in
+    /// the sidebar).
     pub(super) fn side_filter_rect(&self) -> Rect {
-        let s = self.lay.side;
-        let top = self.side_dock_rect().bottom() + self.px(10.0);
-        Rect::new(s.x + self.px(10.0), top, s.w - self.px(20.0), self.px(FILTER_H - 14.0))
+        let p = self.side_panel();
+        let top = match self.side_style() {
+            SideStyle::Rail | SideStyle::Tabs => self.side_here_rect().bottom() + self.px(10.0),
+            SideStyle::List => self.view_list_rects().last().map_or(0, |r| r.bottom()) + self.px(12.0),
+            SideStyle::Bar => self.view_bar_rect().bottom() + self.px(28.0),
+        };
+        Rect::new(p.x + self.px(10.0), top, p.w - self.px(20.0), self.px(FILTER_H - 14.0))
     }
 
     pub(super) fn side_list_rect(&self) -> Rect {
-        let s = self.lay.side;
+        let p = self.side_panel();
         let top = self.side_filter_rect().bottom() + self.px(8.0);
-        Rect::new(s.x, top, s.w - 1, (s.bottom() - top).max(0))
+        Rect::new(p.x, top, p.w, (p.bottom() - top).max(0))
     }
 
     /// The card: line one the branch (or the detached commit) and its sync
@@ -549,7 +849,7 @@ impl Ui {
         self.r.side = v;
         let max = self.r.side.len().saturating_sub(self.side_visible_rows());
         self.r.side_top = self.r.side_top.min(max);
-        self.damage.rects.push(self.lay.side);
+        self.damage.rects.extend([self.lay.side, self.lay.views]);
     }
 
     fn side_index(&self, key: &str) -> Option<usize> {
@@ -576,7 +876,7 @@ impl Ui {
                 self.r.side_top = i + 1 - vis;
             }
         }
-        self.damage.rects.push(self.lay.side);
+        self.damage.rects.extend([self.lay.side, self.lay.views]);
     }
 
     /// The ref item for a commit chosen elsewhere (palette), if any.
@@ -659,11 +959,11 @@ impl Ui {
     pub(super) fn side_click(&mut self, x: i32, y: i32) {
         if self.side_here_rect().contains(x, y) {
             // The card leads to the working tree.
-            return self.dock_activate("changes");
+            return self.view_activate("changes");
         }
-        if let Some(k) = self.dock_tile_at(x, y) {
-            let key = self.dock_tiles()[k].0;
-            return self.dock_activate(key);
+        if let Some(k) = self.view_at(x, y) {
+            let key = self.views()[k].key;
+            return self.view_activate(key);
         }
         if self.side_filter_rect().contains(x, y) {
             self.focus = Focus::SideFilter;
@@ -826,7 +1126,7 @@ impl Ui {
         cv.fill(r, BG_SIDEBAR());
         cv.fill(Rect::new(r.right() - 1, r.y, 1, r.h), BORDER());
         self.paint_side_here(cv);
-        self.paint_dock(cv);
+        self.paint_views(cv);
         let (ui, semi) = (self.f.ui, self.f.semi);
         // Filter field.
         let fr = self.side_filter_rect();
@@ -1117,11 +1417,10 @@ impl Ui {
             let r = self.side_here_rect();
             self.damage.rects.push(r);
         }
-        let d = self.dock_tile_at(x, y);
-        if d != self.side_dock_hot {
-            self.side_dock_hot = d;
-            let r = self.side_dock_rect();
-            self.damage.rects.push(r);
+        let d = self.view_at(x, y);
+        if d != self.side_view_hot {
+            self.side_view_hot = d;
+            self.damage.rects.extend([self.lay.side, self.lay.views]);
         }
         let h = self.side_item_at(x, y);
         if h != self.side_hover {

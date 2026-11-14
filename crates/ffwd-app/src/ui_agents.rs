@@ -295,7 +295,8 @@ impl Ui {
     /// right of the sidebar and under the tabs (FF-57).
     pub(super) fn agents_rect(&self) -> Rect {
         let s = self.lay.side;
-        Rect::new(s.right(), s.y, (self.w as i32 - s.right()).max(1), s.h)
+        let top = self.lay.list.y;
+        Rect::new(s.right(), top, (self.w as i32 - s.right()).max(1), (self.lay.status.y - top).max(1))
     }
 
     pub(super) fn agents_rail(&self) -> Rect {

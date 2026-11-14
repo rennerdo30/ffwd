@@ -19,6 +19,7 @@ mod sidebar;
 #[path = "ui_split.rs"]
 mod split_view;
 use sidebar::SideItem;
+pub use sidebar::SideStyle;
 pub use split_view::Split;
 #[path = "ui_activity.rs"]
 mod activity_view;
@@ -154,6 +155,8 @@ pub struct Layout {
     pub tabs: Rect,
     pub status: Rect,
     pub side: Rect,
+    /// The views as tabs over the content (sidebar style Tabs), else empty.
+    pub views: Rect,
     pub list: Rect,
     pub list_head: Rect,
     pub list_body: Rect,
@@ -645,7 +648,7 @@ pub struct Ui {
     /// The pointer is over the sidebar's "here" card.
     pub(super) side_here_hot: bool,
     /// The dock tile under the pointer.
-    pub(super) side_dock_hot: Option<usize>,
+    pub(super) side_view_hot: Option<usize>,
     /// A pane border being dragged, and the one under the pointer (FF-57).
     pub(super) split_drag: Option<Split>,
     pub(super) split_hot: Option<Split>,
@@ -818,7 +821,7 @@ impl Ui {
             cap_hover: None,
             cap_pressed: None,
             side_here_hot: false,
-            side_dock_hot: None,
+            side_view_hot: None,
             split_drag: None,
             split_hot: None,
             max_state: (false, false),
@@ -1333,11 +1336,18 @@ impl Ui {
         let tabs_h = self.px(32.0);
         let top_h = bar_h + tabs_h;
         let status_h = self.px(26.0);
+        // The rail (sidebar style Rail) comes on top of the panel's width.
+        let rail = if self.side_style() == SideStyle::Rail { 64.0 } else { 0.0 };
         let side_w = match self.split_get(Split::Side) {
-            Some(v) => self.px(v).max(self.px(150.0)).min((wi / 2).max(self.px(150.0))),
-            None => self.px(236.0).min(wi / 4),
+            Some(v) => self.px(v).max(self.px(150.0 + rail)).min((wi / 2).max(self.px(150.0 + rail))),
+            None => self.px(236.0 + rail).min(wi / 4 + self.px(rail)),
         };
-        let mid_h = (hi - top_h - status_h).max(0);
+        // The views as tabs over the content take a strip there.
+        let views_h = if self.side_style() == SideStyle::Tabs { self.px(38.0) } else { 0 };
+        let side_h = (hi - top_h - status_h).max(0);
+        let side_top = top_h;
+        let top_h = top_h + views_h;
+        let mid_h = (side_h - views_h).max(0);
         let list_x = side_w;
         let (list_w, list_h, details) = match self.layout {
             // The large view: no history list, the details take it all.
@@ -1383,7 +1393,8 @@ impl Ui {
             top: Rect::new(0, 0, wi, bar_h),
             tabs: Rect::new(0, bar_h, wi, tabs_h),
             status: Rect::new(0, hi - status_h, wi, status_h),
-            side: Rect::new(0, top_h, side_w, mid_h),
+            side: Rect::new(0, side_top, side_w, side_h),
+            views: Rect::new(side_w, side_top, (wi - side_w).max(0), views_h),
             list,
             // No list in the large view: no header either.
             list_head: Rect::new(list_x, top_h, list_w, if self.diff_max { 0 } else { head_h }),
@@ -2235,6 +2246,9 @@ impl Ui {
             self.close_palette();
             return;
         }
+        if self.lay.views.contains(x, y) {
+            return self.view_click(x, y);
+        }
         if self.lay.tabs.contains(x, y) {
             let (rects, plus) = self.tab_rects();
             if let Some(i) = rects.iter().position(|r| r.contains(x, y)) {
@@ -3058,6 +3072,9 @@ impl Ui {
         }
         if !clip.intersect(l.side).is_empty() {
             self.paint_side(cv);
+        }
+        if !clip.intersect(l.views).is_empty() {
+            self.paint_view_tabs(cv);
         }
         if self.r.rebase.is_some() {
             if !clip.intersect(self.rebase_area()).is_empty() {
@@ -5597,13 +5614,13 @@ mod tests {
         assert_eq!(a.get(0).unwrap().title, "Stage 1 file");
         assert_eq!(&*a.get(0).unwrap().repo, dir.file_name().unwrap().to_str().unwrap());
         assert_eq!(a.unseen_failures, 1);
-        assert_eq!(ui.dock_stat("activity").as_deref(), Some("1 failed"));
+        assert_eq!(ui.view_stat("activity").as_deref(), Some("1 failed"));
         // Open the view: the badge clears; moving and copying works.
         let mut screen = vec![0u32; 1280 * 800];
         ui.paint(&mut Canvas::new(&mut screen, 1280, 800), true);
         ui.enter_activity();
         assert_eq!(ui.activity.unseen_failures, 0);
-        assert_eq!(ui.dock_stat("activity").as_deref(), Some("all fine"), "the badge clears");
+        assert_eq!(ui.view_stat("activity").as_deref(), Some("all fine"), "the badge clears");
         assert_partial_paint_is_full(&mut ui, &mut screen, "open the activity log");
         ui.key(Key::Down);
         assert_eq!(ui.activity.sel, 1);
@@ -9051,7 +9068,7 @@ mod tests {
         // Runs: running, to review, failed; the sidebar says what runs.
         ui.snapshot_agents_demo();
         ui.rebuild_side();
-        assert_eq!(ui.dock_stat("agents").as_deref(), Some("1 running"));
+        assert_eq!(ui.view_stat("agents").as_deref(), Some("1 running"));
         ui.paint(&mut Canvas::new(&mut screen, 1400, 900), true);
         let order: Vec<String> = ui.agent_rail_titles();
         assert_eq!(
@@ -9134,6 +9151,43 @@ mod tests {
         ui.pointer(x + 80, y);
         ui.release(x + 80, y);
         assert!((ui.changes_layout().left.w - (l.left.w + 80)).abs() <= 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn every_sidebar_style_opens_every_view() {
+        let mut te = TextEngine::new();
+        let Some(f) = load_fonts(&mut te) else { return };
+        let dir = std::env::temp_dir().join(format!("ffwd-ui-styles-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let empty = crate::settings::Settings::parse("");
+        let sinks: SinkFactory = Arc::new(|_| Arc::new(|_| {}));
+        let mut ui = Ui::new(te, f, empty.clone(), empty, Some((1, dir.clone())), sinks, 1400, 900, 1.0);
+        let mut screen = vec![0u32; 1400 * 900];
+        for style in SideStyle::KEYS {
+            ui.set_side_style(style);
+            ui.paint(&mut Canvas::new(&mut screen, 1400, 900), true);
+            if style == "tabs" {
+                // The tabs sit over the content; the sidebar keeps its height.
+                assert!(ui.lay.views.h > 0);
+                assert_eq!(ui.lay.list.y, ui.lay.views.bottom());
+                assert!(ui.lay.side.y < ui.lay.list.y);
+                assert_eq!(ui.agents_rect().y, ui.lay.list.y);
+            } else {
+                assert_eq!(ui.lay.views.h, 0, "{style}");
+            }
+            let keys: Vec<&str> = ui.views().iter().map(|v| v.key).collect();
+            for (k, key) in keys.into_iter().enumerate() {
+                let r = ui.view_rects()[k];
+                ui.last_click = None;
+                ui.click(r.x + r.w / 2, r.y + r.h / 2);
+                ui.release(r.x + r.w / 2, r.y + r.h / 2);
+                assert_eq!(ui.current_view(), key, "{style}: {key}");
+                assert_partial_paint_is_full(&mut ui, &mut screen, &format!("{style}: {key}"));
+            }
+            ui.view_activate("all");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

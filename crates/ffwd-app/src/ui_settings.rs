@@ -14,6 +14,8 @@ use super::*;
 pub enum Row {
     /// System, dark or light (FF-57).
     Theme,
+    /// Where the views sit: rail, tabs, list or icon bar (FF-57).
+    Sidebar,
     Layout,
     Updates,
     Channel,
@@ -79,7 +81,7 @@ const SECTIONS: &[Section] = &[
         about: "How ffwd looks: its theme, and where the commit details go.",
         glyph: Glyph::Expand,
         agents: false,
-        rows: &[Row::Theme, Row::Layout],
+        rows: &[Row::Theme, Row::Sidebar, Row::Layout],
     },
     Section {
         nav: "Updates",
@@ -193,6 +195,7 @@ impl Row {
     fn label(self) -> &'static str {
         match self {
             Row::Theme => "Theme",
+            Row::Sidebar => "Views",
             Row::Layout => "Commit details",
             Row::Updates => "Automatic updates",
             Row::AutoFetch => "Fetch automatically",
@@ -238,6 +241,9 @@ impl Row {
     fn hint(self) -> &'static str {
         match self {
             Row::Theme => "System follows your computer's light or dark mode, also when it changes.",
+            Row::Sidebar => {
+                "How Changes, History, Files, Activity, Reflog and Agents are offered: a rail of icons at the left edge, tabs over the content, a list in the sidebar or a bar of icons."
+            }
             Row::Layout => "Where the selected commit's details and diff go.",
             Row::Updates => "Check for new versions once a day and offer to install them.",
             Row::AutoFetch => {
@@ -360,6 +366,7 @@ impl Row {
     fn choices(self) -> &'static [&'static str] {
         match self {
             Row::Theme => &["System", "Dark", "Light"],
+            Row::Sidebar => &["Rail", "Tabs", "List", "Icon bar"],
             Row::Layout => &["Below the history", "Beside the history"],
             Row::Updates => &["On", "Off"],
             Row::AutoFetch => &["Off", "5 min", "10 min", "30 min"],
@@ -846,6 +853,7 @@ impl Ui {
                 Some("light") => 2,
                 _ => 0,
             },
+            Row::Sidebar => self.side_style() as usize,
             Row::Layout => (self.layout == DetailsLayout::Beside) as usize,
             Row::Updates => (self.sget("update.check") == Some("false")) as usize,
             Row::SslVerify => (self.sget("git:global:http.sslVerify") == Some("false")) as usize,
@@ -902,6 +910,7 @@ impl Ui {
                 self.sset("ui.theme", ["system", "dark", "light"][i.min(2)]);
                 self.apply_theme();
             }
+            Row::Sidebar => self.set_side_style(super::SideStyle::KEYS[i.min(3)]),
             Row::Layout => self.set_layout(if i == 1 { DetailsLayout::Beside } else { DetailsLayout::Below }),
             Row::Updates => self.sset("update.check", if i == 1 { "false" } else { "true" }),
             // On is Git's default: the key goes.

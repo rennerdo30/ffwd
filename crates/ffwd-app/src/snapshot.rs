@@ -41,6 +41,9 @@ pub fn run(args: &Args, t0: Instant) -> i32 {
     let state =
         crate::settings::Settings::parse(&format!("[session]\ntabs = \"{}\"\n", tabs.join("|").replace('\\', "\\\\")));
     let mut ui = Ui::new(te, fonts, settings, state, Some((1, repo.clone())), sinks, w, h, args.scale.unwrap_or(1.0));
+    if let Some(st) = &args.sidebar {
+        ui.set_side_style(st);
+    }
     if let Some(t) = &args.theme {
         ui.settings.set_string("ui.theme", t);
         ui.apply_theme_now();

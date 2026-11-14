@@ -50,6 +50,8 @@ pub struct Args {
     /// Snapshot with the settings view on this page (0 general, 1 agents).
     pub settings_page: Option<usize>,
     pub settings_section: Option<String>,
+    /// Snapshot: the sidebar style.
+    pub sidebar: Option<String>,
     /// Snapshot: "light" or "dark".
     pub theme: Option<String>,
     /// Snapshot: the agents page with agents on (true) or off.
@@ -111,6 +113,7 @@ fn parse_args() -> Result<Args, String> {
         side: None,
         settings_page: None,
         settings_section: None,
+        sidebar: None,
         theme: None,
         agents_page: None,
         agents_demo: false,
@@ -164,6 +167,7 @@ fn parse_args() -> Result<Args, String> {
             "--layout" => a.layout = Some(val("--layout")?),
             "--settings" => a.settings = true,
             "--agents-page" => a.agents_page = Some(val("--agents-page")? == "on"),
+            "--sidebar" => a.sidebar = Some(val("--sidebar")?),
             "--theme" => a.theme = Some(val("--theme")?),
             "--settings-section" => a.settings_section = Some(val("--settings-section")?),
             "--settings-page" => a.settings_page = Some(val("--settings-page")?.parse().map_err(|_| "bad page")?),
