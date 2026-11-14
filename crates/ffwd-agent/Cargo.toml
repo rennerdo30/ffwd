@@ -9,3 +9,8 @@ publish.workspace = true
 
 [dependencies]
 ffwd-core = { path = "../ffwd-core" }
+
+# The terminal window of a terminal session (FF-23): CreateProcessW with a
+# new console and no inherited handles.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading"] }

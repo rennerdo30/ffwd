@@ -140,6 +140,11 @@ pub fn to_wsl(p: &Path, map: &[(String, String)]) -> Result<String, String> {
     Err(format!("{raw} has no WSL path; add it to agents.wsl_path_map"))
 }
 
+/// The usual targets of the /etc/resolv.conf link (WSL, systemd-resolved,
+/// resolvconf, NetworkManager).
+pub const RESOLV_TARGETS: [&str; 4] =
+    ["/mnt/wsl/resolv.conf", "/run/systemd/resolve", "/run/resolvconf", "/run/NetworkManager"];
+
 /// Bubblewrap arguments (Linux, or inside WSL with `conv` translating paths).
 fn bwrap_args(ctx: &Ctx, conv: &dyn Fn(&Path) -> Result<String, String>) -> Result<Vec<String>, String> {
     let cfg = ctx.cfg;
@@ -155,8 +160,16 @@ fn bwrap_args(ctx: &Ctx, conv: &dyn Fn(&Path) -> Result<String, String>) -> Resu
     if cfg.network {
         a.push("--share-net".into());
     }
-    for d in ["/usr", "/bin", "/sbin", "/lib", "/lib64", "/lib32", "/etc", "/opt", "/nix", "/run/systemd/resolve"] {
+    for d in ["/usr", "/bin", "/sbin", "/lib", "/lib64", "/lib32", "/etc", "/opt", "/nix"] {
         a.extend(["--ro-bind-try".into(), d.into(), d.into()]);
+    }
+    // Where /etc/resolv.conf may point: without its target, names do not
+    // resolve (WSL links it to /mnt/wsl/resolv.conf). Read-only, and only
+    // with the network.
+    if cfg.network {
+        for d in RESOLV_TARGETS {
+            a.extend(["--ro-bind-try".into(), d.into(), d.into()]);
+        }
     }
     a.extend(["--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp"].map(String::from));
     let bind = |a: &mut Vec<String>, flag: &str, p: &Path| -> Result<(), String> {
@@ -383,6 +396,23 @@ pub fn template_vars(ctx: &Ctx) -> Vec<(&'static str, String)> {
 
 #[cfg(test)]
 mod tests {
+
+    /// Names resolve inside the sandbox (FF-23): /etc/resolv.conf links
+    /// outside /etc in WSL, so its targets are mounted with the network.
+    #[test]
+    fn dns_files_come_with_the_network() {
+        let mut c = cfg(SandboxKind::Bubblewrap);
+        c.network = true;
+        let l = wrap(&["agent".into()], &ctx(&c), None).unwrap();
+        assert!(
+            pos(&l.args, &["--ro-bind-try", "/mnt/wsl/resolv.conf", "/mnt/wsl/resolv.conf"]).is_some(),
+            "{:?}",
+            l.args
+        );
+        c.network = false;
+        let l = wrap(&["agent".into()], &ctx(&c), None).unwrap();
+        assert!(!l.args.iter().any(|a| a == "/mnt/wsl/resolv.conf"));
+    }
 
     /// A terminal session keeps its terminal (FF-23): no --new-session,
     /// which leaves an interactive tool without /dev/tty.
