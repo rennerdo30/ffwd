@@ -177,11 +177,25 @@ impl Ui {
         rows
     }
 
-    pub(super) fn paint_diff_split(&mut self, cv: &mut Canvas, body: Rect, diff: &FileDiff, top: usize) {
-        let mono = self.f.mono;
+    /// Side by side from row `top`. With `hunk_label` each hunk gets a
+    /// stage or unstage button (Local Changes); returns (hunk, rect).
+    pub(super) fn paint_diff_split(
+        &mut self,
+        cv: &mut Canvas,
+        body: Rect,
+        diff: &FileDiff,
+        top: usize,
+        hunk_label: Option<&str>,
+        hit_base: usize,
+    ) -> Vec<(usize, Rect)> {
+        let (mono, semi) = (self.f.mono, self.f.semi);
         let lh = self.code_lh();
         let (pairs, blocks) = self.diff_meta(diff);
         let rows = Self::split_rows(diff, &pairs);
+        let mut buttons = Vec::new();
+        // Hunks above the first painted row count too.
+        let mut hunk =
+            rows.iter().take(top).filter(|(l, _)| l.is_some_and(|i| diff.lines[i].kind == LineKind::Hunk)).count();
         let lang = highlight::lang_for(&diff.path);
         let half = body.w / 2;
         let num_w = self.code_px(40.0);
@@ -200,17 +214,25 @@ impl Ui {
                 && diff.lines[i].kind == LineKind::Hunk
             {
                 cv.fill(row, HUNK_BG);
+                hunk += 1;
+                let mut text_w = body.w as f32 - self.pf(20.0);
+                if let Some(label) = hunk_label {
+                    let w = self.te.measure(semi, self.pf(11.0), label) + self.pf(18.0);
+                    let b = Rect::new(
+                        body.right() - self.px(10.0) - w as i32,
+                        y + self.px(2.0),
+                        w as i32,
+                        lh - self.px(4.0),
+                    );
+                    let hot = Hot::Change(hit_base + buttons.len());
+                    let (bg, border) = self.control_colors(hot, BG_BAR, HUNK_BORDER);
+                    cv.round_border(b, self.pf(5.0), border, bg);
+                    self.te.draw(cv, semi, self.pf(11.0), b.x as f32 + self.pf(9.0), lb, label, HUNK_TEXT, w);
+                    buttons.push((hunk - 1, b));
+                    text_w -= w + self.pf(12.0);
+                }
                 let t = diff.lines[i].text.clone();
-                self.te.draw(
-                    cv,
-                    mono,
-                    self.code_px(11.5),
-                    body.x as f32 + self.pf(10.0),
-                    lb,
-                    &t,
-                    HUNK_TEXT,
-                    body.w as f32,
-                );
+                self.te.draw(cv, mono, self.code_px(11.5), body.x as f32 + self.pf(10.0), lb, &t, HUNK_TEXT, text_w);
                 continue;
             }
             for (side, li) in [(0, l), (1, r)] {
@@ -259,6 +281,43 @@ impl Ui {
                 cv.set_clip(old);
             }
         }
+        buttons
+    }
+
+    /// The split row that shows line `i` (either side).
+    pub(super) fn split_row_of(rows: &[(Option<usize>, Option<usize>)], i: usize) -> usize {
+        rows.iter().position(|&(l, r)| l == Some(i) || r == Some(i)).unwrap_or_else(|| {
+            // A line without a row of its own (meta): the next row.
+            rows.iter().position(|&(l, r)| l.or(r).is_some_and(|k| k > i)).unwrap_or(rows.len().saturating_sub(1))
+        })
+    }
+
+    /// The line under (x, y) in a split body painted from row `top`: the
+    /// side under the pointer, else the other one.
+    pub(super) fn split_line_at(&mut self, diff: &FileDiff, top: usize, body: Rect, x: i32, y: i32) -> Option<usize> {
+        if y < body.y {
+            return None;
+        }
+        let (p, _) = self.diff_meta(diff);
+        let rows = Self::split_rows(diff, &p);
+        let &(l, r) = rows.get(top + ((y - body.y) / self.code_lh().max(1)) as usize)?;
+        if x < body.x + body.w / 2 { l.or(r) } else { r.or(l) }
+    }
+
+    /// Where line `i` sits in a split body painted from row `top`: its
+    /// half's left edge, y and height, if it is on screen.
+    pub(super) fn split_line_rect(&mut self, diff: &FileDiff, top: usize, body: Rect, i: usize) -> Option<Rect> {
+        let (p, _) = self.diff_meta(diff);
+        let rows = Self::split_rows(diff, &p);
+        let k = rows.iter().position(|&(l, r)| l == Some(i) || r == Some(i))?;
+        let lh = self.code_lh();
+        let y = body.y + (k as i32 - top as i32) * lh;
+        if k < top || y >= body.bottom() {
+            return None;
+        }
+        let half = body.w / 2;
+        let right = rows[k].0 != Some(i);
+        Some(Rect::new(if right { body.x + half + 1 } else { body.x }, y, half - 1, lh))
     }
 
     /// The rows a diff has in the current layout (for scrolling).

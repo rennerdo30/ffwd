@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Local Changes:** the diff can show side by side (the **Side by side** button in its bar); staging hunks and picking lines work there too.
 - **Automatic fetch:** the open repository fetches its remotes every 10 minutes (Settings → General → **Fetch automatically**: Off, 5, 10 or 30 minutes). It stays quiet unless something new arrives, and it never asks for a password.
 - **History:** stashes show in the commit list, each on the commit it was made from, with the stash's menu (apply, pop, drop…). The list title is now a menu: all commits or the current branch, and **Show stashes** to hide them.
 - **Several at once:** pick branches, remote branches, tags or stashes in the sidebar (`Ctrl+click`, `Shift+click`, or **Select for several** in their menu) and push them in one push, delete them here or on the remote, or drop the stashes. Every delete asks first and names how to restore.
