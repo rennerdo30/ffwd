@@ -314,19 +314,23 @@ The gear in the top bar (or `Ctrl+,`) opens Settings as a page of its own: the w
 - **Status (agent sections):** a box says what is in effect for the open repository (on or off, the tool, the sandbox, and why it cannot run). When agents are off it has a **Turn on** button.
 - **Done** (or `Esc`) closes Settings.
 
-## Agents panel (experimental)
+## Agents page (experimental)
 
-`Ctrl+Shift+A` (or *Agents (experimental)…* in `Ctrl+K`) opens the agents panel of the current repository. It is off by default and labelled EXPERIMENTAL in the panel and on its settings page. All settings are listed in [AGENTS-EXPERIMENTAL.md](AGENTS-EXPERIMENTAL.md).
+**Agents** in the sidebar's Workspace section (shown when agents are on, with a badge such as "2 running" or "1 to review"), `Ctrl+Shift+A`, or *Agents (experimental)…* in `Ctrl+K` opens the agents page of the current repository: the whole window below the top bar. It is off by default and labelled EXPERIMENTAL. All settings are listed in [AGENTS-EXPERIMENTAL.md](AGENTS-EXPERIMENTAL.md).
 
-- **Top:** one line names what the agent can reach (the sandbox, network, Git access and time limit). It turns amber when ffwd would refuse to start and red when the agent is not sandboxed.
-- **Prompt field:** `Enter` starts a run on a new branch, in its own worktree.
-- **Left:** the runs of this repository, newest first, each with a status dot.
-- **Right:** the selected run's branch, status, worktree, buttons (Show branch, Merge…, Discard…, Cancel run, Open folder, Open log) and its live log.
-- **Confirmation:** Merge and discard ask in place and name exactly what happens. `Enter` confirms; `Esc` keeps the run.
-- **Keys:** `↑ ↓`, `Enter` shows the branch, `m` merges, `d` discards, `c` cancels, `o` opens the folder, `l` opens the log, `PageUp`/`PageDown` scroll the log, and typing starts a new task.
-- **Tab badge:** a dot after the tab's name. Accent while an agent runs; green or red when a run ended and you have not opened the panel since.
-
-The Access section lists one row per path the agent may use: the agent's own paths (its login and settings) with **Off / Read / Write**, then the paths you added with **Remove / Read / Write**. **Add a folder or file** adds a typed path read-only on `Enter` (files work too, for example `~/.gitconfig`). While the command is empty, its field shows the agent's built-in command in grey.
+- **Header:** a chip says what runs and where (the tool, the sandbox, the network, or why it cannot run); a click opens the agent settings. **Done** (or `Esc`) closes the page.
+- **Composer (left, top):** the task field, the agent for this task (the configured one, or any built-in one), **Terminal** (the tool's CLI in a terminal window: in a new worktree or here, sandboxed or not) and **Start** (or `Enter`).
+- **Runs (left):** cards grouped as Running, To review, Failed and Finished. A card shows the title, the phase or status with its age, and the live last output line or the change summary; a dot marks a result you have not seen.
+- **The selected run (right):** title, a status pill, branch and base, when and in which sandbox, the result in a sentence, and the actions that fit its state, the main one first:
+  - running: **Cancel run**, Open folder, Open log;
+  - to review: **Review changes** (the branch against its base, in the history's compare), Merge…, Continue in terminal, Run again, Discard…;
+  - merged: Show branch, Run again, Discard…;
+  - failed or stopped: **Run again** (the task back in the composer), Open log, Open terminal here, Discard….
+- **Output / Details:** the live log (`PageUp`/`PageDown` or the wheel scroll it), or the run's facts (task, branch, base, worktree, sandbox, times, commits, changes, result).
+- **Confirmation:** Merge and Discard ask in place and name exactly what happens. `Enter` confirms; `Esc` keeps the run.
+- **Empty page:** how it works in three steps and example tasks that fill the composer; when agents are off, **Turn on** and **Agent settings**.
+- **Keys:** `↑ ↓` select a run, `Enter` or `r` reviews, `m` merges, `d` discards, `c` cancels, `t` opens a terminal in its worktree, `o` opens the folder, `l` the log; typing starts a new task.
+- **Tab badge:** a dot after the tab's name. Accent while an agent runs; green or red when a run ended and you have not opened the page since.
 
 ## Repository tabs
 

@@ -383,7 +383,7 @@ pub(super) fn for_act(act: &super::menu::MenuAct) -> Option<Glyph> {
         M::ShowStashes(_) => Some(Glyph::Stash),
         M::AgentTerminal { .. } => Some(Glyph::Terminal),
         M::OpenTab(_) => Some(Glyph::Plus),
-        M::SettingChoice(..) | M::SettingScope(_) => None,
+        M::SettingChoice(..) | M::SettingScope(_) | M::AgentTool(_) => None,
         M::Compare(..) => Some(Glyph::DiffTool),
         M::StageToggle(true) => Some(Glyph::Plus),
         M::StageToggle(false) => Some(Glyph::Undo),

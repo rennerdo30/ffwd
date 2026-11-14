@@ -238,6 +238,13 @@ pub fn run(args: &Args, t0: Instant) -> i32 {
     if let Some(p) = args.settings_page {
         ui.open_settings_page(p);
     }
+    if let Some(on) = args.agents_page {
+        if on {
+            ui.settings.set_string("agents.enabled", "true");
+            ui.settings.set_string("agents.preset", "claude");
+        }
+        ui.open_agents();
+    }
     if let Some(s) = &args.settings_section {
         ui.open_settings_named(s);
     }

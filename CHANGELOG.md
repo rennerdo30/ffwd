@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Agents (experimental), redesigned:** a page of its own (and **Agents** in the sidebar, with a live badge). A composer with the agent to use, runs as cards grouped by state, and for each run the actions that fit: **Review changes** opens the branch's diff in the history, then Merge, Continue in terminal, Run again or Discard. Empty and off states explain how it works and turn agents on in one click.
 - **Settings, redesigned:** a page of its own with sections in a sidebar, cards with full descriptions, switches and dropdowns instead of rows of buttons, search, and a clear **Applies to** picker for agent settings: every row set for one repository says so and can be reset. The agent sections show what is in effect for the open repository.
 ## 0.2.0-beta.6
 

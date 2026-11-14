@@ -3000,7 +3000,7 @@ impl Ui {
         // A modal panel dims what is behind it, so the eye goes to the
         // panel. Remote sessions get no translucency (performance rule 6).
         // Settings is a page of its own: nothing behind it to dim.
-        if (self.agent_view.is_some() || self.dialog.is_some()) && !self.remote {
+        if self.dialog.is_some() && !self.remote {
             cv.fill_alpha(clip, 0x000000, 100);
         }
         if self.agent_view.is_some() && !clip.intersect(self.agents_rect()).is_empty() {
@@ -8843,6 +8843,62 @@ mod tests {
         assert_partial_paint_is_full(&mut ui, &mut screen, "reset");
         ui.key(Key::Esc);
         assert!(ui.settings_view.is_none(), "Esc closes");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The agents page (FF-23, FF-57): runs grouped by state, actions that
+    /// fit the selected run, Run again into the composer, example tasks on
+    /// an empty page, and the sidebar entry with its badge.
+    #[test]
+    fn agents_page_groups_runs_and_fits_actions() {
+        let mut te = TextEngine::new();
+        let Some(f) = load_fonts(&mut te) else { return };
+        let dir = std::env::temp_dir().join(format!("ffwd-ui-agentspage-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let empty = crate::settings::Settings::parse("");
+        let sinks: SinkFactory = Arc::new(|_| Arc::new(|_| {}));
+        let mut ui = Ui::new(te, f, empty.clone(), empty, Some((1, dir.clone())), sinks, 1400, 900, 1.0);
+        let mut screen = vec![0u32; 1400 * 900];
+        // Empty: example tasks fill the composer.
+        ui.settings.set_string("agents.enabled", "true");
+        ui.open_agents();
+        ui.paint(&mut Canvas::new(&mut screen, 1400, 900), true);
+        let labels = |ui: &Ui| ui.agent_view_hits();
+        let ex =
+            labels(&ui).into_iter().find(|(_, h)| h.starts_with("Example")).map(|(r, _)| r).expect("example tasks");
+        ui.click(ex.x + 4, ex.y + 4);
+        assert!(ui.agent_input().starts_with("Write a README"), "{}", ui.agent_input());
+        ui.close_agents();
+        // Runs: running, to review, failed; the sidebar says what runs.
+        ui.snapshot_agents_demo();
+        ui.rebuild_side();
+        let side = ui.r.side.iter().find(|i| i.key == "agents").map(|i| i.badge.clone());
+        assert_eq!(side.as_deref(), Some("1 running"));
+        ui.paint(&mut Canvas::new(&mut screen, 1400, 900), true);
+        let order: Vec<String> = ui.agent_rail_titles();
+        assert_eq!(
+            order,
+            ["Add a blame view for the selected file", "Fix the tab close button hit area", "Speed up the refs loader"]
+        );
+        let buttons = |ui: &Ui| -> Vec<String> {
+            labels(ui).into_iter().filter(|(_, h)| h.starts_with("Button")).map(|(_, h)| h).collect()
+        };
+        assert_eq!(buttons(&ui), ["Button(Cancel)", "Button(Folder)", "Button(Log)"], "running");
+        // The run to review: Review changes first.
+        let card = labels(&ui).into_iter().find(|(_, h)| h == "Run(1)").map(|(r, _)| r).unwrap();
+        ui.click(card.x + 8, card.y + 8);
+        ui.last_click = None;
+        assert_partial_paint_is_full(&mut ui, &mut screen, "run to review");
+        assert_eq!(
+            buttons(&ui),
+            ["Button(Review)", "Button(Merge)", "Button(Terminal)", "Button(Again)", "Button(Discard)"]
+        );
+        // Run again puts the task back in the composer.
+        let again = labels(&ui).into_iter().find(|(_, h)| h == "Button(Again)").map(|(r, _)| r).unwrap();
+        ui.click(again.x + 4, again.y + 4);
+        assert_eq!(ui.agent_input(), "Fix the tab close button hit area");
+        assert_partial_paint_is_full(&mut ui, &mut screen, "run again");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

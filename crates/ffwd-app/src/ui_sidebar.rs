@@ -33,6 +33,8 @@ pub(super) enum SideKind {
     Files,
     Activity,
     Reflog,
+    /// The agents page (FF-23).
+    Agents,
     All,
     Branch,
     Folder,
@@ -181,6 +183,18 @@ impl Ui {
             }
             v.push(a);
             v.push(SideItem::new(0, SideKind::Reflog, "Reflog", "reflog".into()));
+            // The agents page, when agents are on (FF-23): what runs and
+            // what waits for review.
+            if self.agent_config().0.enabled {
+                let mut a = SideItem::new(0, SideKind::Agents, "Agents", "agents".into());
+                let (running, review) = self.agent_counts();
+                a.badge = match (running, review) {
+                    (0, 0) => String::new(),
+                    (0, n) => format!("{n} to review"),
+                    (n, _) => format!("{n} running"),
+                };
+                v.push(a);
+            }
         }
         let refs = &self.r.refs.refs;
         let recent = self.settings.get("sidebar.branch_order") == Some("recent");
@@ -379,6 +393,7 @@ impl Ui {
             SideKind::Files => self.enter_files(),
             SideKind::Submodule => self.open_submodule(it.key.trim_start_matches("m:")),
             SideKind::Activity => self.enter_activity(),
+            SideKind::Agents => self.open_agents(),
             SideKind::Reflog => self.enter_reflog(),
             SideKind::All => {
                 self.leave_changes();
@@ -674,7 +689,9 @@ impl Ui {
                 SideKind::Stash => (STASH_FG, TEXT_2),
                 SideKind::Changes => (MOD, TEXT),
                 SideKind::Worktree | SideKind::Submodule | SideKind::PullRequest => (TEXT_3, TEXT_2),
-                SideKind::All | SideKind::Files | SideKind::Activity | SideKind::Reflog => (TEXT_2, TEXT),
+                SideKind::All | SideKind::Files | SideKind::Activity | SideKind::Reflog | SideKind::Agents => {
+                    (TEXT_2, TEXT)
+                }
                 SideKind::Header => (TEXT_3, TEXT_3),
             };
             let text = if selected { TEXT } else { text };
@@ -702,6 +719,7 @@ impl Ui {
                 SideKind::Changes => cv.fill_circle(ix, cy, self.pf(4.0), icon),
                 // A clock: where HEAD has been.
                 SideKind::Reflog => self.glyph(cv, super::Glyph::Clock, ix, cy, self.pf(5.8), icon),
+                SideKind::Agents => self.glyph(cv, super::Glyph::Terminal, ix, cy, self.pf(5.8), icon),
                 SideKind::Activity => {
                     // A pulse line.
                     let s = self.pf(5.0);
@@ -771,6 +789,8 @@ impl Ui {
                 let color = match it.kind {
                     SideKind::Changes => MOD,
                     SideKind::Activity => DEL,
+                    SideKind::Agents if it.badge.ends_with("running") => ACCENT,
+                    SideKind::Agents => ADD,
                     // A gone upstream reads as a warning.
                     SideKind::Branch if it.badge.starts_with("gone") => DEL,
                     SideKind::Branch => ACCENT,
