@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.2.0-beta.5
+
+A feature release: daily-driver gaps closed, and terminal sessions for the experimental agents.
+
 - **Agents (experimental): terminal sessions.** **Open in terminal** in the agents panel opens the tool's own interactive CLI in a terminal window: in a new worktree (listed, committed when the window closes) or in this repository, with the sandbox or without.
 - **Worktrees** in the sidebar have a menu: open in a new tab, open a terminal or the agent's CLI there, show the folder, copy the path, remove (asks first; Git refuses one with changes).
 - **Checkout progress:** a long checkout shows Git's progress ("Updating files: 45%") in the status bar.
