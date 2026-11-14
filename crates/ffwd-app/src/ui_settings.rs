@@ -338,7 +338,6 @@ impl Row {
             Row::Roots => "Folders next to the open repositories",
             Row::GitName => "Your Name",
             Row::GitEmail => "you@example.com",
-            Row::RepoGitName | Row::RepoGitEmail => "The one above",
             Row::CredHelper => "Git's default · e.g. manager",
             Row::SslCaInfo => "None",
             Row::AiEndpoint => "Off · e.g. http://localhost:11434/v1",
@@ -599,7 +598,24 @@ impl Ui {
     fn row_label(&self, row: Row) -> String {
         match row {
             Row::Grant(k) => self.grants().get(k as usize).map_or(String::new(), |g| g.path.clone()),
+            // The repository by name: "this repository" makes you look.
+            Row::RepoGitName => format!("Name in {}", self.r.repo_name),
+            Row::RepoGitEmail => format!("Email in {}", self.r.repo_name),
             r => r.label().to_string(),
+        }
+    }
+
+    /// What an empty field means; for this repository's identity, the
+    /// global value that applies instead.
+    fn row_placeholder(&self, row: Row) -> String {
+        let global = match row {
+            Row::RepoGitName => self.sget("git:global:user.name"),
+            Row::RepoGitEmail => self.sget("git:global:user.email"),
+            _ => return row.placeholder().to_string(),
+        };
+        match global {
+            Some(v) => format!("{v} (from all repositories)"),
+            None => "Not set anywhere yet".into(),
         }
     }
 
@@ -609,6 +625,13 @@ impl Ui {
                 Some(tool) => format!("{tool} keeps its login and settings here."),
                 None => "Added by you.".into(),
             },
+            Row::RepoGitName | Row::RepoGitEmail => {
+                let what = if row == Row::RepoGitName { "name" } else { "email" };
+                format!(
+                    "Only for commits in {}, for example a work identity. Empty: your {what} for all repositories.",
+                    self.r.repo_name
+                )
+            }
             r => r.hint().to_string(),
         }
     }
@@ -1852,7 +1875,7 @@ impl Ui {
                                 .flatten();
                             let ph = match preset {
                                 Some(p) => format!("{}: {}", p.name, p.command),
-                                None => row.placeholder().to_string(),
+                                None => self.row_placeholder(row),
                             };
                             if v.is_empty() {
                                 self.te.draw(cv, ui, self.pf(12.5), tx, cbase, &ph, TEXT_4, maxw);
