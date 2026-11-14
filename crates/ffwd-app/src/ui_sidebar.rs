@@ -386,6 +386,9 @@ impl Ui {
     /// Acts on an item: refs jump the history to their commit.
     fn side_activate(&mut self, i: usize) {
         let Some(it) = self.r.side.get(i).cloned() else { return };
+        if !matches!(it.kind, SideKind::Agents | SideKind::Header | SideKind::Folder | SideKind::Remote) {
+            self.close_agents();
+        }
         self.side_select(&it.key);
         match it.kind {
             SideKind::Header | SideKind::Folder | SideKind::Remote => self.toggle_side(i),

@@ -1871,7 +1871,7 @@ impl Ui {
         if matches!(k, Key::CtrlShift('a')) && self.agent_view.is_none() {
             return self.open_agents();
         }
-        if self.agent_view.is_some() {
+        if self.agents_have_keys() {
             return self.agents_key(k);
         }
         // Text editing keys belong to the palette while it is open.
@@ -2074,7 +2074,7 @@ impl Ui {
         self.pointer_at = Some((x, y));
         if self.settings_view.is_some() {
             self.settings_wheel(n);
-        } else if self.agent_view.is_some() {
+        } else if self.agent_view.is_some() && self.agents_rect().contains(x, y) {
             self.agents_wheel(n);
         } else if self.lay.side.contains(x, y) {
             self.side_wheel(n);
@@ -2115,7 +2115,12 @@ impl Ui {
             return self.settings_click(x, y);
         }
         if self.agent_view.is_some() {
-            return self.agents_click(x, y);
+            if self.agents_rect().contains(x, y) {
+                return self.agents_click(x, y);
+            }
+            // The sidebar (or the tabs, the top bar) keeps working beside
+            // the agents view; keys follow the click.
+            self.agents_blur();
         }
         if self.r.rebase.is_some() && self.palette.is_none() && self.rebase_area().contains(x, y) {
             return self.rebase_click(x, y);

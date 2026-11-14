@@ -103,6 +103,8 @@ pub struct AgentView {
     tool: Option<&'static str>,
     /// The rail scrolled up, in pixels.
     rail_scroll: i32,
+    /// Keys go to the page (else the sidebar has them, after a click there).
+    focused: bool,
 }
 
 impl AgentView {
@@ -118,6 +120,7 @@ impl AgentView {
             tab: 0,
             tool: None,
             rail_scroll: 0,
+            focused: true,
         }
     }
 }
@@ -245,6 +248,9 @@ impl Ui {
             return;
         }
         self.load_agent_runs();
+        if self.r.side.iter().any(|i| i.key == "agents") {
+            self.side_select("agents");
+        }
         let runs = self.tab_runs();
         for &i in &runs {
             self.agents[i].seen = true;
@@ -256,20 +262,48 @@ impl Ui {
     pub(super) fn close_agents(&mut self) {
         if self.agent_view.take().is_some() {
             self.damage.full = true;
+            // The sidebar names what shows again.
+            if self.r.side_sel == "agents" {
+                let key = if self.r.changes_view {
+                    "changes"
+                } else if self.r.files_view {
+                    "files"
+                } else if self.r.activity_view {
+                    "activity"
+                } else if self.r.reflog_view {
+                    "reflog"
+                } else {
+                    "all"
+                };
+                self.side_select(key);
+            }
         }
     }
 
-    /// The agents page: the window below the top bar, above the status
-    /// bar (like Settings).
+    /// Do keys go to the agents page?
+    pub(super) fn agents_have_keys(&self) -> bool {
+        self.agent_view.as_ref().is_some_and(|v| v.focused)
+    }
+
+    /// The sidebar was clicked while the page shows: keys go there.
+    pub(super) fn agents_blur(&mut self) {
+        if let Some(v) = &mut self.agent_view {
+            v.focused = false;
+        }
+        self.agents_dirty();
+    }
+
+    /// The agents page: a view of the repository like Local Changes,
+    /// right of the sidebar and under the tabs (FF-57).
     pub(super) fn agents_rect(&self) -> Rect {
-        let top = self.lay.top.bottom();
-        Rect::new(0, top, self.w as i32, (self.lay.status.y - top).max(1))
+        let s = self.lay.side;
+        Rect::new(s.right(), s.y, (self.w as i32 - s.right()).max(1), s.h)
     }
 
     fn agents_rail(&self) -> Rect {
         let r = self.agents_rect();
         let head = self.px(64.0);
-        Rect::new(r.x, r.y + head, self.px(380.0).min(r.w / 2), r.h - head)
+        Rect::new(r.x, r.y + head, self.px(360.0).min(r.w / 2), r.h - head)
     }
 
     fn agents_dirty(&mut self) {
@@ -821,8 +855,11 @@ impl Ui {
         if !r.contains(x, y) {
             return self.close_agents();
         }
+        if let Some(v) = &mut self.agent_view {
+            v.focused = true;
+        }
         let hit = self.agent_view.as_ref().and_then(|v| v.hits.iter().find(|h| h.0.contains(x, y)).copied());
-        let Some((rect, hit)) = hit else { return };
+        let Some((rect, hit)) = hit else { return self.agents_dirty() };
         match hit {
             Hit::Field => {
                 if let Some(v) = &mut self.agent_view {

@@ -88,7 +88,7 @@ impl Ui {
         if let Some(i) = self.agent_hit_at(x, y) {
             return Some(Hot::Agent(i));
         }
-        if self.agent_view.is_some() {
+        if self.agent_view.is_some() && self.agents_rect().contains(x, y) {
             return None;
         }
         if let Some(h) = self.settings_hit_at(x, y) {

@@ -1634,7 +1634,10 @@ impl Ui {
     /// Right mouse button: the menu for the commit row or the sidebar ref
     /// under the pointer.
     pub fn right_click(&mut self, x: i32, y: i32) {
-        if self.dialog.is_some() || self.settings_view.is_some() || self.agent_view.is_some() {
+        if self.dialog.is_some()
+            || self.settings_view.is_some()
+            || (self.agent_view.is_some() && self.agents_rect().contains(x, y))
+        {
             return;
         }
         self.close_menu();
