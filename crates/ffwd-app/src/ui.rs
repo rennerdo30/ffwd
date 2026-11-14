@@ -9165,6 +9165,8 @@ mod tests {
         let sinks: SinkFactory = Arc::new(|_| Arc::new(|_| {}));
         let mut ui = Ui::new(te, f, empty.clone(), empty, Some((1, dir.clone())), sinks, 1400, 900, 1.0);
         let mut screen = vec![0u32; 1400 * 900];
+        // The icon bar is the default.
+        assert_eq!(ui.side_style(), SideStyle::Bar);
         for style in SideStyle::KEYS {
             ui.set_side_style(style);
             ui.paint(&mut Canvas::new(&mut screen, 1400, 900), true);

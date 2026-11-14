@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- **Sidebar, rebuilt:** a dock of tiles for Changes, History, Files, Activity, Reflog and Agents, each with a live figure; branches in their graph lane's colour with ahead/behind chips, fading ages and stale branches set back.
+- **Sidebar, rebuilt:** Changes, History, Files, Activity, Reflog and Agents in a bar of icons under the card, each with a live figure (Settings → Appearance → Views also offers a rail, tabs over the content or a list); branches in their graph lane's colour with ahead/behind chips, fading ages and stale branches set back.
 - **Light theme:** Settings → Appearance → Theme: System (follows your computer, also when it changes), Dark or Light.
 - **Pane borders move:** drag any border between panes (sidebar, history and details, the diff, Local Changes, Files, agents); double click resets it; sizes are kept.
 - **Sidebar:** a card at the top says where you are: branch, ahead/behind or in sync, upstream, changed files or a stopped merge or rebase. Branches show their age, worktrees their branch, and empty sections stay out of the way.

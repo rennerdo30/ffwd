@@ -22,6 +22,8 @@ pub enum Glyph {
     Checkout,
     Copy,
     Patch,
+    /// The working tree's changes: plus, slash, minus.
+    Changes,
     Save,
     Edit,
     Trash,
@@ -172,6 +174,13 @@ impl Ui {
                 } else {
                     line(cv, &[(-0.35, 0.55), (0.1, 0.55)]);
                 }
+            }
+            Glyph::Changes => {
+                // Plus, a slash, minus: what changed.
+                line(cv, &[(-0.95, -0.45), (-0.05, -0.45)]);
+                line(cv, &[(-0.5, -0.9), (-0.5, 0.0)]);
+                line(cv, &[(0.75, -0.95), (-0.75, 0.95)]);
+                line(cv, &[(0.05, 0.5), (0.95, 0.5)]);
             }
             Glyph::Save => {
                 arrow(cv, 0.0, -0.9, 0.0, 0.35);

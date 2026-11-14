@@ -63,11 +63,12 @@ impl SideStyle {
     pub const KEYS: [&'static str; 4] = ["rail", "tabs", "list", "bar"];
 
     pub fn from_setting(s: Option<&str>) -> SideStyle {
+        // The icon bar is the default (owner, 2026-11-14).
         match s {
+            Some("rail") => SideStyle::Rail,
             Some("tabs") => SideStyle::Tabs,
             Some("list") => SideStyle::List,
-            Some("bar") => SideStyle::Bar,
-            _ => SideStyle::Rail,
+            _ => SideStyle::Bar,
         }
     }
 }
@@ -239,14 +240,14 @@ impl Ui {
         let changes = match self.r.status {
             Some(s) if s.conflicted > 0 => {
                 let n = s.conflicted as usize;
-                loud("changes", "Changes", Glyph::Edit, format!("{} conflicts", fmt::num(n)), n, DEL())
+                loud("changes", "Changes", Glyph::Changes, format!("{} conflicts", fmt::num(n)), n, DEL())
             }
             Some(s) if s.total() > 0 => {
                 let n = s.total() as usize;
-                loud("changes", "Changes", Glyph::Edit, format!("{} changed", fmt::num(n)), n, MOD())
+                loud("changes", "Changes", Glyph::Changes, format!("{} changed", fmt::num(n)), n, MOD())
             }
-            Some(_) => calm("changes", "Changes", Glyph::Edit, "clean"),
-            None => calm("changes", "Changes", Glyph::Edit, "…"),
+            Some(_) => calm("changes", "Changes", Glyph::Changes, "clean"),
+            None => calm("changes", "Changes", Glyph::Changes, "…"),
         };
         let n = self.r.commits.len();
         let history = if self.r.log_done { format!("{} commits", fmt::num(n)) } else { format!("{}…", fmt::num(n)) };
@@ -520,8 +521,9 @@ impl Ui {
             } else if hot {
                 cv.fill_round(r, self.pf(7.0), BG_HOVER());
             }
-            let cx = r.x as f32 + r.w as f32 / 2.0;
             let cy = r.y as f32 + r.h as f32 / 2.0;
+            // With a count, the icon steps left so the badge reads beside it.
+            let cx = r.x as f32 + r.w as f32 / 2.0 - if v.alert { self.pf(7.5) } else { 0.0 };
             let gc = if on {
                 ACCENT_FG()
             } else if hot {
@@ -531,7 +533,8 @@ impl Ui {
             };
             self.glyph(cv, v.glyph, cx, cy, self.pf(6.5), gc);
             if v.alert {
-                cv.fill_circle(cx + self.pf(8.0), cy - self.pf(7.0), self.pf(3.5), v.color);
+                let right = (cx + self.pf(9.5) + self.bar_badge_w(v)).min(r.right() as f32 - self.pf(1.0));
+                self.view_badge(cv, right, cy, v);
             }
         }
         // The caption: what the hovered (else the open) view is and holds.
@@ -551,6 +554,12 @@ impl Ui {
                 bar.right() as f32 - end - self.pf(8.0),
             );
         }
+    }
+
+    /// A count badge's width (see `view_badge`).
+    fn bar_badge_w(&mut self, v: &View) -> f32 {
+        let fs = self.pf(10.0);
+        (self.te.measure(self.f.semi, fs, &v.count) + self.pf(9.0)).max(self.pf(15.0))
     }
 
     /// Tabs: the views over the content, right of the sidebar.
