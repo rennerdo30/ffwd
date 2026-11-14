@@ -165,55 +165,68 @@ pub fn find_program(program: &str) -> Option<PathBuf> {
     None
 }
 
-/// The command line `start` gets on Windows: every piece quoted. Refuses
-/// quotes and `%` (cmd.exe would read them).
-pub fn console_line(title: &str, l: &Launch, program: &str) -> Result<String, String> {
-    let mut v = vec![format!("/c start \"{}\" /wait", title.replace(['"', '%'], ""))];
-    for a in std::iter::once(program).chain(l.args.iter().map(String::as_str)) {
-        if a.contains(['"', '%', '\n', '\r']) {
-            return Err(format!("cannot pass {a:?} to a terminal window"));
-        }
-        v.push(format!("\"{a}\""));
+/// One argument quoted the way Windows programs split their command line
+/// (CommandLineToArgvW rules): quotes around, backslashes before a quote
+/// doubled, quotes escaped.
+pub fn win_quote(a: &str) -> String {
+    if !a.is_empty() && !a.contains([' ', '\t', '\n', '\x0b', '"']) {
+        return a.to_string();
     }
-    Ok(v.join(" "))
+    let mut out = String::from('"');
+    let mut slashes = 0;
+    for c in a.chars() {
+        match c {
+            '\\' => slashes += 1,
+            '"' => {
+                out.extend(std::iter::repeat_n('\\', slashes * 2 + 1));
+                out.push('"');
+                slashes = 0;
+                continue;
+            }
+            _ => {}
+        }
+        if c != '\\' {
+            out.extend(std::iter::repeat_n('\\', slashes));
+            slashes = 0;
+            out.push(c);
+        }
+    }
+    out.extend(std::iter::repeat_n('\\', slashes * 2));
+    out.push('"');
+    out
 }
 
 /// Runs `l` in a terminal window of its own and waits until the window
 /// closes or a cancel (FF-23). No time limit: the user drives it.
-/// Windows: a new console (`start /wait`); Linux: `$TERMINAL` or
-/// `x-terminal-emulator` with `-e`.
+/// Windows: a new console (`CreateProcessW`, no inherited handles, so the
+/// program gets the console's own keyboard and screen); Linux: `$TERMINAL`
+/// or `x-terminal-emulator` with `-e`.
 pub fn run_console(l: &Launch, title: &str, cancel: &AtomicBool) -> Exit {
-    let path_var = l.env.iter().find(|(k, _)| k.eq_ignore_ascii_case("PATH")).map(|(_, v)| v.as_str());
-    let program = resolve_program(&l.program, if l.clear_env { path_var } else { None });
+    run_console_shown(l, title, cancel, true)
+}
+
+/// [`run_console`]; `show = false` keeps the console hidden (tests only:
+/// nothing may appear on the screen of the PC that runs them).
+pub fn run_console_shown(l: &Launch, title: &str, cancel: &AtomicBool, show: bool) -> Exit {
     #[cfg(windows)]
-    let mut cmd = {
-        use std::os::windows::process::CommandExt;
-        let line = match console_line(title, l, &program) {
-            Ok(s) => s,
-            Err(e) => return Exit::SpawnFailed(e),
-        };
-        let mut c = Command::new("cmd.exe");
-        c.raw_arg(line);
-        hidden(&mut c);
-        c
-    };
+    {
+        win_console::run(l, title, cancel, show)
+    }
     #[cfg(target_os = "macos")]
     {
-        let _ = (title, cancel, &program);
+        let _ = (l, title, cancel, show);
         Exit::SpawnFailed("a terminal window for agents is not available on macOS yet".into())
     }
     #[cfg(all(unix, not(target_os = "macos")))]
-    let mut cmd = {
-        let _ = title;
+    {
+        let _ = (title, show);
+        let path_var = l.env.iter().find(|(k, _)| k.eq_ignore_ascii_case("PATH")).map(|(_, v)| v.as_str());
+        let program = resolve_program(&l.program, if l.clear_env { path_var } else { None });
         let term =
             std::env::var("TERMINAL").ok().filter(|t| !t.is_empty()).unwrap_or_else(|| "x-terminal-emulator".into());
-        let mut c = Command::new(term);
-        c.arg("-e").arg(&program).args(&l.args);
-        c
-    };
-    #[cfg(not(target_os = "macos"))]
-    {
-        cmd.current_dir(&l.cwd).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        let mut cmd = Command::new(term);
+        cmd.arg("-e").arg(&program).args(&l.args);
+        cmd.current_dir(&l.cwd);
         if l.clear_env {
             cmd.env_clear();
         }
@@ -239,6 +252,118 @@ pub fn run_console(l: &Launch, title: &str, cancel: &AtomicBool) -> Exit {
             }
             std::thread::sleep(Duration::from_millis(200));
         };
+        if let Ok(mut v) = RUNNING.lock() {
+            v.retain(|p| *p != pid);
+        }
+        exit
+    }
+}
+
+#[cfg(windows)]
+mod win_console {
+    use super::*;
+    use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
+    use windows_sys::Win32::System::Threading::{
+        CREATE_NEW_CONSOLE, CREATE_UNICODE_ENVIRONMENT, CreateProcessW, GetExitCodeProcess, PROCESS_INFORMATION,
+        STARTF_USESHOWWINDOW, STARTUPINFOW, WaitForSingleObject,
+    };
+
+    fn wide(s: &str) -> Vec<u16> {
+        s.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    /// The environment block: this process's variables (unless
+    /// `clear_env`) with `l.env` on top, `K=V\0…\0\0`.
+    fn env_block(l: &Launch) -> Vec<u16> {
+        let mut vars: Vec<(String, String)> = if l.clear_env {
+            Vec::new()
+        } else {
+            std::env::vars_os()
+                .map(|(k, v)| (k.to_string_lossy().into_owned(), v.to_string_lossy().into_owned()))
+                .collect()
+        };
+        for (k, v) in &l.env {
+            vars.retain(|(x, _)| !x.eq_ignore_ascii_case(k));
+            vars.push((k.clone(), v.clone()));
+        }
+        vars.sort_by_key(|(k, _)| k.to_ascii_uppercase());
+        let mut b = Vec::new();
+        for (k, v) in vars {
+            b.extend(format!("{k}={v}").encode_utf16());
+            b.push(0);
+        }
+        b.push(0);
+        b
+    }
+
+    pub(super) fn run(l: &Launch, title: &str, cancel: &AtomicBool, show: bool) -> Exit {
+        let path_var = l.env.iter().find(|(k, _)| k.eq_ignore_ascii_case("PATH")).map(|(_, v)| v.as_str());
+        let mut program = resolve_program(&l.program, if l.clear_env { path_var } else { None });
+        let mut args = l.args.clone();
+        // A .cmd or .bat shim (an npm tool) runs through cmd.exe, inside
+        // the new console.
+        let lower = program.to_ascii_lowercase();
+        if lower.ends_with(".cmd") || lower.ends_with(".bat") {
+            if std::iter::once(&program).chain(&args).any(|a| a.contains(['%', '"', '&', '|', '<', '>', '^'])) {
+                return Exit::SpawnFailed(format!("cannot pass the arguments of {program} through cmd.exe"));
+            }
+            args.insert(0, program.clone());
+            args.insert(0, "/c".into());
+            program = "cmd.exe".into();
+        }
+        let line: Vec<String> = std::iter::once(&program).chain(&args).map(|a| win_quote(a)).collect();
+        let mut cmdline = wide(&line.join(" "));
+        let mut title_w = wide(title);
+        let cwd = wide(&l.cwd.to_string_lossy());
+        let env = env_block(l);
+        let mut si: STARTUPINFOW = unsafe { std::mem::zeroed() };
+        si.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
+        si.lpTitle = title_w.as_mut_ptr();
+        if !show {
+            si.dwFlags = STARTF_USESHOWWINDOW;
+            si.wShowWindow = 0; // SW_HIDE
+        }
+        let mut pi: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
+        // No inherited handles and no STARTF_USESTDHANDLES: the program's
+        // standard handles are the new console's, never ffwd's (which have
+        // none, being a window app) or a NUL file.
+        let ok = unsafe {
+            CreateProcessW(
+                std::ptr::null(),
+                cmdline.as_mut_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+                0,
+                CREATE_NEW_CONSOLE | CREATE_UNICODE_ENVIRONMENT,
+                env.as_ptr().cast(),
+                if l.cwd.as_os_str().is_empty() { std::ptr::null() } else { cwd.as_ptr() },
+                &si,
+                &mut pi,
+            )
+        };
+        if ok == 0 {
+            return Exit::SpawnFailed(format!("{}: {}", l.program, std::io::Error::last_os_error()));
+        }
+        let pid = pi.dwProcessId;
+        if let Ok(mut v) = RUNNING.lock() {
+            v.push(pid);
+        }
+        let exit = loop {
+            if unsafe { WaitForSingleObject(pi.hProcess, 200) } == WAIT_OBJECT_0 {
+                let mut code = 0u32;
+                let got = unsafe { GetExitCodeProcess(pi.hProcess, &mut code) };
+                break if got != 0 { Exit::Code(code as i32) } else { Exit::Signal };
+            }
+            if cancel.load(Ordering::Relaxed) {
+                kill_tree(pid, true);
+                unsafe { WaitForSingleObject(pi.hProcess, 5000) };
+                break Exit::Cancelled;
+            }
+        };
+        unsafe {
+            CloseHandle(pi.hThread);
+            CloseHandle(pi.hProcess);
+        }
         if let Ok(mut v) = RUNNING.lock() {
             v.retain(|p| *p != pid);
         }
@@ -389,16 +514,70 @@ pub fn run(l: &Launch, timeout: Duration, cancel: &AtomicBool, mut on_lines: imp
 #[cfg(test)]
 mod tests {
 
+    /// The real thing, hidden: FFWD_TEST_SESSION_LOG names a terminal
+    /// session's log.txt; its logged command (the sandbox and the tool)
+    /// must still run after 8 s. Run by hand only.
     #[test]
-    fn console_line_quotes_every_piece() {
-        let l =
-            Launch { program: "wsl.exe".into(), args: vec!["--cd".into(), "/mnt/e/a b".into()], ..Launch::default() };
-        assert_eq!(
-            console_line("ffwd · x", &l, "wsl.exe").unwrap(),
-            r#"/c start "ffwd · x" /wait "wsl.exe" "--cd" "/mnt/e/a b""#
-        );
-        let bad = Launch { args: vec!["50%".into()], ..l.clone() };
-        assert!(console_line("t", &bad, "wsl.exe").is_err(), "cmd.exe would expand %");
+    #[ignore]
+    #[cfg(windows)]
+    fn logged_session_stays_open() {
+        let Ok(log) = std::env::var("FFWD_TEST_SESSION_LOG") else { return };
+        let text = std::fs::read_to_string(&log).unwrap();
+        let line = text.lines().find_map(|l| l.strip_prefix("» wsl.exe ")).expect("a logged wsl.exe command");
+        let args = crate::config::split_command(line).unwrap();
+        let l = Launch { program: "wsl.exe".into(), args, cwd: std::env::temp_dir(), ..Launch::default() };
+        let cancel = std::sync::Arc::new(AtomicBool::new(false));
+        let c2 = cancel.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_secs(8));
+            c2.store(true, Ordering::Relaxed);
+        });
+        let t = Instant::now();
+        let exit = run_console_shown(&l, "ffwd test", &cancel, false);
+        assert_eq!(exit, Exit::Cancelled, "ended by itself after {:?}", t.elapsed());
+    }
+
+    #[test]
+    fn windows_arguments_are_quoted_like_argv() {
+        assert_eq!(win_quote("plain"), "plain");
+        assert_eq!(win_quote("a b"), "\"a b\"");
+        assert_eq!(win_quote(""), "\"\"");
+        assert_eq!(win_quote(r#"say "hi""#), r#""say \"hi\"""#);
+        assert_eq!(win_quote(r"C:\dir with space\"), r#""C:\dir with space\\""#);
+        assert_eq!(win_quote("50%"), "50%", "no cmd.exe in between: % is just a character");
+    }
+
+    /// A terminal session's program gets a real console (FF-23), never
+    /// ffwd's missing or NUL handles. Hidden: nothing appears on screen.
+    /// Run by hand on Windows with WSL: `cargo test -p ffwd-agent --
+    /// --ignored console_child`, with FFWD_TEST_WSL_DISTRO set.
+    #[test]
+    #[ignore]
+    #[cfg(windows)]
+    fn console_child_gets_a_terminal() {
+        let distro = std::env::var("FFWD_TEST_WSL_DISTRO").unwrap_or_default();
+        let dir = std::env::temp_dir().join(format!("ffwd-console-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut args = Vec::new();
+        if !distro.is_empty() {
+            args.extend(["-d".to_string(), distro]);
+        }
+        let probe = "r=notty; [ -t 0 ] && [ -t 1 ] && r=tty; echo $r > out.txt; (exec 3</dev/tty) 2>/dev/null && echo devtty >> out.txt";
+        args.extend([
+            "--cd".to_string(),
+            dir.to_string_lossy().into_owned(),
+            "-e".into(),
+            "sh".into(),
+            "-c".into(),
+            probe.into(),
+        ]);
+        let l = Launch { program: "wsl.exe".into(), args, cwd: dir.clone(), ..Launch::default() };
+        let exit = run_console_shown(&l, "ffwd test", &AtomicBool::new(false), false);
+        assert_eq!(exit, Exit::Code(0));
+        let out = std::fs::read_to_string(dir.join("out.txt")).unwrap_or_default();
+        assert_eq!(out.split_whitespace().collect::<Vec<_>>(), ["tty", "devtty"], "{out}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     use super::*;

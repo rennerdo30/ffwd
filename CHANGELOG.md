@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Agents (experimental), fix:** terminal sessions on Windows still closed at once: the tool got an empty input from the way its window was started, and quit. ffwd now creates the window's console directly, so the tool gets the console's own keyboard and screen (checked on Windows with WSL: the sandboxed session stays open).
 ## 0.2.0-beta.6
 
 A fix release for the experimental agents' terminal sessions.
