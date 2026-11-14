@@ -474,6 +474,7 @@ name = "ffwd-agent"
 version = "0.2.0-beta.6"
 dependencies = [
  "ffwd-core",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
