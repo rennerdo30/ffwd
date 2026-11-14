@@ -605,6 +605,11 @@ pub struct Ui {
     pub diff_max: bool,
     /// Installed WSL distributions, read when Settings opens (Windows).
     pub wsl_distros: Vec<String>,
+    /// Minutes between automatic fetches (0: off), read by the clock
+    /// thread (FF-39).
+    pub(super) auto_fetch_minutes: Arc<std::sync::atomic::AtomicU64>,
+    /// The last automatic fetch failed (its notice shows once).
+    auto_fetch_failed: bool,
     pub diff_tab: usize,
     /// Code text size in points (diffs, file viewer; FF-41).
     pub code_pt: u8,
@@ -764,6 +769,8 @@ impl Ui {
             code_left: 0.0,
             diff_max: false,
             wsl_distros: Vec::new(),
+            auto_fetch_minutes: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            auto_fetch_failed: false,
             diff_tab: diff_view::view_from(&settings).1 as usize,
             code_pt: diff_view::code_size_from(&settings),
             diff_opts: diff_view::opts_from(&settings).1,
@@ -1075,6 +1082,9 @@ impl Ui {
         if let Msg::Activity(e) = m {
             return self.on_activity(*e);
         }
+        if let Msg::AutoFetchTick = m {
+            return self.auto_fetch_due();
+        }
         if let Msg::WslDistros(list) = m {
             self.wsl_distros = list;
             if self.settings_view.is_some() {
@@ -1182,6 +1192,14 @@ impl Ui {
     // ------------------------------------------------------ top bar actions
 
     pub(super) fn start_op(&mut self, op: Op) {
+        // Fetch while the automatic one runs: it becomes the user's (its
+        // result shows), nothing restarts.
+        if op == Op::Fetch && self.r.op == Some(Op::AutoFetch) {
+            self.r.op = Some(Op::Fetch);
+            self.set_notice("Fetching… (click Fetch again to cancel)".into());
+            self.damage.rects.push(self.lay.top);
+            return;
+        }
         if let Some(running) = self.r.op {
             // The running operation's own button cancels it.
             if running.button() == op.button() {
@@ -1198,7 +1216,9 @@ impl Ui {
         self.r.op = Some(op);
         let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
         self.r.op_cancel = Some(cancel.clone());
-        self.set_notice(format!("{}… (click {} again to cancel)", op.verb(), op.button().name()));
+        if op != Op::AutoFetch {
+            self.set_notice(format!("{}… (click {} again to cancel)", op.verb(), op.button().name()));
+        }
         self.damage.rects.push(self.lay.top);
         crate::work::run_op(git, op, cancel, &(self.sinks)(id));
     }
@@ -1484,8 +1504,12 @@ impl Ui {
             }
             Msg::OpDone(out) => {
                 self.log_sync(&out);
+                let quiet = self.r.op == Some(Op::AutoFetch);
                 self.r.op = None;
                 self.r.op_cancel = None;
+                if quiet {
+                    return self.auto_fetch_done(&out);
+                }
                 self.set_notice(format!("{} ({:.1} s)", out.summary, out.ms / 1000.0));
                 self.damage.rects.push(self.lay.top);
                 if out.op == Op::Pull && !out.ok && ffwd_core::ops::diverged(&out.output) {
@@ -1504,7 +1528,7 @@ impl Ui {
                 }
             }
             // Handled in on_tab_msg; repeated here so a stray one is harmless.
-            Msg::Repos(_) | Msg::WslDistros(_) => {}
+            Msg::Repos(_) | Msg::WslDistros(_) | Msg::AutoFetchTick => {}
             Msg::Agent(e) => self.on_agent_event(e),
             Msg::RepoSettings(p, s) => self.on_repo_settings(p, s),
             Msg::Changes(r) => self.on_changes(r),
@@ -2491,6 +2515,67 @@ impl Ui {
                 danger: false,
             },
         ]
+    }
+
+    /// Minutes between automatic fetches (setting `remotes.auto_fetch`,
+    /// default 10; 0 or "off" turns it off; FF-39).
+    pub(super) fn auto_fetch_setting(&self) -> u64 {
+        match self.settings.get("remotes.auto_fetch") {
+            None => 10,
+            Some(v) => v.trim().parse().unwrap_or(0).min(24 * 60),
+        }
+    }
+
+    /// Starts the clock thread once. It sleeps the whole interval, so an
+    /// idle window gets no wakeups in between (rule 5); never in tests.
+    pub(super) fn start_auto_fetch_clock(&mut self) {
+        use std::sync::atomic::Ordering;
+        self.auto_fetch_minutes.store(self.auto_fetch_setting(), Ordering::Relaxed);
+        if cfg!(test) || self.settings.get("hosting.enabled") == Some("false") {
+            return;
+        }
+        let minutes = self.auto_fetch_minutes.clone();
+        let sink = (self.sinks)(0);
+        let _ = std::thread::Builder::new().name("auto-fetch".into()).spawn(move || {
+            loop {
+                let m = minutes.load(Ordering::Relaxed);
+                std::thread::sleep(std::time::Duration::from_secs(if m == 0 { 60 } else { m * 60 }));
+                if m > 0 && minutes.load(Ordering::Relaxed) > 0 {
+                    sink(Msg::AutoFetchTick);
+                }
+            }
+        });
+    }
+
+    /// The clock says a fetch is due: fetch the current repository when
+    /// it has a remote and nothing else runs.
+    pub(super) fn auto_fetch_due(&mut self) {
+        let busy = self.r.op.is_some() || self.dialog.is_some() || self.r.rebase.is_some();
+        if busy || self.auto_fetch_setting() == 0 || self.r.git.is_none() || self.r.refs.remotes.is_empty() {
+            return;
+        }
+        self.start_op(Op::AutoFetch);
+    }
+
+    /// An automatic fetch ended: news reload the repository and say so; a
+    /// failure shows once until a fetch works again.
+    fn auto_fetch_done(&mut self, out: &ffwd_core::ops::Outcome) {
+        self.damage.rects.push(self.lay.top);
+        if !out.ok {
+            if !out.cancelled && !self.auto_fetch_failed {
+                self.auto_fetch_failed = true;
+                self.set_notice(format!(
+                    "Automatic fetch: {} (it tries again later; Settings turns it off)",
+                    out.summary
+                ));
+            }
+            return;
+        }
+        self.auto_fetch_failed = false;
+        if out.summary != "Fetched: everything is up to date" {
+            self.set_notice(format!("{} (automatic fetch)", out.summary));
+            self.reload_current();
+        }
     }
 
     /// Shows only the current branch's history, or all again.
@@ -6540,6 +6625,91 @@ mod tests {
         assert_eq!(ui.settings.get("history.stashes"), Some("false"));
         pump(&mut ui, "history without stashes", &|u| u.r.log_done && u.r.commits.len() == 2);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Automatic fetch (FF-39): when the clock says it is due, the open
+    /// repository is fetched without a notice; news show and reload the
+    /// history; the setting turns it off; a Fetch click while it runs
+    /// takes it over.
+    #[test]
+    fn automatic_fetch_is_quiet_until_news() {
+        use std::sync::mpsc;
+        let mut te = TextEngine::new();
+        let Some(f) = load_fonts(&mut te) else { return };
+        let base = std::env::temp_dir().join(format!("ffwd-ui-autofetch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let top = Git { root: base.clone() };
+        top.output(&["init", "-q", "--bare", "-b", "main", "hub.git"]).unwrap();
+        let mk = |name: &str| {
+            top.output(&["clone", "-q", "hub.git", name]).unwrap();
+            let g = Git { root: base.join(name) };
+            for a in [
+                &["config", "user.name", "ffwd test"][..],
+                &["config", "user.email", "test@example.invalid"],
+                &["config", "commit.gpgsign", "false"],
+            ] {
+                g.output(a).unwrap();
+            }
+            g
+        };
+        let other = mk("other");
+        std::fs::write(other.root.join("a.txt"), "1").unwrap();
+        other.output(&["add", "."]).unwrap();
+        other.output(&["commit", "-q", "-m", "first"]).unwrap();
+        other.output(&["push", "-q", "origin", "HEAD:refs/heads/main"]).unwrap();
+        let mine = mk("mine");
+        let (tx, rx) = mpsc::channel::<(u64, Msg)>();
+        let tx = Arc::new(std::sync::Mutex::new(tx));
+        let sinks: SinkFactory = Arc::new(move |id| {
+            let tx = tx.clone();
+            Arc::new(move |m| {
+                if let Ok(t) = tx.lock() {
+                    let _ = t.send((id, m));
+                }
+            })
+        });
+        crate::work::start(mine.root.clone(), &sinks(1));
+        let empty = crate::settings::Settings::parse("");
+        let mut ui = Ui::new(te, f, empty.clone(), empty, Some((1, mine.root.clone())), sinks, 1280, 800, 1.0);
+        let pump = |ui: &mut Ui, what: &str, done: &dyn Fn(&Ui) -> bool| {
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while !done(ui) {
+                let left = until.saturating_duration_since(std::time::Instant::now());
+                assert!(!left.is_zero(), "timed out waiting for {what}; notice: {:?}", ui.notice);
+                if let Ok((id, m)) = rx.recv_timeout(left) {
+                    ui.on_tab_msg(id, m);
+                }
+            }
+        };
+        pump(&mut ui, "history", &|u| u.r.log_done && !u.r.refs.remotes.is_empty() && u.r.commits.len() == 1);
+        assert_eq!(ui.auto_fetch_setting(), 10, "on by default, every 10 minutes");
+        // Nothing new: no notice at all.
+        ui.notice = None;
+        ui.on_tab_msg(0, Msg::AutoFetchTick);
+        assert_eq!(ui.r.op, Some(Op::AutoFetch));
+        assert!(ui.notice.is_none(), "it starts quietly");
+        pump(&mut ui, "the quiet fetch", &|u| u.r.op.is_none());
+        assert!(ui.notice.is_none(), "nothing new, nothing said: {:?}", ui.notice);
+        // News: they show and the history reloads.
+        std::fs::write(other.root.join("a.txt"), "2").unwrap();
+        other.output(&["commit", "-qam", "second"]).unwrap();
+        other.output(&["push", "-q", "origin", "HEAD:refs/heads/main"]).unwrap();
+        ui.on_tab_msg(0, Msg::AutoFetchTick);
+        pump(&mut ui, "the news", &|u| u.notice.as_deref().is_some_and(|n| n.ends_with("(automatic fetch)")));
+        pump(&mut ui, "the reload", &|u| u.r.log_done && u.r.commits.len() == 2);
+        // A Fetch click while it runs takes it over: its result shows.
+        ui.on_tab_msg(0, Msg::AutoFetchTick);
+        ui.start_op(Op::Fetch);
+        assert_eq!(ui.r.op, Some(Op::Fetch));
+        pump(&mut ui, "the user's fetch", &|u| {
+            u.r.op.is_none() && u.notice.as_deref().is_some_and(|n| n.starts_with("Fetched: everything is up to date"))
+        });
+        // Off: the clock's tick does nothing.
+        ui.settings.set_string("remotes.auto_fetch", "0");
+        ui.on_tab_msg(0, Msg::AutoFetchTick);
+        assert!(ui.r.op.is_none());
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     /// Image diffs (FF-41): a changed PNG shows its old and new version

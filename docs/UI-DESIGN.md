@@ -90,6 +90,8 @@ The capture above is the real PoC UI. `ffwd --snapshot` rendered it offscreen fr
 
 ## Remotes and sync (FF-39)
 
+- **Automatic fetch:** every 10 minutes the open repository fetches all remotes (Settings → General → **Fetch automatically**: Off, 5, 10 or 30 min; `remotes.auto_fetch` in minutes). The Fetch button shows "Fetching…" meanwhile; nothing else shows unless refs changed (then the status bar says so and the history reloads) or it failed (said once until a fetch works again). It never asks for credentials. Clicking Fetch while it runs takes it over. The clock thread sleeps the whole interval: an idle window gets no wakeups in between.
+
 - **Remote menu** (right click on a remote in the sidebar): Fetch, Test connection, Edit URL…, Rename…, Remove…, Add remote…, Copy URL.
 - **Remotes header menu:** Add remote…, Fetch all remotes. The header always shows; configured remotes show before their first fetch.
 - **Add remote:** two steps.
