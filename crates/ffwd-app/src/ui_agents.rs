@@ -1832,7 +1832,10 @@ fn open_path(p: PathBuf) {
         #[cfg(windows)]
         let _ = {
             use std::os::windows::process::CommandExt;
-            std::process::Command::new("explorer").arg(&p).creation_flags(0x0800_0000).spawn()
+            std::process::Command::new("explorer")
+                .arg(crate::platform::shell_path(&p))
+                .creation_flags(0x0800_0000)
+                .spawn()
         };
         #[cfg(target_os = "macos")]
         let _ = std::process::Command::new("open").arg(&p).spawn();

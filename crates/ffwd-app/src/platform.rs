@@ -312,12 +312,32 @@ pub fn dark_title_bar(hwnd: isize, dark: bool) {
 #[cfg(not(windows))]
 pub fn dark_title_bar(_hwnd: isize, _dark: bool) {}
 
+/// The path as Windows Explorer accepts it. Git reports the repository
+/// root with forward slashes (`E:/repo`), the file part is joined on, and
+/// Explorer silently opens Documents for any path it cannot parse, mixed
+/// slashes included. A verbatim prefix (`\\?\`) goes for the same reason.
+/// Other systems get the path unchanged.
+pub fn shell_path(p: &std::path::Path) -> std::path::PathBuf {
+    if !cfg!(windows) {
+        return p.to_path_buf();
+    }
+    let s = p.to_string_lossy().replace('/', r"\");
+    let s = if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{rest}")
+    } else if let Some(rest) = s.strip_prefix(r"\\?\") {
+        rest.to_string()
+    } else {
+        s
+    };
+    std::path::PathBuf::from(s)
+}
+
 /// Opens `dir` in the file manager. Runs on its own thread; the path is
 /// passed as one argument, never through a shell.
 pub fn open_folder(dir: std::path::PathBuf) {
     std::thread::spawn(move || {
         #[cfg(windows)]
-        let _ = std::process::Command::new("explorer.exe").arg(&dir).spawn();
+        let _ = std::process::Command::new("explorer.exe").arg(shell_path(&dir)).spawn();
         #[cfg(target_os = "macos")]
         let _ = std::process::Command::new("open").arg(&dir).spawn();
         #[cfg(not(any(windows, target_os = "macos")))]
@@ -379,7 +399,7 @@ pub fn open_path(p: std::path::PathBuf) {
         #[cfg(windows)]
         {
             // explorer.exe opens a file with its associated app.
-            let _ = std::process::Command::new("explorer.exe").arg(&p).spawn();
+            let _ = std::process::Command::new("explorer.exe").arg(shell_path(&p)).spawn();
         }
         #[cfg(target_os = "macos")]
         let _ = std::process::Command::new("open").arg(&p).spawn();
@@ -394,7 +414,7 @@ pub fn show_file(p: std::path::PathBuf) {
         #[cfg(windows)]
         {
             let mut arg = std::ffi::OsString::from("/select,");
-            arg.push(p.as_os_str());
+            arg.push(shell_path(&p).as_os_str());
             let _ = std::process::Command::new("explorer.exe").arg(arg).spawn();
         }
         #[cfg(target_os = "macos")]
@@ -415,5 +435,21 @@ mod wsl_tests {
         assert_eq!(super::parse_wsl_list(&utf16), ["Ubuntu-24.04", "Debian"]);
         assert_eq!(super::parse_wsl_list(b"Ubuntu\nkali-linux\n"), ["Ubuntu", "kali-linux"]);
         assert!(super::parse_wsl_list(b"").is_empty());
+    }
+
+    /// Explorer opens Documents for a path it cannot parse, so every path
+    /// handed to it uses backslashes only.
+    #[cfg(windows)]
+    #[test]
+    fn shell_paths_use_backslashes_only() {
+        use std::path::Path;
+        let joined = Path::new("E:/Development/repo").join("src/main.rs");
+        assert_eq!(super::shell_path(&joined), Path::new(r"E:\Development\repo\src\main.rs"));
+        assert_eq!(super::shell_path(Path::new(r"\\?\E:\repo\a b.txt")), Path::new(r"E:\repo\a b.txt"));
+        assert_eq!(
+            super::shell_path(Path::new(r"\\?\UNC\wsl.localhost\Ubuntu\x")),
+            Path::new(r"\\wsl.localhost\Ubuntu\x")
+        );
+        assert_eq!(super::shell_path(Path::new(r"\\wsl.localhost\Ubuntu\x")), Path::new(r"\\wsl.localhost\Ubuntu\x"));
     }
 }
