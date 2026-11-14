@@ -82,7 +82,7 @@ What a complete desktop Git client offers, grouped in 18 areas, with ffwd's stat
 | Change the tracking branch; track a remote branch (stash and re-apply) | Partial | Branch menu: *Set upstream…* / *Change upstream…* (checks the remote branch exists, then `git branch --set-upstream-to`). Stash and re-apply come with FF-38 |
 | Fast-forward a branch without checking it out; several at once | M2 | |
 | Select stale local branches | M2 | |
-| Tags: create (`Ctrl+Shift+G`), delete, push one or many | Partial | Create, delete, push one and delete on the remote are built; several at once come later |
+| Tags: create (`Ctrl+Shift+G`), delete, push one or many | **Built** | Create, delete, push and delete on the remote, one or several (pick them in the sidebar) |
 | Delete remote branches; create and delete remote repositories | M1 | |
 | Remember which sidebar items are expanded, per repository | **Built** | |
 
@@ -107,7 +107,7 @@ What a complete desktop Git client offers, grouped in 18 areas, with ffwd's stat
 
 | Feature | ffwd | Notes |
 |---|---|---|
-| Stash, apply, pop, drop (several), rename | Partial | Stash, apply, pop, drop and rename are built; dropping several at once comes later |
+| Stash, apply, pop, drop (several), rename | **Built** | Pick several stashes in the sidebar to drop them at once; each is kept as a backup |
 | Partial stash (selected files); snapshot to a stash | M1 | |
 | Stash and re-apply on pull, checkout and track | M1 | |
 | Separate sidebar section; recent stashes in a toolbar dropdown | Partial | The sidebar section is built |
@@ -121,7 +121,7 @@ What a complete desktop Git client offers, grouped in 18 areas, with ffwd's stat
 | Cancel a running operation | **Built** | The busy button (or the palette) cancels; git and every helper it started end (job object on Windows) |
 | Automatic fetch; prune on fetch | M1 | Fetch already prunes |
 | Ahead and behind badges on the toolbar | **Built** | |
-| Push several branches or tags; push to a branch of another name | Partial | Push any branch (with upstream) or tag from its menu; delete a branch or tag on the remote (asks, names the restore command); several at once and other names come later |
+| Push several branches or tags; push to a branch of another name | Partial | Push or delete on the remote one branch or tag from its menu, or several picked in the sidebar in one push (asks before deleting, names the restore commands); other names come later |
 | Set an upstream on the first push | **Built** | |
 | Multiple remotes; add, edit, remove; test the connection | **Built** | Add (URL, then a suggested name, then a fetch), edit URL, rename, remove (asks, names the way back), fetch one, test |
 | Filter branches in the Push, Pull and Track dropdowns | M1 | |

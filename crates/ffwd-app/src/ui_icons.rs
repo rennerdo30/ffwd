@@ -311,7 +311,10 @@ pub(super) fn for_act(act: &super::menu::MenuAct) -> Option<Glyph> {
             | R::StashDrop(_)
             | R::RemoteRemove(_)
             | R::DeleteRemoteTag(..)
-            | R::DeleteRemoteBranch(..) => Glyph::Trash,
+            | R::DeleteRemoteBranch(..)
+            | R::DeleteMany(..)
+            | R::DeleteRemoteMany(..)
+            | R::StashDropMany(_) => Glyph::Trash,
             R::CreateTag(..) => Glyph::Tag,
             R::Merge(..) => Glyph::Merge,
             R::Rebase(_) => Glyph::Rebase,
@@ -332,7 +335,7 @@ pub(super) fn for_act(act: &super::menu::MenuAct) -> Option<Glyph> {
                 _ => Glyph::Pull,
             },
             R::TakeSideAll(..) => Glyph::Check,
-            R::PushTag(..) | R::PushBranch(..) => Glyph::Push,
+            R::PushTag(..) | R::PushBranch(..) | R::PushMany(..) => Glyph::Push,
             R::ApplyPatch(..) => Glyph::Patch,
             R::SubUpdate(_) => Glyph::Fetch,
             R::SubAdd(..) => Glyph::Plus,
@@ -372,7 +375,8 @@ pub(super) fn for_act(act: &super::menu::MenuAct) -> Option<Glyph> {
         M::TabColor(_, Some(c)) => super::TAB_COLORS.get(*c as usize).map(|t| Glyph::Swatch(t.1)),
         M::TabColor(_, None) => Some(Glyph::Close),
         M::DiffShowWs(_) => Some(Glyph::Text),
-        M::CompareMark(_) => Some(Glyph::Check),
+        M::CompareMark(_) | M::SidePick(_) | M::SidePickAll(_) => Some(Glyph::Check),
+        M::SidePickClear => Some(Glyph::Close),
         M::Compare(..) => Some(Glyph::DiffTool),
         M::StageToggle(true) => Some(Glyph::Plus),
         M::StageToggle(false) => Some(Glyph::Undo),

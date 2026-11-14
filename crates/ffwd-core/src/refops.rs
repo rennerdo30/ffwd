@@ -208,6 +208,129 @@ pub fn delete_remote_branch(git: &Git, remote: &str, branch: &str) -> R {
     })
 }
 
+/// "2 branches and 3 tags".
+pub fn count_refs(branches: usize, tags: usize) -> String {
+    let n = |k: usize, one: &str, many: &str| format!("{k} {}", if k == 1 { one } else { many });
+    match (branches, tags) {
+        (0, t) => n(t, "tag", "tags"),
+        (b, 0) => n(b, "branch", "branches"),
+        (b, t) => format!("{} and {}", n(b, "branch", "branches"), n(t, "tag", "tags")),
+    }
+}
+
+fn tip12(t: &str) -> &str {
+    &t[..t.len().min(12)]
+}
+
+/// Pushes several branches (each gets its upstream) and tags to `remote`
+/// in one `git push` (FF-36).
+pub fn push_many(git: &Git, remote: &str, branches: &[String], tags: &[String]) -> R {
+    if branches.is_empty() && tags.is_empty() {
+        return Err(OpError::Failed("nothing selected to push".into()));
+    }
+    let mut args = vec!["push".to_string()];
+    if !branches.is_empty() {
+        args.push("--set-upstream".into());
+    }
+    args.push(remote.into());
+    args.extend(branches.iter().map(|b| format!("refs/heads/{b}:refs/heads/{b}")));
+    args.extend(tags.iter().map(|t| format!("refs/tags/{t}:refs/tags/{t}")));
+    let a: Vec<&str> = args.iter().map(String::as_str).collect();
+    run(git, &a)?;
+    Ok(format!("Pushed {} to {remote}", count_refs(branches.len(), tags.len())))
+}
+
+/// Deletes several local branches and tags (FF-36). Without `force`, a
+/// branch with commits on no other branch is kept and named. The message
+/// names the commands that restore what was deleted.
+pub fn delete_many(git: &Git, branches: &[String], tags: &[String], force: bool) -> R {
+    let mut restore = Vec::new();
+    let mut kept = Vec::new();
+    let mut failed = Vec::new();
+    let mut done = (0, 0);
+    for b in branches {
+        let tip = match run(git, &["rev-parse", "--verify", &format!("refs/heads/{b}")]) {
+            Ok(t) => t,
+            Err(e) => {
+                failed.push(format!("{b}: {e}"));
+                continue;
+            }
+        };
+        match delete_branch(git, b, force) {
+            Ok(_) => {
+                done.0 += 1;
+                restore.push(format!("git branch {b} {}", tip12(&tip)));
+            }
+            Err(OpError::NotMerged { branch, .. }) => kept.push(branch),
+            Err(e) => failed.push(format!("{b}: {e}")),
+        }
+    }
+    let mut tag_tips = Vec::new();
+    for t in tags {
+        match run(git, &["rev-parse", "--verify", &format!("refs/tags/{t}")]) {
+            Ok(tip) => tag_tips.push((t.as_str(), tip)),
+            Err(e) => failed.push(format!("{t}: {e}")),
+        }
+    }
+    if !tag_tips.is_empty() {
+        let mut args = vec!["tag", "-d"];
+        args.extend(tag_tips.iter().map(|(t, _)| *t));
+        match run(git, &args) {
+            Ok(_) => {
+                done.1 = tag_tips.len();
+                restore.extend(tag_tips.iter().map(|(t, tip)| format!("git tag {t} {}", tip12(tip))));
+            }
+            Err(e) => failed.push(e.to_string()),
+        }
+    }
+    if done == (0, 0) {
+        return Err(OpError::Failed(if kept.is_empty() {
+            failed.join("; ")
+        } else {
+            format!("nothing deleted: {} have commits on no other branch", kept.join(", "))
+        }));
+    }
+    let mut m = format!("Deleted {}.", count_refs(done.0, done.1));
+    if !kept.is_empty() {
+        m += &format!(" Kept {}: commits on no other branch.", kept.join(", "));
+    }
+    if !failed.is_empty() {
+        m += &format!(" Not deleted: {}.", failed.join("; "));
+    }
+    m += &format!(" To restore: {}", restore.join("; "));
+    Ok(m)
+}
+
+/// Deletes several branches and tags on `remote` in one `git push` (FF-36);
+/// local tags stay. Names the commands that push the branches back from
+/// their remote-tracking refs.
+pub fn delete_remote_many(git: &Git, remote: &str, branches: &[String], tags: &[String]) -> R {
+    if branches.is_empty() && tags.is_empty() {
+        return Err(OpError::Failed("nothing selected to delete".into()));
+    }
+    let tips: Vec<(&String, Option<String>)> = branches
+        .iter()
+        .map(|b| (b, run(git, &["rev-parse", "--verify", "--quiet", &format!("refs/remotes/{remote}/{b}")]).ok()))
+        .collect();
+    let mut args = vec!["push".to_string(), remote.into(), "--delete".into()];
+    args.extend(branches.iter().map(|b| format!("refs/heads/{b}")));
+    args.extend(tags.iter().map(|t| format!("refs/tags/{t}")));
+    let a: Vec<&str> = args.iter().map(String::as_str).collect();
+    run(git, &a)?;
+    let mut m = format!("Deleted {} on {remote}.", count_refs(branches.len(), tags.len()));
+    let back: Vec<String> = tips
+        .iter()
+        .filter_map(|(b, t)| t.as_ref().map(|t| format!("git push {remote} {}:refs/heads/{b}", tip12(t))))
+        .collect();
+    if !back.is_empty() {
+        m += &format!(" To restore: {}", back.join("; "));
+    }
+    if !tags.is_empty() {
+        m += &format!(" The local tags stay; git push {remote} <tag> brings one back.");
+    }
+    Ok(m)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MergeMode {
     /// Fast-forward when possible, else a merge commit (Git's default).
@@ -472,6 +595,51 @@ mod tests {
         assert!(msg.contains("git push origin "), "{msg}");
         delete_remote_tag(&g, "origin", "v1").unwrap();
         assert!(!on_hub("refs/tags/v1"));
+        let _ = std::fs::remove_dir_all(&hub);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Several at once (FF-36): one push, one remote delete, local deletes
+    /// that keep unmerged branches and name the restore commands.
+    #[test]
+    fn several_refs_at_once() {
+        let (dir, g) = repo("many");
+        commit(&dir, &g, "a.txt", "a", "first");
+        let hub = dir.with_extension("hub.git");
+        let _ = std::fs::remove_dir_all(&hub);
+        Git { root: dir.parent().unwrap().to_path_buf() }
+            .output(&["init", "-q", "--bare", &hub.to_string_lossy()])
+            .unwrap();
+        g.output(&["remote", "add", "origin", &hub.to_string_lossy()]).unwrap();
+        let on_hub = |r: &str| Git { root: hub.clone() }.output(&["rev-parse", "--verify", "--quiet", r]).is_ok();
+        let here = |r: &str| g.output(&["rev-parse", "--verify", "--quiet", r]).is_ok();
+        let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        for b in ["a", "b"] {
+            create_branch(&g, b, "HEAD", false).unwrap();
+        }
+        // An unmerged branch.
+        create_branch(&g, "wip", "HEAD", true).unwrap();
+        commit(&dir, &g, "w.txt", "w", "wip");
+        g.output(&["checkout", "-q", "main"]).unwrap();
+        for t in ["v1", "v2"] {
+            create_tag(&g, t, "HEAD", None).unwrap();
+        }
+        let m = push_many(&g, "origin", &s(&["a", "b"]), &s(&["v1", "v2"])).unwrap();
+        assert_eq!(m, "Pushed 2 branches and 2 tags to origin");
+        assert!(["refs/heads/a", "refs/heads/b", "refs/tags/v1", "refs/tags/v2"].iter().all(|r| on_hub(r)));
+        let m = delete_remote_many(&g, "origin", &s(&["a"]), &s(&["v1", "v2"])).unwrap();
+        assert!(!on_hub("refs/heads/a") && !on_hub("refs/tags/v1") && on_hub("refs/heads/b"), "{m}");
+        assert!(m.contains("git push origin ") && m.contains(":refs/heads/a"), "{m}");
+        let m = delete_many(&g, &s(&["a", "wip"]), &s(&["v1"]), false).unwrap();
+        assert!(!here("refs/heads/a") && here("refs/heads/wip") && !here("refs/tags/v1"), "{m}");
+        assert!(
+            m.starts_with("Deleted 1 branch and 1 tag.") && m.contains("Kept wip") && m.contains("git tag v1 "),
+            "{m}"
+        );
+        assert!(matches!(delete_many(&g, &s(&["wip"]), &[], false), Err(OpError::Failed(e)) if e.contains("wip")));
+        delete_many(&g, &s(&["wip"]), &[], true).unwrap();
+        assert!(!here("refs/heads/wip"));
+        assert_eq!(count_refs(1, 0), "1 branch");
         let _ = std::fs::remove_dir_all(&hub);
         let _ = std::fs::remove_dir_all(&dir);
     }

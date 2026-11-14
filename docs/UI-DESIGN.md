@@ -78,6 +78,12 @@ The capture above is the real PoC UI. `ffwd --snapshot` rendered it offscreen fr
   - a tab shows an amber ring while its repository has uncommitted changes;
   - every Git call runs on a worker.
 
+## Several refs at once (FF-36, FF-38)
+
+- **Pick:** `Ctrl+click` (`Cmd+click` on macOS) adds a branch, remote branch, tag or stash to a batch or takes it out; `Shift+click` picks the range from the sidebar selection. Without the keyboard: **Select for several** in an item's menu, and **Select all tags / branches / stashes** in a header's menu. Picked rows carry an accent bar on the left.
+- **Act:** right-click a picked row: **Push … to <remote>** (one push; branches get their upstream), **Delete … on <remote>…** (tags, remote branches), **Delete …** (local; the checked-out branch stays, unmerged branches are kept unless you choose *Delete, unmerged too*), **Drop n stashes…**, **Clear the selection**. Every delete asks first, names what goes, and the result names the restore commands.
+- A plain click, `Esc` in the sidebar, or a delete clears the pick; a push keeps it.
+
 ## Branch order (FF-36)
 
 - The Branches header's menu sorts local and remote branches **by name** or **by most recent commit**: newest first, with folders ordered by their newest branch. The choice is saved as `sidebar.branch_order` (`name` or `recent`).

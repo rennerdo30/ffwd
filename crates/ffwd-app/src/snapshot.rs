@@ -128,6 +128,9 @@ pub fn run(args: &Args, t0: Instant) -> i32 {
     if args.menu {
         ui.snapshot_menu();
     }
+    if let Some(keys) = &args.pick {
+        ui.snapshot_pick(keys);
+    }
     if args.prompt {
         ui.snapshot_prompt();
     }

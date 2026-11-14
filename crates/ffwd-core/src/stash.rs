@@ -84,6 +84,22 @@ pub fn drop(git: &Git, name: &str) -> R {
     Ok(format!("Dropped {name}. Bring it back with: git stash store{m} {short}"))
 }
 
+/// Drops several stashes (FF-38), the highest index first so the names
+/// stay valid; each is kept as a backup and its restore command named.
+pub fn drop_many(git: &Git, names: &[String]) -> R {
+    let mut v: Vec<&String> = names.iter().collect();
+    v.sort_by_key(|n| std::cmp::Reverse(index(n).unwrap_or(0)));
+    v.dedup();
+    let mut back = Vec::new();
+    for n in &v {
+        let m = drop(git, n)?;
+        if let Some((_, cmd)) = m.split_once("Bring it back with: ") {
+            back.push(cmd.to_string());
+        }
+    }
+    Ok(format!("Dropped {} stashes. Bring them back with: {}", v.len(), back.join("; ")))
+}
+
 /// Gives `name` a new message. The stash moves to the top (stash@{0}).
 pub fn rename(git: &Git, name: &str, message: &str) -> R {
     let message = message.trim();
@@ -146,6 +162,19 @@ mod tests {
 
     fn read(dir: &Path, f: &str) -> String {
         std::fs::read_to_string(dir.join(f)).unwrap_or_default()
+    }
+
+    #[test]
+    fn drop_several() {
+        let (dir, g) = repo("many");
+        for k in 0..3 {
+            std::fs::write(dir.join("a.txt"), format!("{k}\n")).unwrap();
+            save(&g, &format!("s{k}"), SaveOptions::default()).unwrap();
+        }
+        let m = drop_many(&g, &["stash@{0}".to_string(), "stash@{2}".to_string()]).unwrap();
+        assert_eq!(list(&g), ["s1"], "{m}");
+        assert!(m.starts_with("Dropped 2 stashes.") && m.matches("git stash store").count() == 2, "{m}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

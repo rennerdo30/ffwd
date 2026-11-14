@@ -201,6 +201,14 @@ pub enum RefOp {
     /// remote, branch
     PushBranch(String, String),
     DeleteRemoteBranch(String, String),
+    /// Several at once (FF-36): remote, branches, tags.
+    PushMany(String, Vec<String>, Vec<String>),
+    /// branches, tags, force (unmerged branches too)
+    DeleteMany(Vec<String>, Vec<String>, bool),
+    /// remote, branches, tags
+    DeleteRemoteMany(String, Vec<String>, Vec<String>),
+    /// Stash names (FF-38).
+    StashDropMany(Vec<String>),
     /// Apply a patch to the working tree; 3-way leaves conflict markers.
     ApplyPatch(String, bool),
     /// Check out a GitHub pull request (remote, number) as `pr/<n>`.
@@ -251,6 +259,12 @@ impl RefOp {
             RefOp::TakeSideAll(p, true) => format!("Take ours for {} files", p.len()),
             RefOp::TakeSideAll(p, false) => format!("Take theirs for {} files", p.len()),
             RefOp::PushTag(r, t) => format!("Push tag {t} to {r}"),
+            RefOp::PushMany(r, b, t) => format!("Push {} to {r}", ffwd_core::refops::count_refs(b.len(), t.len())),
+            RefOp::DeleteMany(b, t, _) => format!("Delete {}", ffwd_core::refops::count_refs(b.len(), t.len())),
+            RefOp::DeleteRemoteMany(r, b, t) => {
+                format!("Delete {} on {r}", ffwd_core::refops::count_refs(b.len(), t.len()))
+            }
+            RefOp::StashDropMany(v) => format!("Drop {} stashes", v.len()),
             RefOp::DeleteRemoteTag(r, t) => format!("Delete tag {t} on {r}"),
             RefOp::PushBranch(r, b) => format!("Push {b} to {r}"),
             RefOp::DeleteRemoteBranch(r, b) => format!("Delete {b} on {r}"),
@@ -295,7 +309,10 @@ impl RefOp {
             RefOp::RemoteTest(_) => "Testing the connection",
             RefOp::Sync(op) => op.verb(),
             RefOp::TakeSideAll(..) => "Resolving",
-            RefOp::PushTag(..) | RefOp::PushBranch(..) => "Pushing",
+            RefOp::PushTag(..) | RefOp::PushBranch(..) | RefOp::PushMany(..) => "Pushing",
+            RefOp::DeleteMany(..) => "Deleting",
+            RefOp::DeleteRemoteMany(..) => "Deleting on the remote",
+            RefOp::StashDropMany(_) => "Dropping the stashes",
             RefOp::DeleteRemoteTag(..) | RefOp::DeleteRemoteBranch(..) => "Deleting on the remote",
             RefOp::ApplyPatch(..) => "Applying the patch",
             RefOp::PrCheckout(..) => "Checking out the pull request",
@@ -344,6 +361,10 @@ pub fn refop(git: Git, op: RefOp, sink: &Sink) {
                 ffwd_core::conflict::take_side_all(&git, paths, *ours).map_err(r::OpError::Failed)
             }
             RefOp::PushTag(rm, t) => r::push_tag(&git, rm, t),
+            RefOp::PushMany(rm, b, t) => r::push_many(&git, rm, b, t),
+            RefOp::DeleteMany(b, t, f) => r::delete_many(&git, b, t, *f),
+            RefOp::DeleteRemoteMany(rm, b, t) => r::delete_remote_many(&git, rm, b, t),
+            RefOp::StashDropMany(v) => ffwd_core::stash::drop_many(&git, v),
             RefOp::DeleteRemoteTag(rm, t) => r::delete_remote_tag(&git, rm, t),
             RefOp::PushBranch(rm, b) => r::push_branch(&git, rm, b),
             RefOp::DeleteRemoteBranch(rm, b) => r::delete_remote_branch(&git, rm, b),
