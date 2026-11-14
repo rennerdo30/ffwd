@@ -31,6 +31,8 @@ pub enum CHit {
     /// Push after the commit (FF-35; remembered as `commit.push`).
     PushAfter,
     StageLines,
+    /// Unified or side by side (FF-35; the same choice as the history's).
+    Layout,
     Commit,
     /// AI draft: a commit message from the staged changes (FF-50).
     Ai,
@@ -653,7 +655,36 @@ impl Ui {
         }
         let d = self.r.changes.diff.clone()?;
         let body = Rect::new(r.x, body_y, r.w, r.bottom() - body_y);
+        if self.changes_split() {
+            return self.split_line_at(&d, self.r.changes.diff_top, body, x, y);
+        }
         self.diff_line_at_y(&d, self.r.changes.diff_top, body, y)
+    }
+
+    /// Local Changes shows its diff side by side (FF-35): the diff
+    /// layout choice, for text diffs.
+    pub(super) fn changes_split(&self) -> bool {
+        self.diff_split && !self.r.changes.diff.as_ref().is_some_and(|d| d.binary)
+    }
+
+    /// Switches the layout, keeping the line cursor's place on screen
+    /// (the diff's top is a line unified, a row side by side).
+    pub(super) fn set_changes_split(&mut self, on: bool) {
+        let d = self.r.changes.diff.clone();
+        let rows = d.as_ref().map(|d| {
+            let (p, _) = self.diff_meta(d);
+            Self::split_rows(d, &p)
+        });
+        let c = &mut self.r.changes;
+        if let Some(rows) = rows.filter(|r| !r.is_empty()) {
+            c.diff_top = if on {
+                Self::split_row_of(&rows, c.diff_top)
+            } else {
+                rows.get(c.diff_top).and_then(|&(l, r)| l.or(r)).unwrap_or(0)
+            };
+        }
+        self.apply_diff_bar(if on { diff_view::DiffBar::Split } else { diff_view::DiffBar::Unified });
+        self.damage.full = true;
     }
 
     fn toggle_pick(&mut self, i: usize) {
@@ -679,11 +710,19 @@ impl Ui {
         c.line = (c.line as i64 + d).clamp(0, n as i64 - 1) as usize;
         let body_h = self.changes_layout().diff.h - self.px(32.0);
         let fit = (body_h / self.code_lh().max(1)).max(1) as usize;
+        // Side by side, the top is a row: follow the cursor's row.
+        let at = match self.r.changes.diff.clone().filter(|_| self.changes_split()) {
+            Some(d) => {
+                let (p, _) = self.diff_meta(&d);
+                Self::split_row_of(&Self::split_rows(&d, &p), self.r.changes.line)
+            }
+            None => self.r.changes.line,
+        };
         let c = &mut self.r.changes;
-        if c.line < c.diff_top {
-            c.diff_top = c.line;
-        } else if c.line >= c.diff_top + fit {
-            c.diff_top = c.line + 1 - fit;
+        if at < c.diff_top {
+            c.diff_top = at;
+        } else if at >= c.diff_top + fit {
+            c.diff_top = at + 1 - fit;
         }
         let r = self.changes_layout().diff;
         self.damage.rects.push(r);
@@ -891,7 +930,14 @@ impl Ui {
     }
 
     fn scroll_change_diff(&mut self, d: i64) {
-        let n = self.r.changes.diff.as_ref().map_or(0, |d| d.lines.len());
+        let n = match self.r.changes.diff.clone() {
+            Some(diff) if self.changes_split() => {
+                let (p, _) = self.diff_meta(&diff);
+                Self::split_rows(&diff, &p).len()
+            }
+            Some(diff) => diff.lines.len(),
+            None => 0,
+        };
         let top = (self.r.changes.diff_top as i64 + d).clamp(0, n.saturating_sub(1) as i64) as usize;
         if top != self.r.changes.diff_top {
             self.r.changes.diff_top = top;
@@ -952,6 +998,7 @@ impl Ui {
             Some(CHit::StageAll) => self.stage_all(true),
             Some(CHit::UnstageAll) => self.stage_all(false),
             Some(CHit::Hunk(h)) => self.toggle_hunk(h),
+            Some(CHit::Layout) => self.set_changes_split(!self.diff_split),
             Some(CHit::Subject) => self.r.changes.focus = CFocus::Subject,
             Some(CHit::Desc) => self.r.changes.focus = CFocus::Desc,
             Some(CHit::SkipHooks) => self.r.changes.skip_hooks = !self.r.changes.skip_hooks,
@@ -1457,12 +1504,25 @@ impl Ui {
             if focus { ACCENT } else { TEXT },
             r.w as f32 - self.pf(200.0),
         );
+        // Unified or side by side, clickable (FF-35).
+        let lt = if self.diff_split { "Unified" } else { "Side by side" };
+        let lw = self.te.measure(semi, self.pf(11.5), lt) + self.pf(16.0);
+        let layout_btn =
+            Rect::new(r.right() - self.px(10.0) - lw as i32, bar.y + self.px(4.0), lw as i32, bar.h - self.px(8.0));
+        let hot = Hot::Change(hits.len());
+        let (lbg, lborder) = self.control_colors(hot, BG_BAR, BORDER);
+        cv.round_border(layout_btn, self.pf(5.0), lborder, lbg);
+        self.te.draw(cv, semi, self.pf(11.5), layout_btn.x as f32 + self.pf(8.0), base, lt, TEXT_2, lw);
+        hits.push((layout_btn, CHit::Layout));
         let hint = match side {
             Side::Unstaged => "unstaged · Space or click picks lines · S stages them",
             Side::Staged => "staged · Space or click picks lines · S unstages them",
         };
         let hw = self.te.measure(ui, self.pf(11.0), hint);
-        self.te.draw(cv, ui, self.pf(11.0), r.right() as f32 - hw - pad, base, hint, TEXT_4, hw + 2.0);
+        let hint_right = layout_btn.x as f32 - self.pf(12.0);
+        if hint_right - hw > r.x as f32 + self.pf(260.0) {
+            self.te.draw(cv, ui, self.pf(11.0), hint_right - hw, base, hint, TEXT_4, hw + 2.0);
+        }
         let body = Rect::new(r.x, bar.bottom(), r.w, r.bottom() - bar.bottom());
         let Some(diff) = self.r.changes.diff.clone() else {
             let t = if sel.is_some() { "Loading the diff…" } else { "Select a file to see its changes" };
@@ -1484,17 +1544,28 @@ impl Ui {
         }
         let label = if side == Side::Unstaged { "Stage hunk" } else { "Unstage hunk" };
         let top = self.r.changes.diff_top;
-        let buttons = self.paint_diff_body(cv, body, &diff, top, Some(label), hits.len());
-        // Picked lines and the line cursor, over the painted lines.
+        let split = self.changes_split();
+        let buttons = if split {
+            self.paint_diff_split(cv, body, &diff, top, Some(label), hits.len())
+        } else {
+            self.paint_diff_body(cv, body, &diff, top, Some(label), hits.len())
+        };
+        // Picked lines and the line cursor, over the painted lines (side
+        // by side: at the left edge of their half).
         let lh = self.code_lh();
         let focus = self.r.changes.focus == CFocus::Diff;
         let picked: Vec<usize> = self.r.changes.picked.iter().copied().collect();
         for i in picked.iter().copied().chain(focus.then_some(self.r.changes.line)) {
-            let Some((y, h)) = self.diff_line_y(&diff, top, body, i) else { continue };
+            let at = if split {
+                self.split_line_rect(&diff, top, body, i).map(|r| (r.x, r.y, r.h))
+            } else {
+                self.diff_line_y(&diff, top, body, i).map(|(y, h)| (body.x, y, h))
+            };
+            let Some((x, y, h)) = at else { continue };
             let c = if picked.contains(&i) { ACCENT } else { BORDER_HOVER };
-            cv.fill(Rect::new(body.x, y, self.px(3.0), h), c);
-            if picked.contains(&i) {
-                cv.fill_circle(body.x as f32 + self.pf(12.0), y as f32 + lh as f32 / 2.0, self.pf(3.0), ACCENT);
+            cv.fill(Rect::new(x, y, self.px(3.0), h), c);
+            if picked.contains(&i) && !split {
+                cv.fill_circle(x as f32 + self.pf(12.0), y as f32 + lh as f32 / 2.0, self.pf(3.0), ACCENT);
             }
         }
         if !picked.is_empty() {

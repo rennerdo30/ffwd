@@ -53,7 +53,7 @@ What a complete desktop Git client offers, grouped in 18 areas, with ffwd's stat
 | Staged and unstaged lists, or a combined list | **Built** (two lists) | FF-35; combined list in M1 |
 | Stage by file, line, chunk; sub-chunk in entire-file mode | **Built** | Files, hunks and picked lines, also across hunks and in new files |
 | Stage and unstage by drag and drop; Stage All | Partial | Stage all, Unstage all, double click and Space are built |
-| Side-by-side view in local changes | M1 | |
+| Side-by-side view in local changes | **Built** | The diff bar's button switches (the same choice as the history's); hunk buttons, picking lines by click and the line cursor work side by side too |
 | Discard (file, lines), reset a file to a revision | Partial | Discarding a file is built: it asks first and `Ctrl+Z` undoes it |
 | Hide untracked (remembered), show ignored files | **Built** | The Unstaged list's **…**: hide untracked files (the header counts them), show ignored files (a wholly ignored folder is one row, letter I); both remembered |
 | Add to `.gitignore` (file, folder, pattern), template picker | Partial | Adding a file (`I`) is built |

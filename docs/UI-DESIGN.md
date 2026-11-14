@@ -55,6 +55,8 @@ The capture above is the real PoC UI. `ffwd --snapshot` rendered it offscreen fr
 
 **Local Changes** in the sidebar replaces the history and details with the working tree. **All Commits**, or jumping to any ref, shows history again.
 
+- **Side by side:** the diff bar's **Side by side** / **Unified** button switches the layout (`diff.layout`, shared with the history's diff). Side by side, each hunk keeps its **Stage hunk** button, a click on a line picks it in the half it shows in, and the line cursor scrolls by rows.
+
 - **Left column:**
   - **Unstaged** (with **Stage all**) and **Staged** (with **Unstage all**): one row per file, with a status letter (A, M, D, R, U), its name and its folder.
   - Below them, the commit box: a subject (its length turns amber past 50 characters and red past 72), a multi-line description, **Amend**, and the **Commit** button (`Ctrl+Enter`).

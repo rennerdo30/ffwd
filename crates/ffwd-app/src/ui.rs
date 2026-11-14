@@ -4112,7 +4112,7 @@ impl Ui {
         let body = Rect::new(r.x + 1, bar.bottom(), r.w - 1, r.bottom() - bar.bottom());
         let top = self.r.diff_top;
         if self.diff_split && !diff.binary {
-            self.paint_diff_split(cv, body, &diff, top);
+            self.paint_diff_split(cv, body, &diff, top, None, 0);
         } else {
             self.paint_diff_body(cv, body, &diff, top, None, 0);
         }
@@ -4962,6 +4962,99 @@ mod tests {
         pump(&mut ui, "the commit", &|u| idle(u) && u.r.changes.subject.text().is_empty());
         ui.key(Key::Ctrl('r'));
         assert_eq!(ui.r.changes.subject.text(), "Two | lines");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Local Changes side by side (FF-35): the bar's button switches the
+    /// layout; clicking a line in its half picks it, the hunk button
+    /// stages, and the cursor follows rows; paints are right.
+    #[test]
+    fn local_changes_side_by_side() {
+        use std::sync::mpsc;
+        let mut te = TextEngine::new();
+        let Some(f) = load_fonts(&mut te) else { return };
+        let dir = std::env::temp_dir().join(format!("ffwd-ui-csplit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = Git { root: dir.clone() };
+        for a in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.name", "ffwd test"],
+            &["config", "user.email", "test@example.invalid"],
+            &["config", "commit.gpgsign", "false"],
+            &["config", "core.autocrlf", "false"],
+        ] {
+            g.output(a).unwrap();
+        }
+        std::fs::write(dir.join("a.txt"), "1\nold\n2\n").unwrap();
+        g.output(&["add", "."]).unwrap();
+        g.output(&["commit", "-q", "-m", "first"]).unwrap();
+        std::fs::write(dir.join("a.txt"), "1\nnew\n2\nadded\n").unwrap();
+        let (tx, rx) = mpsc::channel::<(u64, Msg)>();
+        let tx = Arc::new(std::sync::Mutex::new(tx));
+        let sinks: SinkFactory = Arc::new(move |id| {
+            let tx = tx.clone();
+            Arc::new(move |m| {
+                if let Ok(t) = tx.lock() {
+                    let _ = t.send((id, m));
+                }
+            })
+        });
+        crate::work::start(dir.clone(), &sinks(1));
+        let empty = crate::settings::Settings::parse("");
+        let mut ui = Ui::new(te, f, empty.clone(), empty, Some((1, dir.clone())), sinks, 1280, 800, 1.0);
+        let pump = |ui: &mut Ui, what: &str, done: &dyn Fn(&Ui) -> bool| {
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while !done(ui) {
+                let left = until.saturating_duration_since(std::time::Instant::now());
+                assert!(!left.is_zero(), "timed out waiting for {what}");
+                if let Ok((id, m)) = rx.recv_timeout(left) {
+                    ui.on_tab_msg(id, m);
+                }
+            }
+        };
+        pump(&mut ui, "the repository", &|u| u.r.git.is_some());
+        ui.enter_changes();
+        pump(&mut ui, "the diff", &|u| u.r.changes.diff.is_some());
+        let mut screen = vec![0u32; 1280 * 800];
+        ui.paint(&mut Canvas::new(&mut screen, 1280, 800), true);
+        use changes_view::CHit;
+        let hit = |ui: &Ui, h: CHit| ui.r.changes.hits.iter().find(|x| x.1 == h).map(|x| x.0);
+        let b = hit(&ui, CHit::Layout).expect("the layout button");
+        ui.click(b.x + b.w / 2, b.y + b.h / 2);
+        ui.last_click = None;
+        assert!(ui.diff_split && ui.changes_split());
+        assert_eq!(ui.settings.get("diff.layout"), Some("split"));
+        ui.paint(&mut Canvas::new(&mut screen, 1280, 800), true);
+        // "new" is on the right half of the row that shows "old" on the left.
+        let d = ui.r.changes.diff.clone().unwrap();
+        let new = d.lines.iter().position(|l| &*l.text == "new").unwrap();
+        let old = d.lines.iter().position(|l| &*l.text == "old").unwrap();
+        let r = ui.changes_layout().diff;
+        let body = Rect::new(r.x, r.y + ui.px(32.0), r.w, r.bottom() - r.y - ui.px(32.0));
+        let cell = ui.split_line_rect(&d, ui.changes_diff_top(), body, new).expect("on screen");
+        assert!(cell.x > body.x + body.w / 3, "the right half");
+        assert_eq!(ui.split_line_rect(&d, ui.changes_diff_top(), body, old).unwrap().y, cell.y, "same row");
+        ui.click(cell.x + cell.w / 2, cell.y + cell.h / 2);
+        ui.last_click = None;
+        assert_eq!(ui.r.changes.picked.iter().copied().collect::<Vec<_>>(), [new]);
+        assert_partial_paint_is_full(&mut ui, &mut screen, "picked side by side");
+        // The hunk's button stages it.
+        ui.r.changes.picked.clear();
+        ui.paint(&mut Canvas::new(&mut screen, 1280, 800), true);
+        let b = hit(&ui, CHit::Hunk(0)).expect("a hunk button side by side");
+        ui.click(b.x + b.w / 2, b.y + b.h / 2);
+        pump(&mut ui, "the hunk staged", &|u| {
+            u.r.changes.busy.is_none()
+                && u.r.changes.status.as_ref().is_some_and(|s| s.side(changes_view_side(false)).len() == 1)
+        });
+        let staged = String::from_utf8(g.output(&["diff", "--cached", "--name-only"]).unwrap()).unwrap();
+        assert_eq!(staged.trim(), "a.txt");
+        // Back to unified: the button again.
+        ui.paint(&mut Canvas::new(&mut screen, 1280, 800), true);
+        let b = hit(&ui, CHit::Layout).unwrap();
+        ui.click(b.x + b.w / 2, b.y + b.h / 2);
+        assert!(!ui.diff_split);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
