@@ -426,32 +426,49 @@ impl Ui {
             hits.push((r, hit));
             x = r.x - self.px(2.0);
         }
-        x -= self.px(5.0);
-        cv.fill(Rect::new(x, y + self.px(4.0), 1, h - self.px(8.0)), BORDER());
-        x -= self.px(5.0);
+        // The text options come in groups, and a group shows whole or not
+        // at all: on a narrow pane the context presets go first, then the
+        // whitespace switch; Unified / Side by side stays longest.
         let ws = self.diff_opts.ignore_whitespace;
-        seg(
-            self,
-            cv,
-            &mut x,
-            if ws { "Whitespace ignored" } else { "Whitespace shown" },
-            ws,
-            DiffBar::Whitespace,
-            &mut hits,
-        );
-        x -= self.px(5.0);
-        cv.fill(Rect::new(x, y + self.px(4.0), 1, h - self.px(8.0)), BORDER());
-        x -= self.px(5.0);
-        for &(n, label) in CONTEXTS.iter().rev() {
-            let on = self.diff_opts.context == n;
-            seg(self, cv, &mut x, label, on, DiffBar::Context(n), &mut hits);
+        let ws_label = if ws { "Whitespace ignored" } else { "Whitespace shown" };
+        let segw =
+            |ui_: &mut Ui, label: &str| (ui_.te.measure(semi, ui_.pf(11.5), label) + ui_.pf(16.0)) as i32 + ui_.px(2.0);
+        let sep = self.px(11.0);
+        let w_ws = segw(self, ws_label) + sep;
+        let w_ctx = CONTEXTS.iter().map(|&(_, l)| segw(self, l)).sum::<i32>() + sep;
+        let w_split = segw(self, "Side by side") + segw(self, "Unified") + sep;
+        // Room for the controls, keeping some for the file name on the left.
+        let mut room = x - bar.x - self.px(60.0);
+        let mut fits = |w: i32| {
+            let ok = room >= w;
+            if ok {
+                room -= w;
+            }
+            ok
+        };
+        let (show_split, show_ws, show_ctx) = (fits(w_split), fits(w_ws), fits(w_ctx));
+        let divider = |ui_: &Ui, cv: &mut Canvas, x: &mut i32| {
+            *x -= ui_.px(5.0);
+            cv.fill(Rect::new(*x, y + ui_.px(4.0), 1, h - ui_.px(8.0)), BORDER());
+            *x -= ui_.px(5.0);
+        };
+        if show_ws {
+            divider(self, cv, &mut x);
+            seg(self, cv, &mut x, ws_label, ws, DiffBar::Whitespace, &mut hits);
         }
-        x -= self.px(5.0);
-        cv.fill(Rect::new(x, y + self.px(4.0), 1, h - self.px(8.0)), BORDER());
-        x -= self.px(5.0);
-        let split = self.diff_split;
-        seg(self, cv, &mut x, "Side by side", split, DiffBar::Split, &mut hits);
-        seg(self, cv, &mut x, "Unified", !split, DiffBar::Unified, &mut hits);
+        if show_ctx {
+            divider(self, cv, &mut x);
+            for &(n, label) in CONTEXTS.iter().rev() {
+                let on = self.diff_opts.context == n;
+                seg(self, cv, &mut x, label, on, DiffBar::Context(n), &mut hits);
+            }
+        }
+        if show_split {
+            divider(self, cv, &mut x);
+            let split = self.diff_split;
+            seg(self, cv, &mut x, "Side by side", split, DiffBar::Split, &mut hits);
+            seg(self, cv, &mut x, "Unified", !split, DiffBar::Unified, &mut hits);
+        }
         let _ = ui;
         // Controls pushed past the pane's left edge are clipped away; they
         // must not take clicks there either.

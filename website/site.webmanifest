@@ -1,0 +1,8 @@
+{
+  "name": "ffwd",
+  "short_name": "ffwd",
+  "icons": [{ "src": "assets/ffwd-icon.svg", "sizes": "any", "type": "image/svg+xml" }],
+  "theme_color": "#141518",
+  "background_color": "#141518",
+  "display": "browser"
+}

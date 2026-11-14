@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <title>ffwd</title>  <rect width="512" height="512" rx="116" fill="#E8A33E"/>
+  <!-- A commit, its branch line, and the fast-forward it takes. -->
+    <g fill="#1D1608" stroke="#1D1608" stroke-linejoin="round" stroke-linecap="round" transform="translate(256 256) scale(1.12) translate(-260 -256)">
+      <circle cx="116" cy="256" r="30" stroke="none"/>
+      <path d="M146 256 H190" stroke-width="26" fill="none"/>
+      <path d="M196 162 L294 256 L196 350 Z" stroke-width="30"/>
+      <path d="M306 162 L404 256 L306 350 Z" stroke-width="30"/>
+    </g></svg>

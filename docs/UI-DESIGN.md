@@ -2,7 +2,7 @@
 
 Status: first design, shown in the proof of concept (2026-11-13).
 
-![ffwd proof of concept: history, details and diff](images/poc-history.png)
+![ffwd: history, details and diff](images/history-dark.png)
 
 The capture above is the real PoC UI. `ffwd --snapshot` rendered it offscreen from the Kwil repository, using the same paint code that the window uses.
 
