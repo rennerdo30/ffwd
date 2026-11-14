@@ -6,34 +6,45 @@
 <p align="center"><b>A Git client that is fast at everything, everywhere, including over remote desktop.</b><br>
 Windows · macOS · Linux · written in Rust</p>
 
+<p align="center"><a href="https://ffwd.renner.dev"><b>ffwd.renner.dev</b></a> · <a href="https://github.com/rennerdo30/ffwd/releases">Download</a> · <a href="CHANGELOG.md">Changelog</a></p>
+
 ---
 
-**Status: proof of concept.** ffwd is at the start. The history view below works and is measured; staging, committing and everything else are still ahead. See the [specification](docs/SPEC.md) and the [feature plan](docs/FEATURES.md).
+**Status: beta.** ffwd is good for daily work: history, staging and committing, branches, merge and rebase, conflicts, stashes, remotes and more are built. Some features are still on the way; the [feature list](docs/FEATURES.md) says which.
 
-![ffwd proof of concept: commit graph, details and diff](docs/images/poc-history.png)
+![ffwd: the history with its branch graph, the selected commit's details and its diff](docs/images/history-dark.png)
 
-*The real UI, rendered offscreen by `ffwd --snapshot` from a public repository. It is not a mock-up.*
+*Every image here is the real UI, rendered offscreen by `ffwd --snapshot`; none is a mock-up. More in [Screenshots](docs/SCREENSHOTS.md).*
 
 ## Why
 
 Desktop Git clients are often slow. They render late, stutter on big repositories and turn sluggish over remote desktop. ffwd is built the other way round:
 
-- **The first frame comes first.** In the proof of concept the window and chrome are on screen in about 25 ms, and history streams in behind them.
+- **The first frame comes first.** The window and chrome are on screen in about 22 ms (median, release build), and history streams in behind them.
 - **Input answers in the same frame.** Selecting a commit shows its header immediately; files and diff follow.
-- **Nothing blocks the UI.** Every Git call runs on a worker thread.
+- **Nothing blocks the UI.** Every Git call, file read and network request runs on a worker thread.
 - **It is built for remote desktop.**
   - There is no frame loop and nothing is drawn at idle.
   - Each present sends only what changed.
   - Scrolling moves pixels instead of repainting them.
   - The CPU renderer is a complete backend, so sessions without a GPU stay fast.
-- **Your work is safe.** Destructive actions will ask first and be undoable.
-- **AI on your terms (planned).** Point ffwd at any OpenAI-compatible endpoint, preferably a local one (Ollama, llama.cpp, LM Studio), for commit messages, explanations and reviews. It is off until you configure it, and you see exactly what is sent.
+- **Your work is safe.** Destructive actions ask first and name what would be lost; the reflog view brings lost commits back.
+- **AI on your terms.** Commit messages from an endpoint you choose, preferably a local model server. It is off until you configure it, and you see exactly what is sent.
+
+| Local changes | Side by side |
+|---|---|
+| ![Local changes: unstaged and staged files, the diff and the commit box](docs/images/changes-dark.png) | ![A diff side by side in the light theme](docs/images/diff-light.png) |
 
 ## Install
 
-No release is published yet. Once one is, Windows gets a per-user setup that updates itself, and macOS and Linux get archives: see [Installing ffwd](docs/INSTALL.md).
+Download the newest release from [ffwd.renner.dev](https://ffwd.renner.dev) or the [releases page](https://github.com/rennerdo30/ffwd/releases):
 
-## Try the proof of concept
+- **Windows:** `ffwd-<version>-setup.exe`, a per-user setup (no admin rights) that updates itself, or the portable zip.
+- **macOS** (Apple silicon) and **Linux** (x86_64): `.tar.gz` archives.
+
+Details and checksums: [Installing ffwd](docs/INSTALL.md).
+
+## Build from source
 
 You need Rust (the toolchain installs itself from `rust-toolchain.toml`) and Git. On Windows, double-click or run the scripts:
 
@@ -69,6 +80,8 @@ FFWD_TRACE=1 ffwd path/to/repo
 - [Specification and speed budgets](docs/SPEC.md)
 - [UI design](docs/UI-DESIGN.md)
 - [Feature plan](docs/FEATURES.md)
+- [Screenshots](docs/SCREENSHOTS.md)
+- [Website](website/README.md)
 - [Building and fast iteration](docs/BUILD.md)
 - [Releasing and updates](docs/RELEASING.md)
 - [Architecture decisions](docs/decisions)

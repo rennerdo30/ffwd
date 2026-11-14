@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ffwd: a Git client that never makes you wait</title>
+  <meta name="description" content="ffwd (say fast-forward) is a free, open-source desktop Git client written in Rust. Every click answers in the same frame, history streams in while you read, and it stays fast over remote desktop. Windows, macOS and Linux.">
+  <meta name="color-scheme" content="dark light">
+  <meta name="theme-color" content="#141518" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#f1efeb" media="(prefers-color-scheme: light)">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self'; style-src 'self'; script-src 'self'; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
+  <link rel="canonical" href="https://ffwd.renner.dev/">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="assets/ffwd-icon.svg" type="image/svg+xml">
+  <link rel="manifest" href="site.webmanifest">
+  <meta property="og:title" content="ffwd">
+  <meta property="og:description" content="A desktop Git client that never makes you wait. Free and open source, written in Rust.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://ffwd.renner.dev/">
+  <meta property="og:image" content="https://ffwd.renner.dev/assets/og.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="stylesheet" href="style.css">
+  <script src="site.js" defer></script>
+  <script src="releases.js" defer></script>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+
+  <div class="stage">
+    <header class="top">
+      <a class="brand" href="#top" aria-label="ffwd home">
+        <img src="assets/ffwd-icon.svg" width="30" height="30" alt="">
+        <span>ffwd</span>
+      </a>
+      <nav aria-label="Sections">
+        <a href="#speed">Speed</a>
+        <a href="#features">Features</a>
+        <a href="#remote">Remote desktop</a>
+        <a href="#download">Download</a>
+        <a class="nav-src" href="https://github.com/rennerdo30/ffwd">Source</a>
+      </nav>
+    </header>
+
+    <section class="hero" id="top" aria-labelledby="hero-title">
+      <div class="hero-copy">
+        <p class="kicker"><span class="pill">Beta</span> Free and open source, written in Rust</p>
+        <h1 id="hero-title">Git, <em>without the wait.</em></h1>
+        <p class="lede">ffwd (say <i>fast-forward</i>) is a desktop Git client that answers every click in the same frame. The window is up before Git has finished starting, history streams in while you read, and nothing you do ever freezes it.</p>
+        <div class="cta">
+          <a class="btn btn-primary" href="#download" data-release="latest" data-field="hero-label">Download ffwd</a>
+          <a class="btn btn-ghost" href="https://github.com/rennerdo30/ffwd">View the source</a>
+        </div>
+        <p class="platforms">Windows, macOS and Linux.</p>
+      </div>
+
+      <figure class="viewer" aria-labelledby="viewer-caption">
+        <div class="viewer-bar">
+          <div class="views" role="group" aria-label="Show ffwd's">
+            <button type="button" data-view="history" aria-pressed="true">History</button>
+            <button type="button" data-view="changes" aria-pressed="false">Local changes</button>
+            <button type="button" data-view="diff" aria-pressed="false">Side by side</button>
+            <button type="button" data-view="settings" aria-pressed="false">Settings</button>
+          </div>
+          <div class="themes" role="group" aria-label="ffwd theme">
+            <button type="button" data-theme="dark" aria-pressed="false">Dark</button>
+            <button type="button" data-theme="light" aria-pressed="false">Light</button>
+          </div>
+        </div>
+        <div class="window">
+          <picture>
+            <source media="(prefers-color-scheme: light)" srcset="assets/shots/history-light.webp">
+            <img data-shot src="assets/shots/history-dark.webp" width="1600" height="1000" alt="ffwd showing a repository's history: the branch graph with coloured lanes, branch and tag labels, the selected commit's details and its diff.">
+          </picture>
+        </div>
+        <figcaption id="viewer-caption">The history with its branch graph. Select a commit and its header is there at once; files and diff fill in behind it.</figcaption>
+      </figure>
+    </section>
+  </div>
+
+  <main id="main">
+    <section class="band" id="speed" aria-labelledby="speed-title">
+      <div class="split">
+        <div class="prose">
+          <h2 id="speed-title">Speed is the feature</h2>
+          <p>Most Git clients make you watch them think: a blank pane while the history loads, a spinner after every click, a window that stops answering during a long fetch. ffwd is built the other way round.</p>
+          <p>The window and its chrome are painted before any Git work finishes. The first commits appear as soon as they are parsed, not after the whole log. Git, file access, diffs and network requests all run on worker threads, so the window only ever handles your input and paints.</p>
+          <p>Lists are virtual: ffwd lays out the rows you can see, whether the repository has a hundred commits or a million.</p>
+        </div>
+        <div class="stats" role="group" aria-labelledby="stats-title">
+          <p class="stats-title" id="stats-title">Measured, not promised</p>
+          <div class="stat"><b>22 ms</b><span>from launch to the first painted frame (median)</span></div>
+          <div class="stat"><b>&lt; 1 ms</b><span>to repaint after a key press: 0.4 to 0.9 ms</span></div>
+          <div class="stat"><b>0 %</b><span>CPU when idle: no frame loop, no timers</span></div>
+          <div class="stat"><b>2 rows</b><span>repainted when you move the selection, not the window</span></div>
+          <p class="stats-foot">Release builds on the maintainer's Windows PC (Ryzen 9 9950X3D), 13 and 14 November 2026. Laptops and remote sessions are measured next; the <a href="https://github.com/rennerdo30/ffwd/blob/main/docs/SPEC.md">specification</a> lists every budget.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="band" id="features" aria-labelledby="features-title">
+      <h2 id="features-title">A complete Git client</h2>
+      <p class="intro">Everything you do in Git every day, with a button for it, a menu entry and a shortcut. Destructive actions ask first and say exactly what you would lose.</p>
+      <dl class="spec">
+        <div><dt>History</dt><dd>A branch graph with coloured lanes, labels for branches, tags and stashes, commits to push and to pull marked, and search by message, author, SHA, file path or diff content.</dd></div>
+        <div><dt>Local changes</dt><dd>Stage files, hunks or single lines, unified or side by side. Commit with hooks shown, amend, and keep your message when a hook fails.</dd></div>
+        <div><dt>Diffs</dt><dd>Unified or side by side, with syntax colours, word-level highlights, whitespace options, change marks on the scrollbar, and large diffs loaded on request.</dd></div>
+        <div><dt>Branches and tags</dt><dd>Create, rename, delete and push, several at once. Double-click to check out. Ahead and behind counts everywhere.</dd></div>
+        <div><dt>Merge and rebase</dt><dd>Merge with fast-forward, squash or no commit; rebase; reset soft, mixed or hard; an interactive rebase plan with pick, reword, squash, fixup and drop.</dd></div>
+        <div><dt>Conflicts</dt><dd>A built-in three-way resolver with branch names instead of "ours" and "theirs", or your own merge tool.</dd></div>
+        <div><dt>Remotes</dt><dd>Fetch, pull and push with progress you can cancel, automatic fetch in the background, several remotes and an upstream set on the first push.</dd></div>
+        <div><dt>Undo</dt><dd>The reflog view finds commits that are on no branch any more and brings them back.</dd></div>
+        <div><dt>Stashes and patches</dt><dd>Stash, apply, pop, rename and drop; stashes in the history; apply a patch from a file or the clipboard.</dd></div>
+        <div><dt>Repositories</dt><dd>Tabs with colours, restore closed tabs, clone and init, worktrees and submodules.</dd></div>
+        <div><dt>Activity</dt><dd>Every operation with its output and result, so you always know what Git did and why it failed.</dd></div>
+        <div><dt>Themes</dt><dd>Dark, light, or following your system, switched live. Views as an icon bar, a rail, tabs or a list; every pane border can be dragged.</dd></div>
+      </dl>
+    </section>
+
+    <section class="band" id="remote" aria-labelledby="remote-title">
+      <div class="split split-rev">
+        <figure class="shot">
+          <picture>
+            <source media="(prefers-color-scheme: light)" srcset="assets/shots/changes-light.webp">
+            <img src="assets/shots/changes-dark.webp" width="1600" height="1000" loading="lazy" alt="Local changes: unstaged and staged files on the left, the selected file's diff on the right, and the commit message box.">
+          </picture>
+        </figure>
+        <div class="prose">
+          <h2 id="remote-title">Fast over remote desktop</h2>
+          <p>ffwd draws with the CPU and paints only what changed. Move the selection and two rows and the details pane are sent to the screen, nothing else. Scrolling is a copy of the pixels already there, plus the rows that came into view.</p>
+          <p>That is what remote desktop needs: every repainted pixel crosses the network. In a remote session ffwd switches to solid colours, no animations and no blinking cursor, so the picture compresses well and stays sharp.</p>
+          <p>When nothing changes, ffwd does nothing at all: no frames, no wakeups, no fans.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="band" id="tour" aria-label="Settings and the command palette">
+      <div class="pair">
+        <figure class="shot">
+          <picture>
+            <source media="(prefers-color-scheme: light)" srcset="assets/shots/settings-light.webp">
+            <img src="assets/shots/settings-dark.webp" width="1600" height="1000" loading="lazy" alt="The Settings page: sections on the left, the Appearance section with theme, views and layout choices.">
+          </picture>
+          <figcaption>Settings are searchable and apply as you change them. Git's own settings, such as your name and email, are edited right there too.</figcaption>
+        </figure>
+        <figure class="shot">
+          <picture>
+            <source media="(prefers-color-scheme: light)" srcset="assets/shots/palette-light.webp">
+            <img src="assets/shots/palette-dark.webp" width="1600" height="1000" loading="lazy" alt="The command palette over the history, listing commands such as Reopen closed tab, Revert this commit and Reflog with their shortcuts.">
+          </picture>
+          <figcaption>Ctrl+K finds any branch, tag, commit or command and shows its shortcut. Every command also has a button or a menu entry.</figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <section class="band trio" aria-label="Safety, AI and privacy">
+      <article>
+        <h2>Your work is safe</h2>
+        <p>Hard reset, discard, force push and deleting branches ask first and name exactly what will be lost. ffwd never edits Git's internals by hand: every write goes through Git itself, with the same results as the command line.</p>
+      </article>
+      <article>
+        <h2>AI on your terms</h2>
+        <p>Commit messages from a model you choose, off until you set an endpoint, local servers first. Before anything is sent you see exactly what will be sent, and secrets and ignored files are never included.</p>
+      </article>
+      <article>
+        <h2>Nothing phones home</h2>
+        <p>No account, no telemetry. ffwd talks to your Git remotes, the update check and, only if you set one up, your AI endpoint.</p>
+      </article>
+    </section>
+
+    <section class="band download" id="download" aria-labelledby="download-title">
+      <h2 id="download-title">Get ffwd</h2>
+      <p class="intro">ffwd is in beta: it is good for daily work, but not every feature of the <a href="https://github.com/rennerdo30/ffwd/blob/main/docs/FEATURES.md">feature list</a> is done yet. <a href="https://github.com/rennerdo30/ffwd/issues">Tell us</a> what you miss and what breaks.</p>
+      <div class="dl-grid">
+        <div class="dl">
+          <h3>Newest release</h3>
+          <p class="dl-version" data-release="latest" data-field="found" hidden>ffwd <strong data-release="latest" data-field="version"></strong><span data-release="latest" data-field="kind"></span>, released <span data-release="latest" data-field="date"></span>.</p>
+          <p class="dl-version" data-release="latest" data-field="missing">Downloads are on the releases page.</p>
+          <ul class="assets">
+            <li data-os="windows">
+              <span class="asset-os">Windows 10 and 11</span>
+              <span class="asset-links">
+                <a class="btn btn-primary btn-small" data-asset="setup.exe" href="https://github.com/rennerdo30/ffwd/releases">Installer x64</a>
+                <a class="btn btn-small" data-asset="windows-x64.zip" href="https://github.com/rennerdo30/ffwd/releases">Portable zip</a>
+              </span>
+            </li>
+            <li data-os="mac">
+              <span class="asset-os">macOS</span>
+              <span class="asset-links">
+                <a class="btn btn-small" data-asset="macos-aarch64.tar.gz" href="https://github.com/rennerdo30/ffwd/releases">Apple silicon</a>
+              </span>
+            </li>
+            <li data-os="linux">
+              <span class="asset-os">Linux</span>
+              <span class="asset-links">
+                <a class="btn btn-small" data-asset="linux-x86_64.tar.gz" href="https://github.com/rennerdo30/ffwd/releases">x64</a>
+              </span>
+            </li>
+          </ul>
+          <p class="dl-sub">The Windows installer needs no admin rights and adds a Start menu entry and an uninstaller; ffwd then updates itself. The builds are not signed yet, so the system warns on the first start. Check downloads against <a data-asset="SHA256SUMS.txt" href="https://github.com/rennerdo30/ffwd/releases">SHA256SUMS</a>; the <a href="https://github.com/rennerdo30/ffwd/blob/main/docs/INSTALL.md">installation guide</a> has the details.</p>
+        </div>
+        <div class="dl">
+          <h3>Build from source</h3>
+          <p>Needs a Rust toolchain; <code>rustup</code> picks the right version from the repository.</p>
+<pre><code>git clone https://github.com/rennerdo30/ffwd
+cd ffwd
+cargo run --release -p ffwd -- path/to/repo</code></pre>
+          <p class="cta"><a class="btn" href="https://github.com/rennerdo30/ffwd">Source code</a> <a class="btn" href="https://github.com/rennerdo30/ffwd/releases">All releases</a></p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <p><img src="assets/ffwd-icon.svg" width="20" height="20" alt=""> ffwd, a project by <a href="https://github.com/rennerdo30">rennerdo30</a>. MIT licensed.</p>
+    <p><a href="https://github.com/rennerdo30/ffwd/blob/main/CHANGELOG.md">Changelog</a> <a href="https://github.com/rennerdo30/ffwd/blob/main/docs/FEATURES.md">Features</a> <a href="privacy.html">Privacy</a> <a href="https://github.com/rennerdo30/ffwd/issues">Report an issue</a></p>
+  </footer>
+</body>
+</html>

@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Privacy · ffwd</title>
+  <meta name="color-scheme" content="dark light">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self'; style-src 'self'; base-uri 'none'; form-action 'none'">
+  <link rel="canonical" href="https://ffwd.renner.dev/privacy.html">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="assets/ffwd-icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="stage">
+    <header class="top">
+      <a class="brand" href="./" aria-label="ffwd home">
+        <img src="assets/ffwd-icon.svg" width="30" height="30" alt="">
+        <span>ffwd</span>
+      </a>
+      <nav aria-label="Site">
+        <a href="./#download">Download</a>
+        <a class="nav-src" href="https://github.com/rennerdo30/ffwd">Source</a>
+      </nav>
+    </header>
+  </div>
+
+  <main class="doc">
+    <h1>Privacy</h1>
+
+    <h2>This website</h2>
+    <p>This site sets no cookies, uses no analytics and loads nothing from other sites except one request: your browser asks the public API of the code host for the list of ffwd releases, so the download links point at the newest version. The host receives that request like any other visit. The site itself is served as static files by the same host, which keeps its own server logs.</p>
+
+    <h2>The ffwd app</h2>
+    <p>ffwd has no account and no telemetry. It talks to the Git remotes you work with, checks for updates against ffwd's release list (and downloads an update when you install one), and, only if you configure one, sends requests to your AI endpoint. Before any AI request is sent you see exactly what it contains.</p>
+    <p>You can turn the update check off in Settings → Updates, or with <code>check = false</code> in the <code>[update]</code> section of the settings file.</p>
+
+    <h2>Questions</h2>
+    <p>Open an issue in the <a href="https://github.com/rennerdo30/ffwd/issues">issue tracker</a>.</p>
+  </main>
+
+  <footer class="foot">
+    <p><img src="assets/ffwd-icon.svg" width="20" height="20" alt=""> ffwd, a project by <a href="https://github.com/rennerdo30">rennerdo30</a>.</p>
+    <p><a href="./">Home</a> <a href="https://github.com/rennerdo30/ffwd">Source</a></p>
+  </footer>
+</body>
+</html>
