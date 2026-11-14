@@ -318,10 +318,12 @@ pub fn dark_title_bar(_hwnd: isize, _dark: bool) {}
 /// slashes included. A verbatim prefix (`\\?\`) goes for the same reason.
 /// Other systems get the path unchanged.
 pub fn shell_path(p: &std::path::Path) -> std::path::PathBuf {
-    if !cfg!(windows) {
+    // Not Windows, or a name that isn't valid Unicode: passed on unchanged
+    // rather than altered.
+    let Some(s) = p.to_str().filter(|_| cfg!(windows)) else {
         return p.to_path_buf();
-    }
-    let s = p.to_string_lossy().replace('/', r"\");
+    };
+    let s = s.replace('/', r"\");
     let s = if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
         format!(r"\\{rest}")
     } else if let Some(rest) = s.strip_prefix(r"\\?\") {
@@ -335,9 +337,10 @@ pub fn shell_path(p: &std::path::Path) -> std::path::PathBuf {
 /// Opens `dir` in the file manager. Runs on its own thread; the path is
 /// passed as one argument, never through a shell.
 pub fn open_folder(dir: std::path::PathBuf) {
+    let dir = shell_path(&dir);
     std::thread::spawn(move || {
         #[cfg(windows)]
-        let _ = std::process::Command::new("explorer.exe").arg(shell_path(&dir)).spawn();
+        let _ = std::process::Command::new("explorer.exe").arg(&dir).spawn();
         #[cfg(target_os = "macos")]
         let _ = std::process::Command::new("open").arg(&dir).spawn();
         #[cfg(not(any(windows, target_os = "macos")))]
@@ -395,11 +398,12 @@ pub fn open_url(url: String) {
 /// Opens a file with its default app (as one argument, no shell parsing
 /// of the path).
 pub fn open_path(p: std::path::PathBuf) {
+    let p = shell_path(&p);
     std::thread::spawn(move || {
         #[cfg(windows)]
         {
             // explorer.exe opens a file with its associated app.
-            let _ = std::process::Command::new("explorer.exe").arg(shell_path(&p)).spawn();
+            let _ = std::process::Command::new("explorer.exe").arg(&p).spawn();
         }
         #[cfg(target_os = "macos")]
         let _ = std::process::Command::new("open").arg(&p).spawn();
@@ -410,11 +414,12 @@ pub fn open_path(p: std::path::PathBuf) {
 
 /// Shows a file selected in the file manager (its folder elsewhere).
 pub fn show_file(p: std::path::PathBuf) {
+    let p = shell_path(&p);
     std::thread::spawn(move || {
         #[cfg(windows)]
         {
             let mut arg = std::ffi::OsString::from("/select,");
-            arg.push(shell_path(&p).as_os_str());
+            arg.push(p.as_os_str());
             let _ = std::process::Command::new("explorer.exe").arg(arg).spawn();
         }
         #[cfg(target_os = "macos")]
