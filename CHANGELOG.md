@@ -2,9 +2,14 @@
 
 ## Unreleased
 
+## 0.2.0-beta.8
+
+A fix release: on Windows, opening a file or showing it in Explorer now reaches the file instead of the Documents folder. ffwd also has a website.
+
 - **Website:** ffwd.renner.dev, with screenshots of the real app in both themes, measured speed figures and download links to the newest release. The README shows the current app.
 - **Diff bar:** on a narrow pane its options drop out in whole groups (the context presets first, then the whitespace switch) instead of being cut off at the left edge.
 - **Fix, Windows:** **Open with the default app** and **Show in Explorer** opened the Documents folder instead of the file: the path mixed forward and back slashes, which Explorer does not accept. Every path handed to Explorer now uses backslashes only.
+
 ## 0.2.0-beta.7
 
 The redesign release: Settings, the agents view and the sidebar are new, ffwd gets a light theme, every pane border moves, and Settings has an About section.
