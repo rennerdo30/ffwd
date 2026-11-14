@@ -143,7 +143,24 @@ impl Log {
 
 /// Starts a run on a worker thread and returns its id and cancel handle at
 /// once. `repo` is the tab's folder (any folder inside the repository).
+/// How a run drives the agent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mode {
+    /// The prompt, non-interactively, with its output in the panel.
+    Prompt,
+    /// The tool's interactive CLI in a terminal window of its own, in the
+    /// sandbox or not (FF-23). ffwd commits when the window closes.
+    Interactive { sandboxed: bool },
+}
+
 pub fn start(cfg: Config, repo: PathBuf, prompt: String, emit: Emit) -> (String, Handle) {
+    start_mode(cfg, repo, prompt, Mode::Prompt, emit)
+}
+
+/// [`start`] in a given mode; an interactive session's `prompt` is only
+/// its title (it may be empty).
+pub fn start_mode(cfg: Config, repo: PathBuf, prompt: String, mode: Mode, emit: Emit) -> (String, Handle) {
+    let prompt = if prompt.trim().is_empty() && mode != Mode::Prompt { "terminal session".to_string() } else { prompt };
     let id = make_id(&prompt, now());
     let handle = Handle::default();
     let h = handle.clone();
@@ -151,7 +168,7 @@ pub fn start(cfg: Config, repo: PathBuf, prompt: String, emit: Emit) -> (String,
     let _ = std::thread::Builder::new().name("ffwd-agent".into()).spawn(move || {
         let e2 = emit.clone();
         let (repo2, id2) = (repo.clone(), rid.clone());
-        if let Err(p) = catch_unwind(AssertUnwindSafe(|| execute(&cfg, &repo, &rid, &prompt, &h.cancel, emit))) {
+        if let Err(p) = catch_unwind(AssertUnwindSafe(|| execute(&cfg, &repo, &rid, &prompt, mode, &h.cancel, emit))) {
             let what = p
                 .downcast_ref::<&str>()
                 .map(|s| s.to_string())
@@ -178,7 +195,11 @@ fn script_argv(cfg: &Config, sandboxed: bool, script: &str) -> Result<Vec<String
     Ok(v)
 }
 
-fn execute(cfg: &Config, repo: &Path, id: &str, prompt: &str, cancel: &AtomicBool, emit: Emit) {
+fn execute(cfg: &Config, repo: &Path, id: &str, prompt: &str, mode: Mode, cancel: &AtomicBool, emit: Emit) {
+    let interactive = match mode {
+        Mode::Prompt => None,
+        Mode::Interactive { sandboxed } => Some(sandboxed),
+    };
     let mut rec = Record {
         id: id.into(),
         repo: repo.into(),
@@ -207,12 +228,16 @@ fn execute(cfg: &Config, repo: &Path, id: &str, prompt: &str, cancel: &AtomicBoo
 
     // 1. Repository, base and folders.
     let prep = (|| -> Result<(Git, PathBuf, PathBuf, PathBuf, Found), String> {
-        if let Some(why) = cfg.refusal() {
+        let refusal = match interactive {
+            Some(sandboxed) => cfg.refusal_interactive(sandboxed),
+            None => cfg.refusal(),
+        };
+        if let Some(why) = refusal {
             return Err(why);
         }
         // Is the agent installed where it will run? Checked before any
         // Git change, so a refusal leaves nothing behind.
-        let found = preflight(cfg)?;
+        let found = preflight_for(cfg, interactive)?;
         let mut top = Git::discover(repo).map_err(|e| e.to_string())?;
         top.root = native(&top.root.to_string_lossy());
         let common = native(&git_text(&top, &["rev-parse", "--path-format=absolute", "--git-common-dir"])?);
@@ -356,7 +381,27 @@ fn execute(cfg: &Config, repo: &Path, id: &str, prompt: &str, cancel: &AtomicBoo
             rec.detail = format!("setup script: {}", exit.describe());
         }
     }
-    if exit.ok() {
+    if let (true, Some(sandboxed)) = (exit.ok(), interactive) {
+        log.phase("Terminal session");
+        exit = match config::split_command(&cfg.interactive_command)
+            .and_then(|argv| if sandboxed { sandbox::wrap(&argv, &ctx, None) } else { sandbox::plain(&argv, &ctx) })
+        {
+            Ok(launch) => {
+                log.note(launch.display());
+                log.note("the session runs in its own window; ffwd commits when it closes");
+                proc::run_console(&launch, &format!("ffwd · {}", rec.branch), cancel)
+            }
+            Err(e) => Exit::SpawnFailed(e),
+        };
+        log.note(format!("terminal session: {}", exit.describe()));
+        // Closing the window ends the tool however it likes; only a
+        // failure to start counts.
+        if let Exit::SpawnFailed(e) = &exit {
+            rec.detail = format!("terminal: {e}");
+        } else {
+            exit = Exit::Code(0);
+        }
+    } else if exit.ok() {
         log.phase("Agent");
         let pf_shown = shown(&prompt_file);
         let wt_shown = shown(&rec.worktree);
@@ -488,6 +533,62 @@ fn execute(cfg: &Config, repo: &Path, id: &str, prompt: &str, cancel: &AtomicBoo
     }
     log.note(format!("{} · {}", rec.status.word(), rec.detail));
     send(&rec);
+}
+
+/// [`preflight`] for a run mode: an interactive session without the
+/// sandbox needs the interactive program and no bubblewrap.
+fn preflight_for(cfg: &Config, interactive: Option<bool>) -> Result<Found, String> {
+    match interactive {
+        None => preflight(cfg),
+        Some(sandboxed) => {
+            let mut c = cfg.clone();
+            c.command = cfg.interactive_command.clone();
+            if !sandboxed {
+                // Any shell passes the bubblewrap check; none is used.
+                c.bwrap_path = "sh".into();
+            }
+            preflight(&c)
+        }
+    }
+}
+
+/// Opens the tool's interactive CLI in a terminal window in the
+/// repository's own working tree (FF-23): no worktree, no branch, no
+/// commit; returns once the window is open (it is then on its own).
+pub fn open_in_repo(cfg: &Config, repo: &Path, sandboxed: bool) -> Result<String, String> {
+    if let Some(why) = cfg.refusal_interactive(sandboxed) {
+        return Err(why);
+    }
+    let found = preflight_for(cfg, Some(sandboxed))?;
+    let mut top = Git::discover(repo).map_err(|e| e.to_string())?;
+    top.root = native(&top.root.to_string_lossy());
+    let common = native(&git_text(&top, &["rev-parse", "--path-format=absolute", "--git-common-dir"])?);
+    let git_dir = native(&git_text(&top, &["rev-parse", "--path-format=absolute", "--git-dir"])?);
+    let id = make_id("terminal session", now());
+    let run_dir = record::run_dir(&record::root(cfg, &top.root), &format!("session-{id}"));
+    std::fs::create_dir_all(&run_dir).map_err(|e| format!("cannot create {}: {e}", run_dir.display()))?;
+    let ctx = Ctx {
+        cfg,
+        worktree: &top.root,
+        git_common: &common,
+        git_dir: &git_dir,
+        run_dir: &run_dir,
+        vars: vec![("FFWD_AGENT_REPO".into(), top.root.to_string_lossy().into_owned())],
+        home: found.home,
+        program: found.program,
+    };
+    let argv = config::split_command(&cfg.interactive_command)?;
+    let launch = if sandboxed { sandbox::wrap(&argv, &ctx, None)? } else { sandbox::plain(&argv, &ctx)? };
+    let title = format!("ffwd · {}", top.root.file_name().map_or(String::new(), |n| n.to_string_lossy().into_owned()));
+    std::thread::Builder::new()
+        .name("ffwd-terminal".into())
+        .spawn(move || {
+            let never = AtomicBool::new(false);
+            let _ = proc::run_console(&launch, &title, &never);
+        })
+        .map_err(|e| e.to_string())?;
+    let how = if sandboxed { cfg.sandbox.label() } else { "no sandbox" };
+    Ok(format!("Opened {} in a terminal window ({how})", argv[0]))
 }
 
 /// What the preflight check found where the agent will run.

@@ -314,7 +314,8 @@ pub(super) fn for_act(act: &super::menu::MenuAct) -> Option<Glyph> {
             | R::DeleteRemoteBranch(..)
             | R::DeleteMany(..)
             | R::DeleteRemoteMany(..)
-            | R::StashDropMany(_) => Glyph::Trash,
+            | R::StashDropMany(_)
+            | R::WorktreeRemove(_) => Glyph::Trash,
             R::CreateTag(..) => Glyph::Tag,
             R::Merge(..) => Glyph::Merge,
             R::Rebase(_) => Glyph::Rebase,
@@ -380,6 +381,8 @@ pub(super) fn for_act(act: &super::menu::MenuAct) -> Option<Glyph> {
         M::Scope(false) => Some(Glyph::Commit),
         M::Scope(true) => Some(Glyph::Branch),
         M::ShowStashes(_) => Some(Glyph::Stash),
+        M::AgentTerminal { .. } => Some(Glyph::Terminal),
+        M::OpenTab(_) => Some(Glyph::Plus),
         M::Compare(..) => Some(Glyph::DiffTool),
         M::StageToggle(true) => Some(Glyph::Plus),
         M::StageToggle(false) => Some(Glyph::Undo),

@@ -205,7 +205,7 @@ What a complete desktop Git client offers, grouped in 18 areas, with ffwd's stat
 | Feature | ffwd | Notes |
 |---|---|---|
 | Submodules: add, remove, update (on checkout by default), status on the sidebar, open the parent | Partial | Sidebar section with state, add, update one or all, open in a new tab; remove, update on checkout and open the parent come later |
-| Worktrees: list, create, delete, check out a remote branch as a worktree, remove with its branch | Partial | Listed on the sidebar; agents create them (FF-23) |
+| Worktrees: list, create, delete, check out a remote branch as a worktree, remove with its branch | Partial | Listed on the sidebar with a menu: open in a new tab, terminal, folder, the agent's CLI there, copy path, remove (asks; Git refuses one with changes); agents create them (FF-23) |
 | Git LFS: status dialog, locks (filter, unlock several), prune, progress, preview and download | M2 | |
 | *ffwd's own:* move a submodule (`git mv`, refuses or asks when it has uncommitted or unpushed work, optional rename) | **Built** | Refuses while it has uncommitted or unpushed work or `.gitmodules` has unstaged edits; creates missing folders. Renaming comes later |
 | *ffwd's own:* automatic relative submodule URLs: propose `../lib.git` on add when the host and owner match the superproject's remote, convert existing absolute URLs in bulk (then `git submodule sync`), and make one absolute again | **Built** | Setting `submodules.relative_urls` = ask (default), always, never; per repository too |

@@ -236,6 +236,44 @@ pub fn macos_profile(ctx: &Ctx, home: Option<&Path>) -> String {
     p
 }
 
+/// Starts `inner` where the sandbox would (inside WSL for the WSL sandbox,
+/// else on this PC) but without the sandbox: for an interactive session
+/// the user chose to run with their own permissions (FF-23).
+pub fn plain(inner: &[String], ctx: &Ctx) -> Result<Launch, String> {
+    let cfg = ctx.cfg;
+    if inner.is_empty() {
+        return Err("empty command".into());
+    }
+    let cwd = ctx.worktree.to_path_buf();
+    if cfg.sandbox.resolve() == SandboxKind::Wsl {
+        let mut args = Vec::new();
+        if !cfg.wsl_distro.is_empty() {
+            args.extend(["-d".to_string(), cfg.wsl_distro.clone()]);
+        }
+        args.extend(["--cd".to_string(), to_wsl(ctx.worktree, &cfg.wsl_path_map)?, "-e".into()]);
+        let mut inner = inner.to_vec();
+        if let Some((name, real)) = &ctx.program
+            && inner[0] == *name
+        {
+            inner[0] = real.clone();
+        }
+        args.extend(inner);
+        let env: Vec<(String, String)> = ctx.vars.clone();
+        let mut names: Vec<String> = env.iter().map(|(k, _)| k.clone()).collect();
+        if let Ok(prev) = std::env::var("WSLENV")
+            && !prev.is_empty()
+        {
+            names.push(prev);
+        }
+        let mut env = env;
+        env.push(("WSLENV".into(), names.join(":")));
+        return Ok(Launch { program: "wsl.exe".into(), args, cwd, clear_env: false, env, stdin: None });
+    }
+    let mut env = cfg.env.clone();
+    env.extend(ctx.vars.iter().cloned());
+    Ok(Launch { program: inner[0].clone(), args: inner[1..].to_vec(), cwd, clear_env: false, env, stdin: None })
+}
+
 /// Wraps `inner` (the agent's or a script's argv) in the configured sandbox.
 pub fn wrap(inner: &[String], ctx: &Ctx, stdin: Option<Vec<u8>>) -> Result<Launch, String> {
     let cfg = ctx.cfg;
@@ -334,6 +372,27 @@ pub fn template_vars(ctx: &Ctx) -> Vec<(&'static str, String)> {
 
 #[cfg(test)]
 mod tests {
+
+    /// A terminal session without the sandbox (FF-23): inside WSL it still
+    /// runs in the distribution, in the worktree, by the tool's real path,
+    /// but without bubblewrap.
+    #[test]
+    fn plain_runs_where_the_sandbox_would_without_it() {
+        let mut c = cfg(SandboxKind::Wsl);
+        c.wsl_distro = "Debian".into();
+        let mut x = ctx(&c);
+        x.worktree = Path::new(r"E:\a\wt");
+        x.program = Some(("claude".into(), "/home/me/.local/bin/claude".into()));
+        let l = plain(&["claude".into()], &x).unwrap();
+        assert_eq!(l.program, "wsl.exe");
+        assert_eq!(l.args, ["-d", "Debian", "--cd", "/mnt/e/a/wt", "-e", "/home/me/.local/bin/claude"]);
+        assert!(!l.args.iter().any(|a| a.contains("bwrap")));
+        let c = cfg(SandboxKind::None);
+        let l = plain(&["tool".into(), "x".into()], &ctx(&c)).unwrap();
+        assert_eq!((l.program.as_str(), l.args.as_slice()), ("tool", &["x".to_string()][..]));
+        assert!(!l.clear_env, "the user's own environment");
+    }
+
     use super::*;
 
     fn cfg(kind: SandboxKind) -> Config {

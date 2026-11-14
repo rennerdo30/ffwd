@@ -39,6 +39,8 @@ enum Ask {
 #[derive(Clone, Copy, Debug)]
 enum Hit {
     Field,
+    /// Open the tool's CLI in a terminal window (a menu of places).
+    Terminal,
     Run(usize),
     Button(Btn),
     Confirm(bool),
@@ -205,8 +207,74 @@ impl Ui {
         if prompt.is_empty() {
             return;
         }
+        self.launch_agent(prompt, ffwd_agent::run::Mode::Prompt);
+    }
+
+    /// The menu of terminal sessions (FF-23): the tool's interactive CLI
+    /// in a new worktree (with `worktrees`) or in `path` (None: this
+    /// repository), with the sandbox and without.
+    pub(super) fn agent_terminal_menu(&self, path: Option<PathBuf>, worktrees: bool) -> Vec<menu::MenuItem> {
         let (cfg, _) = self.agent_config();
-        if let Some(why) = cfg.refusal() {
+        let tool = cfg.preset.map(|p| p.name.to_string()).unwrap_or_else(|| {
+            ffwd_agent::config::split_command(&cfg.interactive_command)
+                .ok()
+                .and_then(|v| v.into_iter().next())
+                .unwrap_or_else(|| "the agent".into())
+        });
+        let kind = cfg.sandbox.resolve();
+        let boxed = kind != ffwd_agent::SandboxKind::None;
+        let plain = if kind == ffwd_agent::SandboxKind::Wsl { "WSL, no sandbox" } else { "no sandbox" };
+        let here = if path.is_some() { "in this worktree" } else { "in this repository" };
+        let it = |label: String, worktree: bool, sandboxed: bool| menu::MenuItem {
+            label,
+            act: Some(menu::MenuAct::AgentTerminal { path: path.clone(), worktree, sandboxed }),
+            danger: false,
+        };
+        let mut v = Vec::new();
+        for sandboxed in [true, false] {
+            if sandboxed && !boxed {
+                continue;
+            }
+            let how = if sandboxed { cfg.sandbox.label() } else { plain };
+            if worktrees {
+                v.push(it(format!("Open {tool} in a new worktree ({how})"), true, sandboxed));
+            }
+            v.push(it(format!("Open {tool} {here} ({how})"), false, sandboxed));
+        }
+        v
+    }
+
+    /// Opens a terminal session (FF-23). In a new worktree it is a run of
+    /// its own (listed, committed when the window closes); elsewhere the
+    /// window is on its own.
+    pub(super) fn agent_terminal(&mut self, path: Option<PathBuf>, worktree: bool, sandboxed: bool) {
+        let mode = ffwd_agent::run::Mode::Interactive { sandboxed };
+        if worktree {
+            let title = self.agent_view.as_ref().map(|v| v.input.text().trim().to_string()).unwrap_or_default();
+            return self.launch_agent(title, mode);
+        }
+        let (cfg, _) = self.agent_config();
+        let Some(dir) = path.or_else(|| self.tab_path()) else { return };
+        let sink = (self.sinks)(0);
+        self.set_notice("Opening a terminal session…".into());
+        std::thread::spawn(move || sink(Msg::AgentNotice(ffwd_agent::run::open_in_repo(&cfg, &dir, sandboxed))));
+    }
+
+    pub(super) fn on_agent_notice(&mut self, r: Result<String, String>) {
+        let (ok, m) = match r {
+            Ok(m) => (true, m),
+            Err(e) => (false, format!("The terminal session did not open: {e}")),
+        };
+        self.agent_msg(ok, m);
+    }
+
+    fn launch_agent(&mut self, prompt: String, mode: ffwd_agent::run::Mode) {
+        let (cfg, _) = self.agent_config();
+        let refusal = match mode {
+            ffwd_agent::run::Mode::Prompt => cfg.refusal(),
+            ffwd_agent::run::Mode::Interactive { sandboxed } => cfg.refusal_interactive(sandboxed),
+        };
+        if let Some(why) = refusal {
             return self.agent_msg(false, why);
         }
         let active = self.agents.iter().filter(|a| a.rec.status.active()).count();
@@ -220,7 +288,8 @@ impl Ui {
         let cap = cfg.log_lines;
         let prefix = cfg.branch_prefix.clone();
         let sandbox = cfg.sandbox.label().to_string();
-        let (id, handle) = ffwd_agent::run::start(cfg, tab.clone(), prompt.clone(), self.agent_emit());
+        let title_src = if prompt.trim().is_empty() { "terminal session".to_string() } else { prompt.clone() };
+        let (id, handle) = ffwd_agent::run::start_mode(cfg, tab.clone(), prompt.clone(), mode, self.agent_emit());
         self.agents.push(AgentRun {
             tab: tab.clone(),
             rec: Record {
@@ -229,7 +298,7 @@ impl Ui {
                 worktree: PathBuf::new(),
                 branch: format!("{prefix}{id}"),
                 base: String::new(),
-                title: ffwd_agent::run::title(&prompt),
+                title: ffwd_agent::run::title(&title_src),
                 started: now_secs(),
                 ended: None,
                 status: Status::Preparing,
@@ -573,6 +642,17 @@ impl Ui {
                     v.ask = None;
                 }
             }
+            Some(Hit::Terminal) => {
+                let items = self.agent_terminal_menu(None, true);
+                let r = self
+                    .agent_view
+                    .as_ref()
+                    .and_then(|v| v.hits.iter().find(|h| matches!(h.1, Hit::Terminal)).map(|h| h.0));
+                if let Some(r) = r {
+                    self.open_menu(r.x, r.bottom(), items);
+                }
+                return;
+            }
             Some(Hit::Button(b)) => self.agent_button(b),
             Some(Hit::Confirm(yes)) => self.agent_confirm(yes),
             None => {}
@@ -677,8 +757,25 @@ impl Ui {
         };
         self.te.draw(cv, ui, self.pf(12.0), x0 as f32, sy, &line, col, inner_w as f32);
 
-        // Prompt field.
-        let fr = Rect::new(x0, (sy + self.pf(14.0)) as i32, inner_w, self.px(38.0));
+        // Prompt field, and beside it the terminal session menu (FF-23).
+        let tl = "Open in terminal";
+        let tw = (self.te.measure(semi, self.pf(12.5), tl) + self.pf(40.0)) as i32;
+        let fr = Rect::new(x0, (sy + self.pf(14.0)) as i32, inner_w - tw - self.px(10.0), self.px(38.0));
+        let tb = Rect::new(fr.right() + self.px(10.0), fr.y, tw, fr.h);
+        let hot = Hot::Agent(hits.len());
+        let (tbg, tborder) = self.control_colors(hot, BG_BAR, BORDER);
+        cv.round_border(tb, self.pf(8.0), tborder, tbg);
+        self.glyph(
+            cv,
+            Glyph::Terminal,
+            tb.x as f32 + self.pf(16.0),
+            tb.y as f32 + tb.h as f32 / 2.0,
+            self.pf(6.0),
+            TEXT_2,
+        );
+        let tbase = (tb.y as f32 + tb.h as f32 / 2.0 + self.pf(4.5)).round();
+        self.te.draw(cv, semi, self.pf(12.5), tb.x as f32 + self.pf(30.0), tbase, tl, TEXT, tw as f32);
+        hits.push((tb, Hit::Terminal));
         cv.round_border(fr, self.pf(8.0), if view.field { ACCENT } else { BORDER }, BG_INPUT);
         let fx = fr.x as f32 + self.pf(14.0);
         let fb = (fr.y as f32 + fr.h as f32 / 2.0 + self.pf(4.5)).round();
