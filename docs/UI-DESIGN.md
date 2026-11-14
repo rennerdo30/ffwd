@@ -184,7 +184,7 @@ The capture above is the real PoC UI. `ffwd --snapshot` rendered it offscreen fr
   - Right-click a line in a commit's diff or the Local Changes diff for **Open in editor at line n** (the line in the new file; a removed line opens where it was) or **Copy line**.
   - The line is passed the way known editors expect: VS Code, Cursor and VSCodium `-g file:n`; Sublime Text, Zed and Helix `file:n`; JetBrains IDEs `--line n file`; Notepad++ `-nn file`; Vim, Neovim, Emacs and nano `+n file`; Kate `-l n file`. Other editors get the file only.
   - `{file}` and `{line}` in the command place them yourself, for example `myeditor --goto {file}:{line}`.
-- **Diff and merge tools:** `git difftool` / `git mergetool` with the tool your Git config names (`diff.guitool`, `diff.tool`, `merge.tool`). Without one, ffwd says how to set it instead of starting a terminal tool. After the merge tool closes, Local Changes reloads.
+- **Diff and merge tools:** `git difftool` / `git mergetool`. Settings → General → **Merge tool** and **Diff tool** list the tools Git can start on this PC with their own window (from `git mergetool --tool-help`: installed and user-defined ones; terminal tools are left out, there is no terminal); **Git config** uses `merge.tool` / `diff.tool` (`tools.merge_tool`, `tools.diff_tool`). Without a tool, ffwd says how to choose one instead of starting a terminal tool. After the merge tool closes, Local Changes reloads.
 - **Git program:** Settings → General → **Git program** (`git.path`) or the `FFWD_GIT` variable, chosen once at start, off the UI thread.
 
 ## Pull requests (FF-40)

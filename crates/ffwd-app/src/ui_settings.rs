@@ -9,6 +9,9 @@ pub(super) enum Row {
     Layout,
     Updates,
     Channel,
+    /// External merge and diff tools (FF-42).
+    MergeTool,
+    DiffTool,
     /// Fetch automatically (FF-39).
     AutoFetch,
     Roots,
@@ -51,6 +54,8 @@ const GENERAL: &[Row] = &[
     Row::AiEndpoint,
     Row::AiModel,
     Row::Editor,
+    Row::MergeTool,
+    Row::DiffTool,
     Row::GitPath,
     Row::AiKeyEnv,
     Row::OpenFile,
@@ -90,6 +95,8 @@ impl Row {
             Row::AiEndpoint => "AI endpoint",
             Row::AiModel => "AI model",
             Row::Editor => "Editor",
+            Row::MergeTool => "Merge tool",
+            Row::DiffTool => "Diff tool",
             Row::GitPath => "Git program",
             Row::AiKeyEnv => "AI key variable",
             Row::OpenFile => "Settings file",
@@ -124,6 +131,8 @@ impl Row {
             Row::AiEndpoint => "OpenAI-compatible URL; local servers first (Ollama, LM Studio, llama.cpp)",
             Row::AiModel => "Model name the endpoint expects",
             Row::Editor => "Opens files from the file menus, e.g. code or a full path; empty uses the default app",
+            Row::MergeTool => "Installed tools Git can start; Git config uses merge.tool",
+            Row::DiffTool => "Installed tools Git can start; Git config uses diff.tool",
             Row::GitPath => "The git binary (or FFWD_GIT); empty uses git from PATH; applies at the next start",
             Row::AiKeyEnv => "Name of an environment variable that holds the API key; the key is never stored here",
             Row::OpenFile => "Every setting, as text",
@@ -267,12 +276,12 @@ impl Ui {
             let c: &[&str] = if preset { &["Off", "Read", "Write"] } else { &["Remove", "Read", "Write"] };
             return c.iter().map(|s| s.to_string()).collect();
         }
-        if row != Row::WslDistro {
+        let Some((key, first, list)) = self.list_row(row) else {
             return row.choices().iter().map(|s| s.to_string()).collect();
-        }
-        let mut v = vec!["Default".to_string()];
-        v.extend(self.wsl_distros.iter().cloned());
-        if let Some(cur) = self.sget("agents.wsl_distro").filter(|c| !c.is_empty())
+        };
+        let mut v = vec![first.to_string()];
+        v.extend(list.iter().cloned());
+        if let Some(cur) = self.sget(key).filter(|c| !c.is_empty())
             && !v.iter().any(|d| d == cur)
         {
             v.push(cur.to_string());
@@ -280,11 +289,32 @@ impl Ui {
         v
     }
 
+    /// Rows whose choices are found on this PC: (setting, the "use the
+    /// default" choice, the found ones).
+    fn list_row(&self, row: Row) -> Option<(&'static str, &'static str, &[String])> {
+        Some(match row {
+            Row::WslDistro => ("agents.wsl_distro", "Default", &self.wsl_distros),
+            Row::MergeTool => ("tools.merge_tool", "Git config", &self.merge_tools),
+            Row::DiffTool => ("tools.diff_tool", "Git config", &self.diff_tools),
+            _ => return None,
+        })
+    }
+
     pub fn open_settings_page(&mut self, page: usize) {
         // The WSL distributions, for the agents' sandbox (never in tests).
         if cfg!(windows) && !cfg!(test) {
             let sink = (self.sinks)(0);
             std::thread::spawn(move || sink(Msg::WslDistros(crate::platform::wsl_distros())));
+        }
+        // The merge and diff tools Git can start (never in tests).
+        if !cfg!(test) {
+            let sink = (self.sinks)(0);
+            let git = self.r.git.clone().unwrap_or(ffwd_core::git::Git { root: std::env::temp_dir() });
+            std::thread::spawn(move || {
+                let merge = ffwd_core::tools::available(&git, true);
+                let diff = ffwd_core::tools::available(&git, false);
+                sink(Msg::Tools(merge, diff));
+            });
         }
         self.palette = None;
         self.damage.full = true;
@@ -505,13 +535,10 @@ impl Ui {
                     .unwrap_or(0)
             }
             Row::Grant(k) => self.grants().get(k as usize).map_or(0, |g| g.level as usize),
-            Row::WslDistro => {
-                let cur = self.sget("agents.wsl_distro").unwrap_or("").to_string();
-                if cur.is_empty() {
-                    0
-                } else {
-                    self.row_choices(Row::WslDistro).iter().position(|d| *d == cur).unwrap_or(0)
-                }
+            Row::WslDistro | Row::MergeTool | Row::DiffTool => {
+                let key = self.list_row(row).map_or("", |l| l.0);
+                let cur = self.sget(key).unwrap_or("").to_string();
+                if cur.is_empty() { 0 } else { self.row_choices(row).iter().position(|d| *d == cur).unwrap_or(0) }
             }
             Row::AllowUnsandboxed => self.flag_now("agents.allow_unsandboxed", false) as usize,
             Row::Network => !self.flag_now("agents.network", true) as usize,
@@ -553,13 +580,10 @@ impl Ui {
             }
             Row::Sandbox => self.sset("agents.sandbox", ["auto", "bwrap", "wsl", "macos", "custom", "none"][i.min(5)]),
             Row::Grant(k) => self.set_grant(k as usize, i.min(2) as u8),
-            Row::WslDistro => {
-                let v = if i == 0 {
-                    String::new()
-                } else {
-                    self.row_choices(Row::WslDistro).get(i).cloned().unwrap_or_default()
-                };
-                self.sset("agents.wsl_distro", &v);
+            Row::WslDistro | Row::MergeTool | Row::DiffTool => {
+                let key = self.list_row(row).map_or("", |l| l.0);
+                let v = if i == 0 { String::new() } else { self.row_choices(row).get(i).cloned().unwrap_or_default() };
+                self.sset(key, &v);
             }
             Row::AllowUnsandboxed => self.sset("agents.allow_unsandboxed", if i == 1 { "true" } else { "false" }),
             Row::Network => self.sset("agents.network", if i == 1 { "false" } else { "true" }),

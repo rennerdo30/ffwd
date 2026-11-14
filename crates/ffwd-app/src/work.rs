@@ -40,6 +40,8 @@ pub enum Msg {
     Repos(Vec<PathBuf>),
     /// The installed WSL distributions (Windows; for the agents' sandbox).
     WslDistros(Vec<String>),
+    /// The merge and diff tools Git can start here (FF-42).
+    Tools(Vec<String>, Vec<String>),
     /// The automatic fetch is due (FF-39).
     AutoFetchTick,
     OpProgress(String),

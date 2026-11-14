@@ -169,7 +169,7 @@ What a complete desktop Git client offers, grouped in 18 areas, with ffwd's stat
 | Conflict marks on the scrollbar; navigation links | M2 | |
 | Resolve several files at once (ours or theirs) | **Built** | “All ours…” / “All theirs…” in the conflict banner (with two or more conflicts), asking first and naming the files; per file in the resolver |
 | Merge images, LFS files and submodules | M2 | |
-| External merge tools (many presets, several configured); UnityYAMLMerge | M1 | |
+| External merge tools (many presets, several configured); scene-file merge tools | **Built** | Settings lists every merge tool Git can start on this PC (installed and user-defined); the choice overrides the Git config. Scene-file tools work as user-defined Git tools |
 | Diff of conflicted files resolved in an external editor | M2 | |
 | Revision links during a conflicted rebase | M2 | |
 
@@ -223,7 +223,7 @@ What a complete desktop Git client offers, grouped in 18 areas, with ffwd's stat
 |---|---|---|
 | Custom commands: shell, bash, URL; UI dialogs with text fields, branch pickers, file pickers and checkboxes; shared with the team; per OS; for branches, files and submodules | M2 | ffwd agents already have scripts (FF-23) |
 | Open in an editor, IDE or terminal (long preset list); custom shell and terminal | Partial | File menus: open in the editor (`tools.editor`) or the default app, show in the folder; tab menu: open a terminal. Presets come later |
-| External diff and merge tools, several, with presets | Partial | `git difftool` / `git mergetool` with the tool from the user's Git config (`diff.guitool`, `diff.tool`, `merge.tool`); presets come later |
+| External diff and merge tools, several, with presets | **Built** | `git difftool` / `git mergetool`; Settings → General → **Merge tool** / **Diff tool** lists the tools Git can start here, else the Git config (`diff.guitool`, `diff.tool`, `merge.tool`) decides |
 | Issue-tracker link rules (Jira, Redmine, GitHub issues) | M2 | |
 | Choose the Git binary (preferences or environment variable); bundled Git | Partial | Setting `git.path` or `FFWD_GIT`; no bundled Git |
 | SSH key manager, SSH configuration helper, several keys; edit Git credentials | M2 | |

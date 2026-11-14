@@ -1470,10 +1470,13 @@ impl Ui {
         let sink = (self.sinks)(t.id);
         let merge = diff.is_none();
         self.set_notice(if merge { "Opening the merge tool…".into() } else { "Opening the diff tool…".into() });
+        // ffwd's own choice (Settings), else the Git config's (FF-42).
+        let key = if merge { "tools.merge_tool" } else { "tools.diff_tool" };
+        let tool = self.settings.get(key).map(str::to_string);
         crate::work::spawn("tool", &sink, move |sink| {
             let result = match &diff {
-                Some(of) => ffwd_core::tools::difftool(&g, &path, of),
-                None => ffwd_core::tools::mergetool(&g, &path),
+                Some(of) => ffwd_core::tools::difftool(&g, &path, of, tool.as_deref()),
+                None => ffwd_core::tools::mergetool(&g, &path, tool.as_deref()),
             };
             sink(Msg::ToolDone { merge, result });
         });

@@ -36,10 +36,51 @@ pub fn merge_tool(git: &Git) -> Option<String> {
     configured(git, &["merge.guitool", "merge.tool"])
 }
 
+/// The tools Git can start here with their own window (a terminal tool
+/// has no terminal under ffwd), as listed by `git mergetool --tool-help`
+/// (or difftool): installed ones and user-defined ones (FF-42).
+pub fn available(git: &Git, merge: bool) -> Vec<String> {
+    let cmd = if merge { "mergetool" } else { "difftool" };
+    git.output_limited(&[cmd, "--tool-help"], 64 * 1024)
+        .map(|b| parse_tool_help(&String::from_utf8_lossy(&b)))
+        .unwrap_or_default()
+}
+
+/// Reads `--tool-help`: the first list (available tools) and the
+/// "user-defined" list; stops at the tools that are not available.
+pub fn parse_tool_help(out: &str) -> Vec<String> {
+    let mut v = Vec::new();
+    let mut user = false;
+    for line in out.lines() {
+        let t = line.trim();
+        if t.starts_with("The following tools are valid, but not currently available") {
+            break;
+        }
+        if t.starts_with("user-defined") {
+            user = true;
+            continue;
+        }
+        if !line.starts_with('\t') || t.is_empty() {
+            continue;
+        }
+        let (id, about) = t.split_once(char::is_whitespace).unwrap_or((t, ""));
+        // A user-defined tool shows as `name.cmd <its command>`.
+        let id = if user { id.strip_suffix(".cmd").unwrap_or(id) } else { id };
+        let windowed = about.contains("graphical session");
+        let id_ok = !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.');
+        if id_ok && (windowed || user) && !v.iter().any(|x| x == id) {
+            v.push(id.to_string());
+        }
+    }
+    v
+}
+
 /// Opens the external diff tool for `path` and waits until it closes.
-pub fn difftool(git: &Git, path: &str, of: &DiffOf) -> Result<String, String> {
-    let tool = diff_tool(git).ok_or_else(|| {
-        "No diff tool is set in your Git config; set one, for example: git config --global diff.tool vscode".to_string()
+/// `tool` overrides the Git config (ffwd's own choice, FF-42).
+pub fn difftool(git: &Git, path: &str, of: &DiffOf, tool: Option<&str>) -> Result<String, String> {
+    let tool = tool.filter(|t| !t.is_empty()).map(str::to_string).or_else(|| diff_tool(git)).ok_or_else(|| {
+        "No diff tool is chosen: pick one in Settings → General → Diff tool, or set diff.tool in your Git config"
+            .to_string()
     })?;
     let range;
     let mut args = vec!["difftool", "--no-prompt", "--tool", &tool];
@@ -58,9 +99,9 @@ pub fn difftool(git: &Git, path: &str, of: &DiffOf) -> Result<String, String> {
 
 /// Opens the merge tool for a conflicted `path` and waits until it closes.
 /// Git marks the file resolved when the tool reports success.
-pub fn mergetool(git: &Git, path: &str) -> Result<String, String> {
-    let tool = merge_tool(git).ok_or_else(|| {
-        "No merge tool is set in your Git config; set one, for example: git config --global merge.tool vscode"
+pub fn mergetool(git: &Git, path: &str, tool: Option<&str>) -> Result<String, String> {
+    let tool = tool.filter(|t| !t.is_empty()).map(str::to_string).or_else(|| merge_tool(git)).ok_or_else(|| {
+        "No merge tool is chosen: pick one in Settings → General → Merge tool, or set merge.tool in your Git config"
             .to_string()
     })?;
     git.run_with(&["mergetool", "--no-prompt", "--tool", &tool, "--", path], None, &[], 1 << 16)
@@ -142,6 +183,14 @@ pub fn editor_command(editor: &str, file: &str, line: Option<u32>) -> Option<(St
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn tool_help_lists_windowed_and_user_tools() {
+        let out = "'git mergetool --tool=<tool>' may be set to one of the following:\n\t\tvimdiff          Use Vim with a custom layout\n\t\tcodetool         Use Some Editor (requires a graphical session)\n\n\tuser-defined:\n\t\tmine.cmd my-merge \"$LOCAL\"\n\nThe following tools are valid, but not currently available:\n\t\tother            Use Other (requires a graphical session)\n";
+        assert_eq!(parse_tool_help(out), ["codetool", "mine"]);
+        assert!(parse_tool_help("").is_empty());
+    }
+
     use super::*;
 
     #[test]
@@ -184,7 +233,7 @@ mod tests {
         // Whatever the user's global config says, a repository-local empty
         // value cannot be expressed; so only check the message when unset.
         if diff_tool(&g).is_none() {
-            assert!(difftool(&g, "a.txt", &DiffOf::Unstaged).unwrap_err().contains("No diff tool"));
+            assert!(difftool(&g, "a.txt", &DiffOf::Unstaged, None).unwrap_err().contains("No diff tool"));
         }
         // A repository-local tool that only exits: ffwd runs it and returns.
         let ok = if cfg!(windows) { "cmd /c exit 0" } else { "true" };
@@ -192,7 +241,13 @@ mod tests {
         g.output(&["config", "difftool.ffwdtest.cmd", ok]).unwrap();
         std::fs::write(dir.join("a.txt"), "a").unwrap();
         g.output(&["add", "."]).unwrap();
-        assert_eq!(difftool(&g, "a.txt", &DiffOf::Staged).unwrap(), "Closed ffwdtest");
+        assert_eq!(difftool(&g, "a.txt", &DiffOf::Staged, None).unwrap(), "Closed ffwdtest");
+        // ffwd's own choice wins over the Git config, and user-defined
+        // tools are offered (FF-42).
+        g.output(&["config", "difftool.other.cmd", ok]).unwrap();
+        assert_eq!(difftool(&g, "a.txt", &DiffOf::Staged, Some("other")).unwrap(), "Closed other");
+        let found = available(&g, false);
+        assert!(found.iter().any(|t| t == "other") && found.iter().any(|t| t == "ffwdtest"), "{found:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
