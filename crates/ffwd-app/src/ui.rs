@@ -3321,12 +3321,14 @@ impl Ui {
                 cv.fill(Rect::new(t.x, t.y, t.w, h), c.1);
             }
             let base = (t.y as f32 + t.h as f32 / 2.0 + self.pf(4.5)).round();
-            let close_w = if active || hover { self.pf(28.0) } else { 0.0 };
+            // The close button's room is kept on both sides whether it
+            // shows or not: the label never moves when the pointer comes.
+            let close_w = self.pf(28.0);
             let font = if active { semi } else { ui };
-            let max = t.w as f32 - self.pf(28.0) - close_w;
+            let max = (t.w as f32 - 2.0 * close_w).max(self.pf(24.0));
             let tw = self.te.measure(font, self.pf(12.5), &name).min(max);
-            // Centred.
-            let tx = t.x as f32 + ((t.w as f32 - close_w - tw) / 2.0).max(self.pf(14.0));
+            // Centred in the whole tab.
+            let tx = t.x as f32 + ((t.w as f32 - tw) / 2.0).max(close_w);
             let end =
                 self.te.draw(cv, font, self.pf(12.5), tx, base, &name, if active { TEXT() } else { TEXT_3() }, max);
             // An agent runs (accent) or finished unseen (green, red).

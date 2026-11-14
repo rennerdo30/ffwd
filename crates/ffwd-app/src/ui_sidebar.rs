@@ -414,7 +414,10 @@ impl Ui {
                     let name = w.rsplit(['/', '\\']).next().unwrap_or(w);
                     if matches(name) {
                         let mut it = SideItem::new(0, SideKind::Worktree, name, format!("w:{w}"));
-                        it.age = self.r.refs.worktree_branches.get(k).map(|b| b.to_string()).unwrap_or_default();
+                        // Its branch, unless the name already says it
+                        // (agent worktrees: agent/<folder>).
+                        let b = self.r.refs.worktree_branches.get(k).map(|b| b.to_string()).unwrap_or_default();
+                        it.age = if b.rsplit('/').next() == Some(name) { String::new() } else { b };
                         it.current = here.as_ref().is_some_and(|h| same_path(h, std::path::Path::new(&**w)));
                         v.push(it);
                     }
@@ -936,7 +939,7 @@ impl Ui {
             let label = super::fit_middle(&mut self.te, font, fs, &it.label, lw);
             self.te.draw(cv, font, self.pf(13.0), lx, base, &label, text, lw + 2.0);
             if !note.is_empty() {
-                let nw = note_w - self.pf(12.0);
+                let nw = note_w - self.pf(8.0);
                 let nfs = self.pf(11.0);
                 let shown = super::fit_middle(&mut self.te, note_font, nfs, &note, nw);
                 let tw = self.te.measure(note_font, self.pf(11.0), &shown);
