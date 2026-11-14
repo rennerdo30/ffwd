@@ -610,6 +610,8 @@ pub struct Ui {
     pub wsl_distros: Vec<String>,
     /// Merge and diff tools Git can start (Settings choices, FF-42).
     pub merge_tools: Vec<String>,
+    /// Git's settings as the Settings page shows them (`git:global:…`).
+    pub(super) git_conf: std::collections::HashMap<String, String>,
     pub diff_tools: Vec<String>,
     /// Minutes between automatic fetches (0: off), read by the clock
     /// thread (FF-39).
@@ -781,6 +783,7 @@ impl Ui {
             diff_max: false,
             wsl_distros: Vec::new(),
             merge_tools: Vec::new(),
+            git_conf: Default::default(),
             diff_tools: Vec::new(),
             auto_fetch_minutes: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             auto_fetch_failed: false,
@@ -1103,6 +1106,23 @@ impl Ui {
         }
         if let Msg::AutoFetchTick = m {
             return self.auto_fetch_due();
+        }
+        if let Msg::GitConf(v) = m {
+            self.git_conf.extend(v);
+            if self.settings_view.is_some() {
+                let r = self.settings_rect();
+                self.damage.rects.push(r);
+            }
+            return;
+        }
+        if let Msg::GitConfSaved(r) = m {
+            if let Err(e) = r {
+                self.set_notice(e);
+            }
+            return;
+        }
+        if let Msg::Picked(key, path) = m {
+            return self.settings_picked(key, path);
         }
         if let Msg::Tools(merge, diff) = m {
             self.merge_tools = merge;
@@ -1573,7 +1593,14 @@ impl Ui {
                 }
             }
             // Handled in on_tab_msg; repeated here so a stray one is harmless.
-            Msg::Repos(_) | Msg::WslDistros(_) | Msg::Tools(..) | Msg::AgentNotice(_) | Msg::AutoFetchTick => {}
+            Msg::Repos(_)
+            | Msg::WslDistros(_)
+            | Msg::Tools(..)
+            | Msg::GitConf(_)
+            | Msg::GitConfSaved(_)
+            | Msg::Picked(..)
+            | Msg::AgentNotice(_)
+            | Msg::AutoFetchTick => {}
             Msg::Agent(e) => self.on_agent_event(e),
             Msg::RepoSettings(p, s) => self.on_repo_settings(p, s),
             Msg::Changes(r) => self.on_changes(r),
@@ -8814,7 +8841,7 @@ mod tests {
         let sinks: SinkFactory = Arc::new(|_| Arc::new(|_| {}));
         let mut ui = Ui::new(te, f, empty.clone(), empty, None, sinks, 1280, 900, 1.0);
         ui.open_settings_page(0);
-        ui.settings_go("Git & tools");
+        ui.settings_go("Tools");
         ui.on_tab_msg(0, Msg::Tools(vec!["tool-a".into(), "tool-b".into()], vec!["tool-c".into()]));
         assert_eq!(ui.row_choices(settings_view::Row::MergeTool), ["Git config", "tool-a", "tool-b"]);
         assert_eq!(ui.row_choices(settings_view::Row::DiffTool), ["Git config", "tool-c"]);
@@ -8824,6 +8851,43 @@ mod tests {
         assert_partial_paint_is_full(&mut ui, &mut screen, "merge tool chosen");
         ui.set_choice(settings_view::Row::MergeTool, 0);
         assert_eq!(ui.settings.get("tools.merge_tool").unwrap_or(""), "");
+    }
+
+    /// The Git section (FF-57): Git's own settings from a worker, edited in
+    /// place (tests never write git config), certificate checks as a
+    /// switch, and Browse beside path fields.
+    #[test]
+    fn git_section_shows_and_edits_git_config() {
+        use settings_view::Row;
+        let mut te = TextEngine::new();
+        let Some(f) = load_fonts(&mut te) else { return };
+        let empty = crate::settings::Settings::parse("");
+        let sinks: SinkFactory = Arc::new(|_| Arc::new(|_| {}));
+        let mut ui = Ui::new(te, f, empty.clone(), empty, None, sinks, 1400, 900, 1.0);
+        ui.open_settings();
+        ui.settings_go("Git");
+        ui.on_tab_msg(
+            0,
+            Msg::GitConf(vec![("git:global:user.name".into(), "Ada".into()), ("git:version".into(), "2.47.1".into())]),
+        );
+        let rows = ui.rows();
+        assert!(rows.contains(&Row::GitName) && rows.contains(&Row::SslVerify));
+        assert!(!rows.contains(&Row::RepoGitName), "no repository: no repository identity");
+        let mut screen = vec![0u32; 1400 * 900];
+        ui.paint(&mut Canvas::new(&mut screen, 1400, 900), true);
+        let has_browse =
+            ui.settings_view.as_ref().unwrap().hits.iter().any(|h| matches!(h.1, settings_view::SHit::Browse(_)));
+        assert!(has_browse, "the Git program has Browse…");
+        assert_eq!(ui.git_conf.get("git:global:user.name").map(String::as_str), Some("Ada"));
+        // Certificates off, then on again (Git's default: the key goes).
+        settings_pick(&mut ui, &mut screen, Row::SslVerify, 0);
+        assert_eq!(ui.git_conf.get("git:global:http.sslVerify").map(String::as_str), Some("false"));
+        settings_pick(&mut ui, &mut screen, Row::SslVerify, 0);
+        assert_eq!(ui.git_conf.get("git:global:http.sslVerify").map(String::as_str), Some(""));
+        assert_partial_paint_is_full(&mut ui, &mut screen, "git section");
+        // A picked folder joins the repository folders.
+        ui.on_tab_msg(0, Msg::Picked("repos.roots", Some("E:/Work".into())));
+        assert_eq!(ui.settings.get("repos.roots"), Some("E:/Work"));
     }
 
     /// The settings page (FF-57): sections in a sidebar, switches, search,
@@ -8856,7 +8920,7 @@ mod tests {
         settings_pick(&mut ui, &mut screen, Row::Preset, 2);
         assert_eq!(ui.settings.get("agents.preset"), Some("codex"));
         // Typing searches every section.
-        for c in "network".chars() {
+        for c in "hosted model".chars() {
             ui.key(Key::Char(c));
         }
         assert_eq!(ui.rows(), [Row::Network]);

@@ -21,6 +21,17 @@ pub enum Row {
     /// Fetch automatically (FF-39).
     AutoFetch,
     Roots,
+    /// Git's own settings (git config, FF-57): identity, everywhere and
+    /// in this repository; the version; credentials and certificates.
+    GitName,
+    GitEmail,
+    RepoGitName,
+    RepoGitEmail,
+    GitVersion,
+    CredHelper,
+    SslVerify,
+    SslCaInfo,
+    SslBackend,
     AiEndpoint,
     AiModel,
     Editor,
@@ -83,11 +94,29 @@ const SECTIONS: &[Section] = &[
         rows: &[Row::Roots],
     },
     Section {
-        nav: "Git & tools",
-        about: "The programs ffwd starts: your editor, merge and diff tools, and Git itself.",
+        nav: "Git",
+        about: "Who you are in commits, how Git signs in, and which certificates it trusts. These are Git's own settings (git config): other Git tools use them too.",
+        glyph: Glyph::Commit,
+        agents: false,
+        rows: &[
+            Row::GitName,
+            Row::GitEmail,
+            Row::RepoGitName,
+            Row::RepoGitEmail,
+            Row::GitPath,
+            Row::GitVersion,
+            Row::CredHelper,
+            Row::SslVerify,
+            Row::SslCaInfo,
+            Row::SslBackend,
+        ],
+    },
+    Section {
+        nav: "Tools",
+        about: "The programs ffwd starts: your editor, and the merge and diff tools.",
         glyph: Glyph::Editor,
         agents: false,
-        rows: &[Row::Editor, Row::MergeTool, Row::DiffTool, Row::GitPath],
+        rows: &[Row::Editor, Row::MergeTool, Row::DiffTool],
     },
     Section {
         nav: "Remotes",
@@ -141,14 +170,16 @@ const SECTIONS: &[Section] = &[
 ];
 
 /// The first agent section (the agents panel opens Settings there).
-const FIRST_AGENT_SECTION: usize = 7;
+const FIRST_AGENT_SECTION: usize = 8;
 
 /// The sidebar groups: (title, first section, end).
-const GROUPS: [(&str, usize, usize); 2] = [("General", 0, FIRST_AGENT_SECTION), ("Agents", FIRST_AGENT_SECTION, 11)];
+const GROUPS: [(&str, usize, usize); 2] = [("General", 0, FIRST_AGENT_SECTION), ("Agents", FIRST_AGENT_SECTION, 12)];
 
 /// How a row is edited.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Ctl {
+    /// A value to read, not to change.
+    Info,
     Toggle,
     Segmented,
     Dropdown,
@@ -164,6 +195,15 @@ impl Row {
             Row::AutoFetch => "Fetch automatically",
             Row::Channel => "Update channel",
             Row::Roots => "Repository folders",
+            Row::GitName => "Name",
+            Row::GitEmail => "Email",
+            Row::RepoGitName => "Name in this repository",
+            Row::RepoGitEmail => "Email in this repository",
+            Row::GitVersion => "Git version",
+            Row::CredHelper => "Credential helper",
+            Row::SslVerify => "Verify certificates",
+            Row::SslCaInfo => "Certificate authorities",
+            Row::SslBackend => "TLS backend",
             Row::AiEndpoint => "Endpoint",
             Row::AiModel => "Model",
             Row::Editor => "Editor",
@@ -203,6 +243,17 @@ impl Row {
             Row::Roots => {
                 "Folders searched for repositories, separated by ;. Empty: the folders next to the open repositories."
             }
+            Row::GitName => "Your name in new commits, in every repository (git config --global user.name).",
+            Row::GitEmail => "Your email in new commits. On GitHub, your noreply address keeps your email private.",
+            Row::RepoGitName => "Only in this repository, for example a work identity. Empty: the name above.",
+            Row::RepoGitEmail => "Only in this repository. Empty: the email above.",
+            Row::GitVersion => "The Git program ffwd runs.",
+            Row::CredHelper => "How Git keeps passwords and tokens, for example manager. Empty: Git's default.",
+            Row::SslVerify => {
+                "Check each server's certificate. Turn it off only for a server you trust on a private network."
+            }
+            Row::SslCaInfo => "Extra certificate authorities in a .pem file, for example a company server's own.",
+            Row::SslBackend => "Which TLS library Git uses. On Windows, schannel uses the Windows certificate store.",
             Row::AiEndpoint => "An OpenAI-compatible URL, for example a local Ollama, LM Studio or llama.cpp server.",
             Row::AiModel => "The model name the endpoint expects.",
             Row::Editor => {
@@ -244,6 +295,12 @@ impl Row {
     fn key(self) -> Option<&'static str> {
         match self {
             Row::Roots => Some("repos.roots"),
+            Row::GitName => Some("git:global:user.name"),
+            Row::GitEmail => Some("git:global:user.email"),
+            Row::RepoGitName => Some("git:local:user.name"),
+            Row::RepoGitEmail => Some("git:local:user.email"),
+            Row::CredHelper => Some("git:global:credential.helper"),
+            Row::SslCaInfo => Some("git:global:http.sslCAInfo"),
             Row::AiEndpoint => Some("ai.endpoint"),
             Row::AiModel => Some("ai.model"),
             Row::Editor => Some("tools.editor"),
@@ -279,6 +336,11 @@ impl Row {
     fn placeholder(self) -> &'static str {
         match self {
             Row::Roots => "Folders next to the open repositories",
+            Row::GitName => "Your Name",
+            Row::GitEmail => "you@example.com",
+            Row::RepoGitName | Row::RepoGitEmail => "The one above",
+            Row::CredHelper => "Git's default · e.g. manager",
+            Row::SslCaInfo => "None",
             Row::AiEndpoint => "Off · e.g. http://localhost:11434/v1",
             Row::AiModel => "e.g. qwen2.5-coder:14b",
             Row::Editor => "Default app · e.g. code",
@@ -297,6 +359,8 @@ impl Row {
             Row::Layout => &["Below the history", "Beside the history"],
             Row::Updates => &["On", "Off"],
             Row::AutoFetch => &["Off", "5 min", "10 min", "30 min"],
+            Row::SslVerify => &["On", "Off"],
+            Row::SslBackend => &["Git's default", "openssl", "schannel"],
             Row::Channel => &["Automatic", "Stable", "Beta"],
             Row::AgentsOn => &["Off", "On (experimental)"],
             Row::Preset => &["Custom", "Claude", "Codex", "agy", "opencode", "Muse"],
@@ -311,10 +375,15 @@ impl Row {
 
     fn ctl(self) -> Ctl {
         match self {
-            Row::Updates | Row::AgentsOn | Row::AllowUnsandboxed | Row::Network => Ctl::Toggle,
-            Row::Preset | Row::Sandbox | Row::WslDistro | Row::MergeTool | Row::DiffTool | Row::AutoFetch => {
-                Ctl::Dropdown
-            }
+            Row::GitVersion => Ctl::Info,
+            Row::Updates | Row::AgentsOn | Row::AllowUnsandboxed | Row::Network | Row::SslVerify => Ctl::Toggle,
+            Row::Preset
+            | Row::Sandbox
+            | Row::WslDistro
+            | Row::MergeTool
+            | Row::DiffTool
+            | Row::AutoFetch
+            | Row::SslBackend => Ctl::Dropdown,
             Row::OpenFile | Row::CheckUpdates | Row::AgentsFile => Ctl::Button,
             r if r.key().is_some() => Ctl::Text,
             _ => Ctl::Segmented,
@@ -324,9 +393,18 @@ impl Row {
     /// The choice index that means "on" for a switch.
     fn on_index(self) -> usize {
         match self {
-            Row::Updates | Row::Network => 0,
+            Row::Updates | Row::Network | Row::SslVerify => 0,
             _ => 1,
         }
+    }
+}
+
+/// Path rows with Browse…: Some(true) a folder, Some(false) a file.
+fn browse_kind(row: Row) -> Option<bool> {
+    match row {
+        Row::Roots | Row::AddGrant => Some(true),
+        Row::Editor | Row::GitPath | Row::SslCaInfo => Some(false),
+        _ => None,
     }
 }
 
@@ -368,6 +446,8 @@ pub(super) enum SHit {
     EditThere,
     /// The status box's Turn on.
     TurnOn,
+    /// The system's picker for a path row (FF-57).
+    Browse(usize),
 }
 
 pub struct SettingsView {
@@ -480,6 +560,7 @@ impl Ui {
                 sink(Msg::Tools(merge, diff));
             });
         }
+        self.load_git_conf();
         self.palette = None;
         self.damage.full = true;
         self.settings_view = Some(SettingsView {
@@ -550,6 +631,9 @@ impl Ui {
                 }
                 rows.push(r);
                 for r in rows {
+                    if matches!(r, Row::RepoGitName | Row::RepoGitEmail) && self.r.git.is_none() {
+                        continue;
+                    }
                     let hit = q.is_empty()
                         || section_hit
                         || self.row_label(r).to_lowercase().contains(&q)
@@ -686,6 +770,9 @@ impl Ui {
     /// A value as the settings page shows it: agent keys in repository
     /// scope come from the repository's overrides, then the global value.
     fn sget(&self, key: &str) -> Option<&str> {
+        if key.starts_with("git:") {
+            return self.git_conf.get(key).map(String::as_str).filter(|v| !v.is_empty());
+        }
         if key.starts_with("agents.")
             && self.repo_scope()
             && let Some(v) = self.current_repo_settings().and_then(|r| r.get(key))
@@ -698,6 +785,9 @@ impl Ui {
     /// Saves a value: in repository scope, agent keys become overrides of
     /// this repository; everything else is global.
     fn sset(&mut self, key: &str, value: &str) {
+        if let Some(k) = key.strip_prefix("git:") {
+            return self.git_conf_set(k, value);
+        }
         if key.starts_with("agents.")
             && self.repo_scope()
             && let Some(r) = self.current_repo_settings_mut()
@@ -725,6 +815,12 @@ impl Ui {
         match row {
             Row::Layout => (self.layout == DetailsLayout::Beside) as usize,
             Row::Updates => (self.sget("update.check") == Some("false")) as usize,
+            Row::SslVerify => (self.sget("git:global:http.sslVerify") == Some("false")) as usize,
+            Row::SslBackend => match self.sget("git:global:http.sslBackend") {
+                Some("openssl") => 1,
+                Some("schannel") => 2,
+                _ => 0,
+            },
             Row::AutoFetch => match self.auto_fetch_setting() {
                 0 => 0,
                 1..=5 => 1,
@@ -771,6 +867,9 @@ impl Ui {
         match row {
             Row::Layout => self.set_layout(if i == 1 { DetailsLayout::Beside } else { DetailsLayout::Below }),
             Row::Updates => self.sset("update.check", if i == 1 { "false" } else { "true" }),
+            // On is Git's default: the key goes.
+            Row::SslVerify => self.sset("git:global:http.sslVerify", if i == 1 { "false" } else { "" }),
+            Row::SslBackend => self.sset("git:global:http.sslBackend", ["", "openssl", "schannel"][i.min(2)]),
             Row::AutoFetch => {
                 let m = [0u64, 5, 10, 30][i.min(3)];
                 self.sset("remotes.auto_fetch", &m.to_string());
@@ -863,6 +962,7 @@ impl Ui {
                 }
                 _ => open_settings_file(),
             },
+            Ctl::Info => {}
             Ctl::Text => {
                 let cur = if row == Row::AddGrant {
                     String::new()
@@ -894,6 +994,112 @@ impl Ui {
             }
         }
         self.settings_dirty();
+    }
+
+    /// Opens the system's picker for path row `i` on a worker (FF-57).
+    fn settings_browse(&mut self, i: usize) {
+        let Some(&row) = self.rows().get(i) else { return };
+        let (Some(folder), Some(key)) = (browse_kind(row), row.key()) else { return };
+        if cfg!(test) {
+            return;
+        }
+        let title = match row {
+            Row::Roots => "Add a folder with repositories",
+            Row::AddGrant => "A folder the agent may use",
+            Row::SslCaInfo => "Certificate authorities (a .pem file)",
+            Row::GitPath => "The git program",
+            _ => "Choose a program",
+        };
+        let sink = (self.sinks)(0);
+        std::thread::spawn(move || sink(Msg::Picked(key, crate::platform::pick_path(folder, title))));
+    }
+
+    /// The picker's answer: a folder joins the repository folders or the
+    /// agent's access list; a file becomes the row's value.
+    pub(super) fn settings_picked(&mut self, key: &'static str, path: Option<String>) {
+        let Some(p) = path else { return };
+        match key {
+            "repos.roots" => {
+                let mut list = split_paths(self.sget(key).unwrap_or(""));
+                if !list.contains(&p) {
+                    list.push(p);
+                }
+                self.sset(key, &list.join("; "));
+                self.scan_repos();
+            }
+            ADD_PATH_KEY => {
+                if !self.grants().iter().any(|g| g.path == p) {
+                    let mut list = split_paths(self.sget("agents.read_paths").unwrap_or(""));
+                    list.push(p);
+                    self.sset("agents.read_paths", &list.join("; "));
+                }
+            }
+            k => self.sset(k, &p),
+        }
+        self.settings_dirty();
+    }
+
+    /// Reads Git's settings for the Git section on a worker: the global
+    /// ones, this repository's identity and the version.
+    fn load_git_conf(&mut self) {
+        if cfg!(test) {
+            return;
+        }
+        let sink = (self.sinks)(0);
+        let repo = self.r.git.clone();
+        let global = ffwd_core::git::Git { root: std::env::temp_dir() };
+        std::thread::spawn(move || {
+            let mut v = Vec::new();
+            let get = |g: &ffwd_core::git::Git, scope: &str, k: &str| {
+                g.output_limited(&["config", &format!("--{scope}"), "--get", k], 4096)
+                    .map(|b| String::from_utf8_lossy(&b).trim().to_string())
+                    .unwrap_or_default()
+            };
+            for k in
+                ["user.name", "user.email", "credential.helper", "http.sslVerify", "http.sslCAInfo", "http.sslBackend"]
+            {
+                v.push((format!("git:global:{k}"), get(&global, "global", k)));
+            }
+            if let Some(r) = &repo {
+                for k in ["user.name", "user.email"] {
+                    v.push((format!("git:local:{k}"), get(r, "local", k)));
+                }
+            }
+            let ver = global
+                .output_limited(&["--version"], 4096)
+                .map(|b| String::from_utf8_lossy(&b).trim().trim_start_matches("git version ").to_string())
+                .unwrap_or_else(|_| "not found".into());
+            v.push(("git:version".into(), ver));
+            sink(Msg::GitConf(v));
+        });
+    }
+
+    /// Saves one of Git's settings (`global:user.name`) on a worker; an
+    /// empty value removes it. The page shows the new value at once.
+    fn git_conf_set(&mut self, scoped: &str, value: &str) {
+        self.git_conf.insert(format!("git:{scoped}"), value.to_string());
+        if cfg!(test) {
+            return;
+        }
+        let Some((scope, key)) = scoped.split_once(':') else { return };
+        let g = match scope {
+            "local" => match &self.r.git {
+                Some(g) => g.clone(),
+                None => return,
+            },
+            _ => ffwd_core::git::Git { root: std::env::temp_dir() },
+        };
+        let (scope, key, value) = (format!("--{scope}"), key.to_string(), value.to_string());
+        let sink = (self.sinks)(0);
+        std::thread::spawn(move || {
+            let r = if value.is_empty() {
+                // Nothing to remove is fine (exit 5).
+                g.run_with(&["config", &scope, "--unset", &key], None, &[5], 4096).map(|_| ())
+            } else {
+                g.run_with(&["config", &scope, &key, &value], None, &[], 4096).map(|_| ())
+            };
+            sink(Msg::GitConfSaved(r.map_err(|e| format!("git config {key}: {e}"))));
+        });
     }
 
     /// Removes this repository's value for visible row `i`.
@@ -1015,7 +1221,7 @@ impl Ui {
             Key::PageUp | Key::Home => v.sel = 0,
             Key::PageDown | Key::End => v.sel = n.saturating_sub(1),
             Key::Enter | Key::Char(' ') if n > 0 => self.settings_act(sel),
-            Key::Left | Key::Right if n > 0 && rows[sel].ctl() != Ctl::Text && rows[sel].ctl() != Ctl::Button => {
+            Key::Left | Key::Right if n > 0 && !matches!(rows[sel].ctl(), Ctl::Text | Ctl::Button | Ctl::Info) => {
                 let c = self.row_choices(rows[sel]).len().max(1);
                 let cur = self.choice_now(rows[sel]);
                 let next = if matches!(k, Key::Left) { (cur + c - 1) % c } else { (cur + 1) % c };
@@ -1110,6 +1316,7 @@ impl Ui {
             SHit::Reset(i) => self.settings_reset(i),
             SHit::EditThere => self.set_settings_scope(true),
             SHit::TurnOn => self.set_choice(Row::AgentsOn, 1),
+            SHit::Browse(i) => self.settings_browse(i),
         }
         self.settings_dirty();
     }
@@ -1570,7 +1777,35 @@ impl Ui {
                         hits.push((s, SHit::Seg(i, c)));
                     }
                 }
+                Ctl::Info => {
+                    let v = self.sget("git:version").unwrap_or("…").to_string();
+                    let tw = self.te.measure(mono, self.pf(12.5), &v).min(ctl.w as f32);
+                    self.te.draw(cv, mono, self.pf(12.5), ctl.right() as f32 - tw, cbase, &v, TEXT_2, ctl.w as f32);
+                }
                 Ctl::Text => {
+                    // Path rows get Browse… beside their field.
+                    let ctl = match browse_kind(row) {
+                        Some(_) => {
+                            let bl = "Browse…";
+                            let bw = (self.te.measure(semi, self.pf(12.5), bl) + self.pf(24.0)) as i32;
+                            let b = Rect::new(ctl.right() - bw, ctl.y, bw, ctl.h);
+                            let (bg, border) = self.control_colors(Hot::Setting(hits.len(), 0), BG_BAR, BORDER);
+                            cv.round_border(b, self.pf(7.0), border, bg);
+                            self.te.draw(
+                                cv,
+                                semi,
+                                self.pf(12.5),
+                                b.x as f32 + self.pf(12.0),
+                                cbase,
+                                bl,
+                                TEXT,
+                                bw as f32,
+                            );
+                            hits.push((b, SHit::Browse(i)));
+                            Rect::new(ctl.x, ctl.y, ctl.w - bw - self.px(8.0), ctl.h)
+                        }
+                        None => ctl,
+                    };
                     let editing = view.edit.as_ref().filter(|(j, _)| *j == i).map(|(_, f)| f.clone());
                     let hot = self.is_hot(Hot::Setting(hits.len(), 0));
                     let border = if editing.is_some() {
@@ -1684,6 +1919,7 @@ impl Ui {
                         | SHit::Reset(_)
                         | SHit::EditThere
                         | SHit::TurnOn
+                        | SHit::Browse(_)
                 ) || !h.intersect(content).is_empty()
             })
             .collect();
