@@ -266,8 +266,8 @@ impl Ui {
         let l = self.activity_layout();
         let (ui, semi, mono) = (self.f.ui, self.f.semi, self.f.mono);
         let mut hits = Vec::new();
-        cv.fill(l.list, BG_SIDEBAR);
-        cv.fill(Rect::new(l.list.right() - 1, l.area.y, 1, l.area.h), BORDER);
+        cv.fill(l.list, BG_SIDEBAR());
+        cv.fill(Rect::new(l.list.right() - 1, l.area.y, 1, l.area.h), BORDER());
         if self.activity.entries.is_empty() {
             let t = "Nothing has run yet. Fetch, pull, push, branch, stash and commit actions appear here with the exact git commands.";
             let x = l.list.x as f32 + self.pf(18.0);
@@ -275,7 +275,7 @@ impl Ui {
             let size = self.pf(12.5);
             let maxw = l.list.w as f32 - self.pf(36.0);
             for line in wrap(&mut self.te, ui, size, t, maxw) {
-                self.te.draw(cv, ui, size, x, y, &line, TEXT_3, l.list.w as f32);
+                self.te.draw(cv, ui, size, x, y, &line, TEXT_3(), l.list.w as f32);
                 y += self.pf(19.0);
             }
         }
@@ -290,18 +290,18 @@ impl Ui {
             let y = l.list.y + k as i32 * rh;
             let row = Rect::new(l.list.x + self.px(6.0), y + self.px(3.0), l.list.w - self.px(12.0), rh - self.px(6.0));
             if i == self.activity.sel {
-                cv.fill_round(row, self.pf(7.0), BG_SELECT);
+                cv.fill_round(row, self.pf(7.0), BG_SELECT());
             } else if self.is_hot(Hot::Activity(hits.len())) {
-                cv.fill_round(row, self.pf(7.0), BG_HOVER);
+                cv.fill_round(row, self.pf(7.0), BG_HOVER());
             }
             let cx = row.x as f32 + self.pf(16.0);
             let cy = row.y as f32 + self.pf(16.0);
             if e.ok {
-                self.check(cv, cx, cy, ADD);
+                self.check(cv, cx, cy, ADD());
             } else {
                 let s = self.pf(4.0);
-                cv.stroke(&[(cx - s, cy - s), (cx + s, cy + s)], self.pf(1.6), DEL);
-                cv.stroke(&[(cx - s, cy + s), (cx + s, cy - s)], self.pf(1.6), DEL);
+                cv.stroke(&[(cx - s, cy - s), (cx + s, cy + s)], self.pf(1.6), DEL());
+                cv.stroke(&[(cx - s, cy + s), (cx + s, cy - s)], self.pf(1.6), DEL());
             }
             let tx = cx + self.pf(16.0);
             let right = row.right() as f32 - self.pf(10.0);
@@ -309,25 +309,25 @@ impl Ui {
             let meta = format!("{when} · {}", fmt_ms(e.ms));
             let mw = self.te.measure(ui, self.pf(11.0), &meta);
             let b1 = (row.y as f32 + self.pf(20.0)).round();
-            self.te.draw(cv, ui, self.pf(11.0), right - mw, b1, &meta, TEXT_4, mw + 2.0);
+            self.te.draw(cv, ui, self.pf(11.0), right - mw, b1, &meta, TEXT_4(), mw + 2.0);
             let title = format!("{} · {}", e.title, e.repo);
-            self.te.draw(cv, semi, self.pf(12.5), tx, b1, &title, TEXT, right - mw - tx - self.pf(10.0));
+            self.te.draw(cv, semi, self.pf(12.5), tx, b1, &title, TEXT(), right - mw - tx - self.pf(10.0));
             let b2 = (row.y as f32 + self.pf(38.0)).round();
-            let c = if e.ok { TEXT_3 } else { DEL };
+            let c = if e.ok { TEXT_3() } else { DEL() };
             self.te.draw(cv, ui, self.pf(11.5), tx, b2, &e.summary, c, right - tx);
             hits.push((row, AHit::Row(i)));
         }
         cv.set_clip(old);
         // The selected entry.
-        cv.fill(l.head, BG_BAR);
-        cv.fill(Rect::new(l.head.x, l.head.bottom() - 1, l.head.w, 1), BORDER_SOFT);
-        cv.fill(l.detail, BG);
+        cv.fill(l.head, BG_BAR());
+        cv.fill(Rect::new(l.head.x, l.head.bottom() - 1, l.head.w, 1), BORDER_SOFT());
+        cv.fill(l.detail, BG());
         if let Some(e) = self.activity.get(self.activity.sel).cloned() {
             let x = l.head.x as f32 + self.pf(18.0);
             let w = l.head.w as f32 - self.pf(36.0);
             let t = format!("{} · {}", e.title, e.repo);
-            self.te.draw(cv, semi, self.pf(14.0), x, l.head.y as f32 + self.pf(26.0), &t, TEXT, w);
-            let c = if e.ok { TEXT_2 } else { DEL };
+            self.te.draw(cv, semi, self.pf(14.0), x, l.head.y as f32 + self.pf(26.0), &t, TEXT(), w);
+            let c = if e.ok { TEXT_2() } else { DEL() };
             let s = format!("{} · {} · {}", if e.ok { "Done" } else { "Failed" }, clock(e.at, self.r.tz), e.summary);
             self.te.draw(cv, ui, self.pf(12.0), x, l.head.y as f32 + self.pf(47.0), &s, c, w);
             let lh = self.px(19.0);
@@ -338,10 +338,10 @@ impl Ui {
             for (k, (kind, text)) in lines.into_iter().enumerate() {
                 let b = (l.detail.y as f32 + self.pf(16.0) + k as f32 * lh as f32).round() + self.pf(4.0);
                 let (font, color) = match kind {
-                    LineKind::Command => (mono, ACCENT),
-                    LineKind::Meta => (ui, TEXT_4),
-                    LineKind::Output => (mono, TEXT_2),
-                    LineKind::Error => (mono, DEL),
+                    LineKind::Command => (mono, ACCENT()),
+                    LineKind::Meta => (ui, TEXT_4()),
+                    LineKind::Output => (mono, TEXT_2()),
+                    LineKind::Error => (mono, DEL()),
                     LineKind::Blank => continue,
                 };
                 self.te.draw(cv, font, self.pf(11.5), x, b, &text, color, w);
@@ -350,7 +350,7 @@ impl Ui {
             let hint = "↑↓ entries · j k space scroll · Ctrl+C copies · Esc back";
             let hw = self.te.measure(ui, self.pf(11.0), hint);
             let hx = l.detail.right() as f32 - hw - self.pf(16.0);
-            self.te.draw(cv, ui, self.pf(11.0), hx, l.detail.bottom() as f32 - self.pf(10.0), hint, TEXT_4, hw + 2.0);
+            self.te.draw(cv, ui, self.pf(11.0), hx, l.detail.bottom() as f32 - self.pf(10.0), hint, TEXT_4(), hw + 2.0);
         }
         self.activity.hits = hits;
     }

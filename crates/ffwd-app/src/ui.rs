@@ -16,7 +16,11 @@ use std::collections::HashSet;
 
 #[path = "ui_sidebar.rs"]
 mod sidebar;
+#[path = "ui_split.rs"]
+mod split_view;
 use sidebar::SideItem;
+pub use sidebar::SideStyle;
+pub use split_view::Split;
 #[path = "ui_activity.rs"]
 mod activity_view;
 #[path = "ui_agents.rs"]
@@ -151,6 +155,8 @@ pub struct Layout {
     pub tabs: Rect,
     pub status: Rect,
     pub side: Rect,
+    /// The views as tabs over the content (sidebar style Tabs), else empty.
+    pub views: Rect,
     pub list: Rect,
     pub list_head: Rect,
     pub list_body: Rect,
@@ -503,7 +509,7 @@ pub struct Tab {
 
 /// Tab colours (FF-44): red, amber, green, blue, purple.
 pub(super) const TAB_COLORS: [(&str, u32); 5] =
-    [("Red", DEL), ("Amber", MOD), ("Green", ADD), ("Blue", REMOTE_FG), ("Purple", STASH_FG)];
+    [("Red", 0xd9625f), ("Amber", 0xd9a53a), ("Green", 0x5fae74), ("Blue", 0x6c95d6), ("Purple", 0xa97fd0)];
 
 impl Tab {
     /// What the tab shows.
@@ -605,8 +611,14 @@ pub struct Ui {
     pub diff_max: bool,
     /// Installed WSL distributions, read when Settings opens (Windows).
     pub wsl_distros: Vec<String>,
+    /// The system's light mode (the window reports it), for theme System.
+    system_light: bool,
+    /// The theme changed: the window updates its title bar.
+    pub theme_changed: bool,
     /// Merge and diff tools Git can start (Settings choices, FF-42).
     pub merge_tools: Vec<String>,
+    /// Git's settings as the Settings page shows them (`git:global:…`).
+    pub(super) git_conf: std::collections::HashMap<String, String>,
     pub diff_tools: Vec<String>,
     /// Minutes between automatic fetches (0: off), read by the clock
     /// thread (FF-39).
@@ -623,6 +635,8 @@ pub struct Ui {
     /// The newest search; older search workers stop when it moves on.
     search_seq: Arc<std::sync::atomic::AtomicU64>,
     pub notice: Option<String>,
+    /// The last update check's answer (Settings → Updates).
+    pub(super) update_line: String,
     update_available: bool,
     update_requested: bool,
     update_check_requested: bool,
@@ -633,6 +647,13 @@ pub struct Ui {
     pub chrome: Chrome,
     cap_hover: Option<u8>,
     cap_pressed: Option<u8>,
+    /// The pointer is over the sidebar's "here" card.
+    pub(super) side_here_hot: bool,
+    /// The dock tile under the pointer.
+    pub(super) side_view_hot: Option<usize>,
+    /// A pane border being dragged, and the one under the pointer (FF-57).
+    pub(super) split_drag: Option<Split>,
+    pub(super) split_hot: Option<Split>,
     /// Hover and press of the maximise button, reported by the frame.
     pub max_state: (bool, bool),
     pub maximized: bool,
@@ -773,6 +794,9 @@ impl Ui {
             diff_max: false,
             wsl_distros: Vec::new(),
             merge_tools: Vec::new(),
+            system_light: false,
+            theme_changed: false,
+            git_conf: Default::default(),
             diff_tools: Vec::new(),
             auto_fetch_minutes: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             auto_fetch_failed: false,
@@ -781,6 +805,7 @@ impl Ui {
             diff_opts: diff_view::opts_from(&settings).1,
             diff_bar_hits: Vec::new(),
             pairs_cache: None,
+            update_line: String::new(),
             update_available: false,
             update_requested: false,
             update_check_requested: false,
@@ -798,6 +823,10 @@ impl Ui {
             },
             cap_hover: None,
             cap_pressed: None,
+            side_here_hot: false,
+            side_view_hot: None,
+            split_drag: None,
+            split_hot: None,
             max_state: (false, false),
             maximized: false,
             active: true,
@@ -889,6 +918,7 @@ impl Ui {
         ui.rebuild_side();
         ui.resize(w, h, s);
         ui.scan_repos();
+        ui.apply_theme();
         ui
     }
 
@@ -1093,6 +1123,26 @@ impl Ui {
         if let Msg::AutoFetchTick = m {
             return self.auto_fetch_due();
         }
+        if let Msg::Notice(n) = m {
+            return self.set_notice(n);
+        }
+        if let Msg::GitConf(v) = m {
+            self.git_conf.extend(v);
+            if self.settings_view.is_some() {
+                let r = self.settings_rect();
+                self.damage.rects.push(r);
+            }
+            return;
+        }
+        if let Msg::GitConfSaved(r) = m {
+            if let Err(e) = r {
+                self.set_notice(e);
+            }
+            return;
+        }
+        if let Msg::Picked(key, path) = m {
+            return self.settings_picked(key, path);
+        }
         if let Msg::Tools(merge, diff) = m {
             self.merge_tools = merge;
             self.diff_tools = diff;
@@ -1268,7 +1318,17 @@ impl Ui {
 
     pub fn request_update_check(&mut self) {
         self.update_check_requested = true;
+        self.set_update_line("Checking for updates…".into());
         self.set_notice("Checking for updates…".into());
+    }
+
+    /// What the last update check said, for Settings → Updates.
+    fn set_update_line(&mut self, line: String) {
+        self.update_line = line;
+        if self.settings_view.is_some() {
+            let r = self.settings_rect();
+            self.damage.rects.push(r);
+        }
     }
 
     pub fn take_update_check_requested(&mut self) -> bool {
@@ -1292,8 +1352,18 @@ impl Ui {
         let tabs_h = self.px(32.0);
         let top_h = bar_h + tabs_h;
         let status_h = self.px(26.0);
-        let side_w = self.px(236.0).min(wi / 4);
-        let mid_h = (hi - top_h - status_h).max(0);
+        // The rail (sidebar style Rail) comes on top of the panel's width.
+        let rail = if self.side_style() == SideStyle::Rail { 64.0 } else { 0.0 };
+        let side_w = match self.split_get(Split::Side) {
+            Some(v) => self.px(v).max(self.px(150.0 + rail)).min((wi / 2).max(self.px(150.0 + rail))),
+            None => self.px(236.0 + rail).min(wi / 4 + self.px(rail)),
+        };
+        // The views as tabs over the content take a strip there.
+        let views_h = if self.side_style() == SideStyle::Tabs { self.px(38.0) } else { 0 };
+        let side_h = (hi - top_h - status_h).max(0);
+        let side_top = top_h;
+        let top_h = top_h + views_h;
+        let mid_h = (side_h - views_h).max(0);
         let list_x = side_w;
         let (list_w, list_h, details) = match self.layout {
             // The large view: no history list, the details take it all.
@@ -1302,20 +1372,32 @@ impl Ui {
                 (list_w, 0, Rect::new(list_x, top_h, list_w, mid_h))
             }
             DetailsLayout::Beside => {
-                let det_w = ((wi as f32 * 0.40) as i32).clamp(self.px(420.0), self.px(780.0)).min(wi / 2);
+                let room = (wi - side_w).max(0);
+                let det_w = match self.split_get(Split::List) {
+                    Some(f) => {
+                        room - ((room as f32 * f) as i32).max(self.px(300.0)).min((room - self.px(320.0)).max(0))
+                    }
+                    None => ((wi as f32 * 0.40) as i32).clamp(self.px(420.0), self.px(780.0)).min(wi / 2),
+                };
                 let list_w = (wi - side_w - det_w).max(0);
                 (list_w, mid_h, Rect::new(list_x + list_w, top_h, det_w, mid_h))
             }
             DetailsLayout::Below => {
                 let list_w = (wi - side_w).max(0);
-                let list_h = ((mid_h as f32 * 0.46) as i32).max(self.px(150.0)).min(mid_h);
+                let list_h = match self.split_get(Split::List) {
+                    Some(f) => ((mid_h as f32 * f) as i32).max(self.px(120.0)).min((mid_h - self.px(160.0)).max(0)),
+                    None => ((mid_h as f32 * 0.46) as i32).max(self.px(150.0)).min(mid_h),
+                };
                 (list_w, list_h, Rect::new(list_x, top_h + list_h, list_w, mid_h - list_h))
             }
         };
         let info = match self.layout {
             DetailsLayout::Beside => details,
             DetailsLayout::Below => {
-                let iw = ((details.w as f32 * 0.38) as i32).clamp(self.px(360.0), self.px(620.0)).min(details.w);
+                let iw = match self.split_get(Split::Info) {
+                    Some(v) => self.px(v).max(self.px(240.0)).min((details.w - self.px(240.0)).max(0)),
+                    None => ((details.w as f32 * 0.38) as i32).clamp(self.px(360.0), self.px(620.0)).min(details.w),
+                };
                 Rect::new(details.x, details.y, iw, details.h)
             }
         };
@@ -1327,7 +1409,8 @@ impl Ui {
             top: Rect::new(0, 0, wi, bar_h),
             tabs: Rect::new(0, bar_h, wi, tabs_h),
             status: Rect::new(0, hi - status_h, wi, status_h),
-            side: Rect::new(0, top_h, side_w, mid_h),
+            side: Rect::new(0, side_top, side_w, side_h),
+            views: Rect::new(side_w, side_top, (wi - side_w).max(0), views_h),
             list,
             // No list in the large view: no header either.
             list_head: Rect::new(list_x, top_h, list_w, if self.diff_max { 0 } else { head_h }),
@@ -1409,6 +1492,7 @@ impl Ui {
             Msg::Log { batch, done, elapsed_ms } => {
                 let was_empty = self.r.commits.is_empty();
                 let start = self.r.commits.len();
+                let lanes = self.graph_lanes_shown();
                 for c in batch {
                     self.r.graph.push(&c);
                     self.r.by_id.insert(c.id, self.r.commits.len() as u32);
@@ -1437,6 +1521,9 @@ impl Ui {
                 // Only rows that became visible need paint.
                 let end = (self.r.top + self.visible_rows() + 1).min(self.r.commits.len());
                 self.damage.rows.extend(start.max(self.r.top)..end);
+                if self.graph_lanes_shown() != lanes {
+                    self.damage.rects.push(self.lay.list_body);
+                }
                 self.damage.rects.extend([self.lay.status, self.lay.scrollbar, self.lay.list_head]);
             }
             Msg::Compared { seq, result } => match result {
@@ -1547,7 +1634,15 @@ impl Ui {
                 }
             }
             // Handled in on_tab_msg; repeated here so a stray one is harmless.
-            Msg::Repos(_) | Msg::WslDistros(_) | Msg::Tools(..) | Msg::AgentNotice(_) | Msg::AutoFetchTick => {}
+            Msg::Repos(_)
+            | Msg::WslDistros(_)
+            | Msg::Tools(..)
+            | Msg::GitConf(_)
+            | Msg::GitConfSaved(_)
+            | Msg::Picked(..)
+            | Msg::AgentNotice(_)
+            | Msg::Notice(_)
+            | Msg::AutoFetchTick => {}
             Msg::Agent(e) => self.on_agent_event(e),
             Msg::RepoSettings(p, s) => self.on_repo_settings(p, s),
             Msg::Changes(r) => self.on_changes(r),
@@ -1606,6 +1701,31 @@ impl Ui {
     }
 
     /// Switches the details layout and saves it as `ui.layout`.
+    /// The theme from the setting `ui.theme` (system, dark, light; FF-57).
+    pub(super) fn apply_theme(&mut self) {
+        let light = match self.settings.get("ui.theme") {
+            Some("light") => true,
+            Some("dark") => false,
+            _ => self.system_light,
+        };
+        if light != crate::theme::is_light() {
+            crate::theme::set_light(light);
+            self.theme_changed = true;
+            self.damage.full = true;
+        }
+    }
+
+    /// Snapshots: apply `ui.theme` after changing it.
+    pub fn apply_theme_now(&mut self) {
+        self.apply_theme();
+    }
+
+    /// The window says whether the system uses light mode.
+    pub fn set_system_light(&mut self, light: bool) {
+        self.system_light = light;
+        self.apply_theme();
+    }
+
     pub fn set_layout(&mut self, l: DetailsLayout) {
         if l == self.layout {
             return;
@@ -1648,10 +1768,13 @@ impl Ui {
 
     pub fn offer_update(&mut self, version: &ffwd_update::Version) {
         self.update_available = true;
-        self.set_notice_with(crate::update::notice(version), NoticeAct::InstallUpdate);
+        let n = crate::update::notice(version);
+        self.set_update_line(n.clone());
+        self.set_notice_with(n, NoticeAct::InstallUpdate);
     }
 
     pub fn set_update_message(&mut self, message: String) {
+        self.set_update_line(message.clone());
         self.set_notice(message);
     }
 
@@ -1781,8 +1904,10 @@ impl Ui {
         if d == 0 {
             return;
         }
+        let lanes = self.graph_lanes_shown();
         self.r.top = top;
-        if d.unsigned_abs() as usize >= self.visible_rows() {
+        // The message column moved with the lanes: no pixel copy then.
+        if d.unsigned_abs() as usize >= self.visible_rows() || self.graph_lanes_shown() != lanes {
             self.damage.rects.push(self.lay.list_body);
             self.damage_visible_rows();
         } else {
@@ -1871,7 +1996,7 @@ impl Ui {
         if matches!(k, Key::CtrlShift('a')) && self.agent_view.is_none() {
             return self.open_agents();
         }
-        if self.agent_view.is_some() {
+        if self.agents_have_keys() {
             return self.agents_key(k);
         }
         // Text editing keys belong to the palette while it is open.
@@ -2074,7 +2199,7 @@ impl Ui {
         self.pointer_at = Some((x, y));
         if self.settings_view.is_some() {
             self.settings_wheel(n);
-        } else if self.agent_view.is_some() {
+        } else if self.agent_view.is_some() && self.agents_rect().contains(x, y) {
             self.agents_wheel(n);
         } else if self.lay.side.contains(x, y) {
             self.side_wheel(n);
@@ -2111,11 +2236,19 @@ impl Ui {
         });
         self.last_click = Some((now, x, y));
         self.press_at(x, y);
+        if self.palette.is_none() && self.split_press(x, y) {
+            return;
+        }
         if self.settings_view.is_some() {
             return self.settings_click(x, y);
         }
         if self.agent_view.is_some() {
-            return self.agents_click(x, y);
+            if self.agents_rect().contains(x, y) {
+                return self.agents_click(x, y);
+            }
+            // The sidebar (or the tabs, the top bar) keeps working beside
+            // the agents view; keys follow the click.
+            self.agents_blur();
         }
         if self.r.rebase.is_some() && self.palette.is_none() && self.rebase_area().contains(x, y) {
             return self.rebase_click(x, y);
@@ -2138,6 +2271,9 @@ impl Ui {
         if self.palette.is_some() {
             self.close_palette();
             return;
+        }
+        if self.lay.views.contains(x, y) {
+            return self.view_click(x, y);
         }
         if self.lay.tabs.contains(x, y) {
             let (rects, plus) = self.tab_rects();
@@ -2658,7 +2794,7 @@ impl Ui {
                 body.x as f32 + self.pf(16.0),
                 body.y as f32 + self.pf(26.0),
                 "Loading the images…",
-                TEXT_3,
+                TEXT_3(),
                 body.w as f32,
             );
             return;
@@ -2674,7 +2810,7 @@ impl Ui {
                 Some(Err(e)) => format!("{label}: {e}"),
                 Some(Ok(i)) => format!("{label} · {}×{} · {}", i.orig.0, i.orig.1, fmt_bytes(i.bytes)),
             };
-            self.te.draw(cv, ui, self.pf(12.0), x as f32, cap_y, &caption, TEXT_3, half as f32);
+            self.te.draw(cv, ui, self.pf(12.0), x as f32, cap_y, &caption, TEXT_3(), half as f32);
             let area = Rect::new(x, body.y + self.px(36.0), half, body.h - self.px(48.0));
             if let Some(Ok(i)) = img {
                 // Fit, never enlarge beyond 2x.
@@ -2689,14 +2825,14 @@ impl Ui {
                     let mut xx = r.x;
                     while xx < r.right() {
                         let dark = ((xx - r.x) / c + (yy - r.y) / c) % 2 == 0;
-                        cv.fill(Rect::new(xx, yy, c, c), if dark { BG_INPUT } else { BG_HOVER });
+                        cv.fill(Rect::new(xx, yy, c, c), if dark { BG_INPUT() } else { BG_HOVER() });
                         xx += c;
                     }
                     yy += c;
                 }
                 cv.draw_rgba_scaled(r, i.w, i.h, &i.rgba);
                 cv.set_clip(old_clip);
-                cv.stroke_rect(r, BORDER);
+                cv.stroke_rect(r, BORDER());
             }
         }
     }
@@ -2963,6 +3099,9 @@ impl Ui {
         if !clip.intersect(l.side).is_empty() {
             self.paint_side(cv);
         }
+        if !clip.intersect(l.views).is_empty() {
+            self.paint_view_tabs(cv);
+        }
         if self.r.rebase.is_some() {
             if !clip.intersect(self.rebase_area()).is_empty() {
                 self.paint_rebase(cv);
@@ -2994,12 +3133,14 @@ impl Ui {
         if !clip.intersect(l.status).is_empty() {
             self.paint_status(cv);
         }
+        self.paint_split(cv);
         if self.palette.is_some() && !clip.intersect(self.palette_rect(10)).is_empty() {
             self.paint_palette(cv);
         }
         // A modal panel dims what is behind it, so the eye goes to the
         // panel. Remote sessions get no translucency (performance rule 6).
-        if (self.agent_view.is_some() || self.settings_view.is_some() || self.dialog.is_some()) && !self.remote {
+        // Settings is a page of its own: nothing behind it to dim.
+        if self.dialog.is_some() && !self.remote {
             cv.fill_alpha(clip, 0x000000, 100);
         }
         if self.agent_view.is_some() && !clip.intersect(self.agents_rect()).is_empty() {
@@ -3026,8 +3167,8 @@ impl Ui {
 
     fn paint_top(&mut self, cv: &mut Canvas) {
         let r = self.lay.top;
-        cv.fill(r, BG_BAR);
-        cv.fill(Rect::new(r.x, r.bottom() - 1, r.w, 1), BORDER);
+        cv.fill(r, BG_BAR());
+        cv.fill(Rect::new(r.x, r.bottom() - 1, r.w, 1), BORDER());
         let cy = r.y as f32 + r.h as f32 / 2.0;
         // App mark: the logo itself (icon.rs), the same as the window icon.
         // macOS keeps its traffic lights at the left of the bar.
@@ -3043,12 +3184,12 @@ impl Ui {
         if self.is_hot(Hot::Top(TopAction::Repo)) {
             // The previous paint's hit area (the name's width is known then).
             if let Some(&(nr, _)) = self.top_buttons.iter().find(|(_, a)| *a == TopAction::Repo) {
-                let (bg, _) = self.control_colors(Hot::Top(TopAction::Repo), BG_BAR, BORDER);
+                let (bg, _) = self.control_colors(Hot::Top(TopAction::Repo), BG_BAR(), BORDER());
                 cv.fill_round(nr.inset(-self.px(4.0), 0), self.pf(8.0), bg);
                 crate::icon::draw_mark(cv, mark);
             }
         }
-        x = self.te.draw(cv, semi, self.pf(14.5), x, base, &self.r.repo_name.clone(), TEXT, self.pf(220.0));
+        x = self.te.draw(cv, semi, self.pf(14.5), x, base, &self.r.repo_name.clone(), TEXT(), self.pf(220.0));
         // Clicking the name (or the mark) opens another repository.
         let name_r =
             Rect::new(mark.x, (cy - self.pf(14.0)) as i32, (x - mark.x as f32) as i32 + self.px(4.0), self.px(28.0));
@@ -3066,12 +3207,12 @@ impl Ui {
             .to_string();
         let bw = self.te.measure(semi, self.pf(12.5), &branch) + self.pf(36.0);
         let pill = Rect::new(x as i32, (cy - self.pf(13.0)) as i32, bw as i32, self.px(26.0));
-        let (pbg, pborder) = self.control_colors(Hot::Top(TopAction::Branch), BG_INPUT, BORDER);
+        let (pbg, pborder) = self.control_colors(Hot::Top(TopAction::Branch), BG_INPUT(), BORDER());
         cv.round_border(pill, self.pf(13.0), pborder, pbg);
         controls.push((pill.x, pill.right()));
         buttons.push((pill, TopAction::Branch));
-        self.branch_icon(cv, pill.x as f32 + self.pf(14.0), cy, TEXT_2);
-        self.te.draw(cv, semi, self.pf(12.5), pill.x as f32 + self.pf(25.0), base - self.pf(0.5), &branch, TEXT, bw);
+        self.branch_icon(cv, pill.x as f32 + self.pf(14.0), cy, TEXT_2());
+        self.te.draw(cv, semi, self.pf(12.5), pill.x as f32 + self.pf(25.0), base - self.pf(0.5), &branch, TEXT(), bw);
         // Actions with ahead/behind from the current branch.
         let head = self.r.refs.refs.iter().find(|r| r.is_head);
         let (ahead, behind) = head.map_or((0, 0), |h| (h.ahead, h.behind));
@@ -3079,9 +3220,9 @@ impl Ui {
         // Gear: settings.
         let gs = self.px(30.0);
         let gear = Rect::new((right as f32 - self.pf(10.0)) as i32 - gs, (cy - self.pf(15.0)) as i32, gs, gs);
-        let (gbg, gborder) = self.control_colors(Hot::Top(TopAction::Settings), BG_BAR, BORDER);
+        let (gbg, gborder) = self.control_colors(Hot::Top(TopAction::Settings), BG_BAR(), BORDER());
         cv.round_border(gear, self.pf(8.0), gborder, gbg);
-        let gc = if self.is_hot(Hot::Top(TopAction::Settings)) { TEXT } else { TEXT_2 };
+        let gc = if self.is_hot(Hot::Top(TopAction::Settings)) { TEXT() } else { TEXT_2() };
         self.gear_icon(cv, gear.x as f32 + gs as f32 / 2.0, cy, gc);
         buttons.push((gear, TopAction::Settings));
         let right = gear.x;
@@ -3140,16 +3281,16 @@ impl Ui {
         let sw = self.px(460.0).min(hi - lo).max(self.px(160.0));
         let sx0 = ((r.w - sw) / 2).min(hi - sw).max(lo);
         let search = Rect::new(sx0, (cy - self.pf(15.0)) as i32, sw, self.px(30.0));
-        let sborder = if self.is_hot(Hot::Search) { BORDER_HOVER } else { BORDER };
-        cv.round_border(search, self.pf(8.0), sborder, BG_INPUT);
+        let sborder = if self.is_hot(Hot::Search) { BORDER_HOVER() } else { BORDER() };
+        cv.round_border(search, self.pf(8.0), sborder, BG_INPUT());
         controls.push((search.x, search.right()));
         self.search_rect = search;
         let sx = search.x as f32 + self.pf(14.0);
-        cv.ring(sx + self.pf(4.5), cy - self.pf(1.0), self.pf(5.0), self.pf(1.6), TEXT_3);
+        cv.ring(sx + self.pf(4.5), cy - self.pf(1.0), self.pf(5.0), self.pf(1.6), TEXT_3());
         cv.stroke(
             &[(sx + self.pf(8.0), cy + self.pf(2.5)), (sx + self.pf(11.0), cy + self.pf(5.5))],
             self.pf(1.6),
-            TEXT_3,
+            TEXT_3(),
         );
         self.te.draw(
             cv,
@@ -3158,7 +3299,7 @@ impl Ui {
             sx + self.pf(20.0),
             base,
             "Jump to branch, commit or command",
-            TEXT_3,
+            TEXT_3(),
             sw as f32 - self.pf(110.0),
         );
         self.keycap(cv, search.right() as f32 - self.pf(12.0), cy, "Ctrl K", true);
@@ -3194,8 +3335,8 @@ impl Ui {
 
     fn paint_tabs(&mut self, cv: &mut Canvas) {
         let r = self.lay.tabs;
-        cv.fill(r, BG_SIDEBAR);
-        cv.fill(Rect::new(r.x, r.bottom() - 1, r.w, 1), BORDER);
+        cv.fill(r, BG_SIDEBAR());
+        cv.fill(Rect::new(r.x, r.bottom() - 1, r.w, 1), BORDER());
         let (rects, plus) = self.tab_rects();
         let (ui, semi) = (self.f.ui, self.f.semi);
         for (i, t) in rects.iter().enumerate() {
@@ -3205,19 +3346,19 @@ impl Ui {
             let active = i == self.cur_tab;
             let hover = self.tab_hover == Some(i);
             let bg = if active {
-                BG
+                BG()
             } else if hover {
-                BG_HOVER
+                BG_HOVER()
             } else {
-                BG_SIDEBAR
+                BG_SIDEBAR()
             };
             cv.fill(Rect::new(t.x, t.y, t.w, t.h + if active { 1 } else { 0 }), bg);
             if active {
-                cv.fill(Rect::new(t.x, t.y, t.w, self.px(2.0)), ACCENT);
+                cv.fill(Rect::new(t.x, t.y, t.w, self.px(2.0)), ACCENT());
             }
             // Separator between inactive tabs.
             if !active && i + 1 != self.cur_tab {
-                cv.fill(Rect::new(t.right() - 1, t.y + self.px(8.0), 1, t.h - self.px(16.0)), BORDER);
+                cv.fill(Rect::new(t.right() - 1, t.y + self.px(8.0), 1, t.h - self.px(16.0)), BORDER());
             }
             let name = self.tabs[i].title().to_string();
             // The tab's colour: the top bar when active, a thin line otherwise.
@@ -3226,13 +3367,16 @@ impl Ui {
                 cv.fill(Rect::new(t.x, t.y, t.w, h), c.1);
             }
             let base = (t.y as f32 + t.h as f32 / 2.0 + self.pf(4.5)).round();
-            let close_w = if active || hover { self.pf(28.0) } else { 0.0 };
+            // The close button's room is kept on both sides whether it
+            // shows or not: the label never moves when the pointer comes.
+            let close_w = self.pf(28.0);
             let font = if active { semi } else { ui };
-            let max = t.w as f32 - self.pf(28.0) - close_w;
+            let max = (t.w as f32 - 2.0 * close_w).max(self.pf(24.0));
             let tw = self.te.measure(font, self.pf(12.5), &name).min(max);
-            // Centred.
-            let tx = t.x as f32 + ((t.w as f32 - close_w - tw) / 2.0).max(self.pf(14.0));
-            let end = self.te.draw(cv, font, self.pf(12.5), tx, base, &name, if active { TEXT } else { TEXT_3 }, max);
+            // Centred in the whole tab.
+            let tx = t.x as f32 + ((t.w as f32 - tw) / 2.0).max(close_w);
+            let end =
+                self.te.draw(cv, font, self.pf(12.5), tx, base, &name, if active { TEXT() } else { TEXT_3() }, max);
             // An agent runs (accent) or finished unseen (green, red).
             if let Some(c) = self.agent_badge(&self.tabs[i].path.clone()) {
                 cv.fill_circle(end + self.pf(7.0), base - self.pf(4.0), self.pf(3.0), c);
@@ -3240,21 +3384,21 @@ impl Ui {
                 // Uncommitted changes (FF-35).
                 let st = if active { self.r.status } else { self.tabs[i].state.as_ref().and_then(|s| s.status) };
                 if st.is_some_and(|s| s.total() > 0) {
-                    cv.ring(end + self.pf(7.0), base - self.pf(4.0), self.pf(3.0), self.pf(1.4), MOD);
+                    cv.ring(end + self.pf(7.0), base - self.pf(4.0), self.pf(3.0), self.pf(1.4), MOD());
                 }
             }
             if active || hover {
                 let c = self.tab_close_rect(*t);
                 let (cx, cy, s) = (c.x as f32 + c.w as f32 / 2.0, c.y as f32 + c.h as f32 / 2.0, self.pf(3.5));
                 let w = self.pf(1.3);
-                cv.stroke(&[(cx - s, cy - s), (cx + s, cy + s)], w, TEXT_3);
-                cv.stroke(&[(cx - s, cy + s), (cx + s, cy - s)], w, TEXT_3);
+                cv.stroke(&[(cx - s, cy - s), (cx + s, cy + s)], w, TEXT_3());
+                cv.stroke(&[(cx - s, cy + s), (cx + s, cy - s)], w, TEXT_3());
             }
         }
         // "+" opens another repository.
         let (cx, cy, s) = (plus.x as f32 + plus.w as f32 / 2.0, plus.y as f32 + plus.h as f32 / 2.0, self.pf(5.0));
-        cv.stroke(&[(cx - s, cy), (cx + s, cy)], self.pf(1.5), TEXT_2);
-        cv.stroke(&[(cx, cy - s), (cx, cy + s)], self.pf(1.5), TEXT_2);
+        cv.stroke(&[(cx - s, cy), (cx + s, cy)], self.pf(1.5), TEXT_2());
+        cv.stroke(&[(cx, cy - s), (cx, cy + s)], self.pf(1.5), TEXT_2());
     }
 
     /// Middle click closes the tab under the pointer, as in browsers.
@@ -3282,13 +3426,13 @@ impl Ui {
             } else {
                 (self.cap_hover == Some(i), self.cap_pressed == Some(i) && self.cap_hover == Some(i))
             };
-            let idle = if self.active { TEXT } else { TEXT_3 };
+            let idle = if self.active { TEXT() } else { TEXT_3() };
             let (fill, glyph) = match (i, hover, pressed) {
-                (2, true, true) => (CLOSE_PRESS, 0xffffff),
-                (2, true, false) => (CLOSE_HOVER, 0xffffff),
-                (_, true, true) => (BG_PRESS, TEXT),
-                (_, true, false) => (BG_HOVER, TEXT),
-                _ => (BG_BAR, idle),
+                (2, true, true) => (CLOSE_PRESS(), 0xffffff),
+                (2, true, false) => (CLOSE_HOVER(), 0xffffff),
+                (_, true, true) => (BG_PRESS(), TEXT()),
+                (_, true, false) => (BG_HOVER(), TEXT()),
+                _ => (BG_BAR(), idle),
             };
             cv.fill(b, fill);
             let (cx, cy) = (b.x + b.w / 2, b.y + b.h / 2);
@@ -3324,7 +3468,13 @@ impl Ui {
 
     /// Pointer moved in the client area (hover for minimise and close).
     pub fn pointer(&mut self, x: i32, y: i32) {
+        if self.split_drag.is_some() {
+            self.split_move(x, y);
+            self.split_hover(x, y);
+            return;
+        }
         self.update_hot(x, y);
+        self.split_hover(x, y);
         self.side_pointer(x, y);
         let th = self.tab_at(x, y);
         if th != self.tab_hover {
@@ -3373,6 +3523,9 @@ impl Ui {
     /// started on it and the pointer is still over it (as on Windows).
     pub fn release(&mut self, x: i32, y: i32) {
         self.release_press();
+        if self.split_release() {
+            self.refresh_hot();
+        }
         if let Some(b) = self.cap_pressed.take() {
             if self.caption_button_at(x, y) == Some(b) {
                 self.win_action = Some(if b == 0 { WinAction::Minimize } else { WinAction::Close });
@@ -3431,27 +3584,27 @@ impl Ui {
         let h = Hot::Top(action);
         if accent {
             let bg = if self.is_pressed(h) {
-                ACCENT_SOFT
+                ACCENT_SOFT()
             } else if self.is_hot(h) {
-                ACCENT_SOFT_HOVER
+                ACCENT_SOFT_HOVER()
             } else {
-                ACCENT_SOFT
+                ACCENT_SOFT()
             };
-            let border = if self.is_hot(h) { ACCENT } else { ACCENT_BORDER };
+            let border = if self.is_hot(h) { ACCENT() } else { ACCENT_BORDER() };
             cv.round_border(r, self.pf(8.0), border, bg);
-            self.sparkle(cv, r.x as f32 + self.pf(16.0), cy, self.pf(5.5), ACCENT);
+            self.sparkle(cv, r.x as f32 + self.pf(16.0), cy, self.pf(5.5), ACCENT());
         } else {
-            let (bg, border) = self.control_colors(h, BG_BAR, BORDER);
+            let (bg, border) = self.control_colors(h, BG_BAR(), BORDER());
             cv.round_border(r, self.pf(8.0), border, bg);
         }
         if let Some(g) = glyph {
-            self.glyph(cv, g, r.x as f32 + self.pf(18.0), cy, self.pf(7.0), TEXT);
+            self.glyph(cv, g, r.x as f32 + self.pf(18.0), cy, self.pf(7.0), TEXT());
         }
         let base = (cy + self.pf(4.5)).round();
         let tx = r.x as f32 + self.pf(12.0) + icon;
-        let end = self.te.draw(cv, semi, size, tx, base, label, if accent { ACCENT_FG } else { TEXT }, w);
+        let end = self.te.draw(cv, semi, size, tx, base, label, if accent { ACCENT_FG() } else { TEXT() }, w);
         if let Some(b) = badge {
-            self.te.draw(cv, semi, self.pf(11.5), end + self.pf(6.0), base, &b, ACCENT, w);
+            self.te.draw(cv, semi, self.pf(11.5), end + self.pf(6.0), base, &b, ACCENT(), w);
         }
         r.x as f32
     }
@@ -3480,8 +3633,8 @@ impl Ui {
         let size = self.pf(11.0);
         let w = self.te.measure(ui, size, label) + self.pf(12.0);
         let r = Rect::new((right - w) as i32, (cy - self.pf(10.0)) as i32, w as i32, self.px(20.0));
-        cv.round_border(r, self.pf(5.0), BORDER, if dim { BG_BAR } else { BG_INPUT });
-        self.te.draw(cv, ui, size, r.x as f32 + self.pf(6.0), (cy + self.pf(4.0)).round(), label, TEXT_3, w);
+        cv.round_border(r, self.pf(5.0), BORDER(), if dim { BG_BAR() } else { BG_INPUT() });
+        self.te.draw(cv, ui, size, r.x as f32 + self.pf(6.0), (cy + self.pf(4.0)).round(), label, TEXT_3(), w);
         r.x as f32
     }
 
@@ -3489,8 +3642,14 @@ impl Ui {
         self.pf(14.0)
     }
 
+    /// The graph column holds the lanes of the rows on screen, not of the
+    /// whole history: one long-lived side branch far down must not push
+    /// every message to the right (at most 10 lanes; more are clipped).
     fn graph_lanes_shown(&self) -> u16 {
-        self.r.graph.max_width.clamp(1, 10)
+        let rows = &self.r.graph.rows;
+        let top = self.r.top.min(rows.len());
+        let end = (top + self.visible_rows() + 1).min(rows.len());
+        rows[top..end].iter().map(|g| g.width.max(g.node + 1)).max().unwrap_or(1).clamp(1, 10)
     }
 
     fn list_columns(&self) -> (f32, f32, f32, f32) {
@@ -3513,8 +3672,8 @@ impl Ui {
         if !clip.intersect(head).is_empty() && self.r.search.is_some() {
             self.paint_search_head(cv, head);
         } else if !clip.intersect(head).is_empty() {
-            cv.fill(head, BG);
-            cv.fill(Rect::new(head.x, head.bottom() - 1, head.w, 1), BORDER_SOFT);
+            cv.fill(head, BG());
+            cv.fill(Rect::new(head.x, head.bottom() - 1, head.w, 1), BORDER_SOFT());
             let base = (head.y as f32 + head.h as f32 / 2.0 + self.pf(4.0)).round();
             let n = if self.r.log_done {
                 fmt::num(self.r.commits.len())
@@ -3532,9 +3691,9 @@ impl Ui {
                 head.h - self.px(8.0),
             );
             if self.is_hot(Hot::Scope) {
-                cv.fill_round(tr, self.pf(6.0), BG_HOVER);
+                cv.fill_round(tr, self.pf(6.0), BG_HOVER());
             }
-            let tc = if head_only { ACCENT_FG } else { TEXT_3 };
+            let tc = if head_only { ACCENT_FG() } else { TEXT_3() };
             let e = self.te.draw(cv, semi, self.pf(11.5), l.x as f32 + self.pf(14.0), base, &title, tc, self.pf(260.0));
             let (cx, cy, s) = (e + self.pf(8.0), head.y as f32 + head.h as f32 / 2.0, self.pf(3.0));
             cv.stroke(&[(cx - s, cy - s / 2.0), (cx, cy + s / 2.0), (cx + s, cy - s / 2.0)], self.pf(1.3), tc);
@@ -3544,13 +3703,13 @@ impl Ui {
             let fw = self.te.measure(semi, self.pf(11.5), fl) + self.pf(34.0);
             let fr = Rect::new(tr.right() + self.px(8.0), tr.y, fw as i32, tr.h);
             if self.is_hot(Hot::HeadFind) {
-                cv.fill_round(fr, self.pf(6.0), BG_HOVER);
+                cv.fill_round(fr, self.pf(6.0), BG_HOVER());
             }
-            self.glyph(cv, Glyph::Search, fr.x as f32 + self.pf(12.0), cy, self.pf(6.0), TEXT_2);
-            self.te.draw(cv, semi, self.pf(11.5), fr.x as f32 + self.pf(23.0), base, fl, TEXT_2, fw);
+            self.glyph(cv, Glyph::Search, fr.x as f32 + self.pf(12.0), cy, self.pf(6.0), TEXT_2());
+            self.te.draw(cv, semi, self.pf(11.5), fr.x as f32 + self.pf(23.0), base, fl, TEXT_2(), fw);
             self.head_find_rect = fr;
             for (x, t) in [(author_x, "Author"), (date_x, "Date"), (sha_x, "Commit")] {
-                self.te.draw(cv, semi, self.pf(11.5), x, base, t, TEXT_3, self.pf(100.0));
+                self.te.draw(cv, semi, self.pf(11.5), x, base, t, TEXT_3(), self.pf(100.0));
             }
         }
         let body = Rect::new(l.x, self.lay.list_body.y, l.w - self.lay.scrollbar.w, self.lay.list_body.h);
@@ -3567,7 +3726,7 @@ impl Ui {
                 self.paint_row(cv, row, rr, text_x, author_x, date_x, sha_x, ui, semi);
                 // A search dims what doesn't match; the matches stay bright.
                 if self.row_dimmed(row) {
-                    cv.fill_alpha(rr, BG, 120);
+                    cv.fill_alpha(rr, BG(), 120);
                 }
                 cv.set_clip(old);
                 y += self.lay.row_h;
@@ -3575,18 +3734,22 @@ impl Ui {
         }
         let sb = self.lay.scrollbar;
         if !clip.intersect(sb).is_empty() {
-            cv.fill(sb, BG);
+            cv.fill(sb, BG());
             let n = self.r.commits.len().max(1);
             let vis = self.visible_rows();
             if n > vis {
                 let th = ((sb.h as f32 * vis as f32 / n as f32) as i32).max(self.px(24.0));
                 let ty = sb.y + ((sb.h - th) as f32 * self.r.top as f32 / (n - vis) as f32) as i32;
-                cv.fill_round(Rect::new(sb.x + self.px(3.0), ty, sb.w - self.px(6.0), th), self.pf(3.0), BORDER_HOVER);
+                cv.fill_round(
+                    Rect::new(sb.x + self.px(3.0), ty, sb.w - self.px(6.0), th),
+                    self.pf(3.0),
+                    BORDER_HOVER(),
+                );
             }
             self.paint_search_marks(cv, sb);
             // Selection marker on the scroll track.
             let my = sb.y + (sb.h as f32 * self.r.sel as f32 / n as f32) as i32;
-            cv.fill(Rect::new(sb.x + self.px(1.0), my, sb.w - self.px(2.0), self.px(2.0)), ACCENT);
+            cv.fill(Rect::new(sb.x + self.px(1.0), my, sb.w - self.px(2.0), self.px(2.0)), ACCENT());
         }
     }
 
@@ -3605,23 +3768,23 @@ impl Ui {
     ) {
         let selected = row == self.r.sel;
         let bg = if selected {
-            if self.focus == Focus::List { BG_SELECT } else { BG_SELECT_DIM }
+            if self.focus == Focus::List { BG_SELECT() } else { BG_SELECT_DIM() }
         } else if self.is_hot(Hot::Row(row)) {
-            BG_HOVER
+            BG_HOVER()
         } else {
-            BG
+            BG()
         };
         cv.fill(r, bg);
         if row >= self.r.commits.len() {
             if !self.r.log_done && row < self.r.top + self.visible_rows() {
                 // Placeholder bars while history streams in: solid, no animation.
                 let y = r.y + r.h / 2 - self.px(4.0);
-                cv.fill_round(Rect::new(text_x as i32, y, self.px(240.0), self.px(8.0)), self.pf(4.0), BG_HOVER);
+                cv.fill_round(Rect::new(text_x as i32, y, self.px(240.0), self.px(8.0)), self.pf(4.0), BG_HOVER());
             }
             return;
         }
         if selected {
-            cv.fill(Rect::new(r.x, r.y, self.px(3.0), r.h), ACCENT);
+            cv.fill(Rect::new(r.x, r.y, self.px(3.0), r.h), ACCENT());
         }
         self.paint_graph(cv, row, r, bg);
         let c = &self.r.commits[row];
@@ -3633,16 +3796,16 @@ impl Ui {
         for (k, &ri) in chips.iter().enumerate() {
             if k == 3 {
                 let more = format!("+{}", chips.len() - 3);
-                x = self.te.draw(cv, semi, self.pf(11.0), x, base, &more, TEXT_3, max_x - x) + self.pf(8.0);
+                x = self.te.draw(cv, semi, self.pf(11.0), x, base, &more, TEXT_3(), max_x - x) + self.pf(8.0);
                 break;
             }
             let rf = &self.r.refs.refs[ri as usize];
             let (cbg, cfg) = match rf.kind {
-                _ if rf.is_head => (ACCENT_SOFT_HOVER, ACCENT_FG),
-                RefKind::Local => (LOCAL_BG, LOCAL_FG),
-                RefKind::Remote => (REMOTE_BG, REMOTE_FG),
-                RefKind::Tag => (TAG_BG, TAG_FG),
-                _ => (STASH_BG, STASH_FG),
+                _ if rf.is_head => (ACCENT_SOFT_HOVER(), ACCENT_FG()),
+                RefKind::Local => (LOCAL_BG(), LOCAL_FG()),
+                RefKind::Remote => (REMOTE_BG(), REMOTE_FG()),
+                RefKind::Tag => (TAG_BG(), TAG_FG()),
+                _ => (STASH_BG(), STASH_FG()),
             };
             let name = rf.name.to_string();
             let glyph = match rf.kind {
@@ -3668,9 +3831,9 @@ impl Ui {
         }
         // To push (↑) or to pull (↓).
         let mark = if self.r.ahead_ids.contains(&c.id) {
-            Some(("↑", ACCENT_FG))
+            Some(("↑", ACCENT_FG()))
         } else if self.r.behind_ids.contains(&c.id) {
-            Some(("↓", REMOTE_FG))
+            Some(("↓", REMOTE_FG()))
         } else {
             None
         };
@@ -3678,34 +3841,34 @@ impl Ui {
             x = self.te.draw(cv, semi, self.pf(12.5), x, base, m, color, self.pf(14.0)) + self.pf(5.0);
         }
         let merge = c.parents.len() > 1;
-        let subj_color = if merge { TEXT_2 } else { TEXT };
+        let subj_color = if merge { TEXT_2() } else { TEXT() };
         // A conventional-commit prefix ("feat:", "fix(ui)!:") in the accent
         // colour, the rest as usual (FF-33).
         let (prefix, rest) = split_prefix(&c.subject);
         let x = if prefix.is_empty() {
             x
         } else {
-            self.te.draw(cv, ui, self.pf(13.0), x, base, prefix, ACCENT_FG, max_x - x)
+            self.te.draw(cv, ui, self.pf(13.0), x, base, prefix, ACCENT_FG(), max_x - x)
         };
         let end = self.te.draw(cv, ui, self.pf(13.0), x, base, rest, subj_color, max_x - x);
         if c.has_body && end + self.pf(16.0) < max_x {
             // "Has a description" marker.
             let mx = end + self.pf(9.0);
             for k in 0..3 {
-                cv.fill_circle(mx + k as f32 * self.pf(3.5), base - self.pf(3.5), self.pf(1.1), TEXT_4);
+                cv.fill_circle(mx + k as f32 * self.pf(3.5), base - self.pf(3.5), self.pf(1.1), TEXT_4());
             }
         }
-        let dim = if selected { TEXT_2 } else { TEXT_3 };
-        self.te.draw(cv, ui, self.pf(12.5), author_x, base, &c.author, TEXT_2, date_x - author_x - self.pf(12.0));
+        let dim = if selected { TEXT_2() } else { TEXT_3() };
+        self.te.draw(cv, ui, self.pf(12.5), author_x, base, &c.author, TEXT_2(), date_x - author_x - self.pf(12.0));
         let when = fmt::relative(c.time, self.now, self.r.tz);
         self.te.draw(cv, ui, self.pf(12.5), date_x, base, &when, dim, sha_x - date_x - self.pf(10.0));
         self.te.draw(cv, self.f.mono, self.pf(12.0), sha_x, base, &c.id.short(8), dim, self.pf(80.0));
         // CI status before the SHA: green passed, amber running, red failed.
         if let Some((st, _)) = self.r.ci.get(&c.id) {
             let color = match st {
-                ffwd_core::hosting::Ci::Passed => ADD,
-                ffwd_core::hosting::Ci::Running => MOD,
-                ffwd_core::hosting::Ci::Failed => DEL,
+                ffwd_core::hosting::Ci::Passed => ADD(),
+                ffwd_core::hosting::Ci::Running => MOD(),
+                ffwd_core::hosting::Ci::Failed => DEL(),
             };
             cv.fill_circle(sha_x - self.pf(9.0), base - self.pf(4.0), self.pf(3.2), color);
         }
@@ -3737,7 +3900,7 @@ impl Ui {
         let is_head = self.r.refs.head.is_some_and(|h| h == self.r.commits[row].id);
         cv.fill_circle(cx, mid, self.pf(6.5), bg);
         if is_head {
-            cv.fill_circle(cx, mid, self.pf(5.5), ACCENT);
+            cv.fill_circle(cx, mid, self.pf(5.5), ACCENT());
             cv.fill_circle(cx, mid, self.pf(2.2), bg);
         } else if g.is_merge {
             cv.ring(cx, mid, self.pf(4.6), self.pf(2.0), color);
@@ -3815,10 +3978,10 @@ impl Ui {
 
     fn paint_details(&mut self, cv: &mut Canvas) {
         let d = self.lay.details;
-        cv.fill(d, BG_PANEL);
+        cv.fill(d, BG_PANEL());
         match self.layout {
-            DetailsLayout::Beside => cv.fill(Rect::new(d.x, d.y, 1, d.h), BORDER),
-            DetailsLayout::Below => cv.fill(Rect::new(d.x, d.y, d.w, 1), BORDER),
+            DetailsLayout::Beside => cv.fill(Rect::new(d.x, d.y, 1, d.h), BORDER()),
+            DetailsLayout::Below => cv.fill(Rect::new(d.x, d.y, d.w, 1), BORDER()),
         }
         let d = self.lay.info;
         let Some(c) = self.r.commits.get(self.r.sel).cloned() else {
@@ -3830,7 +3993,7 @@ impl Ui {
                 d.x as f32 + self.pf(24.0),
                 d.y as f32 + self.pf(40.0),
                 &msg,
-                TEXT_3,
+                TEXT_3(),
                 d.w as f32,
             );
             return;
@@ -3849,7 +4012,7 @@ impl Ui {
         };
         let (s16, s13) = (self.pf(16.0), self.pf(13.0));
         for line in wrap(&mut self.te, semi, s16, &subject, maxw).into_iter().take(2) {
-            self.te.draw(cv, semi, self.pf(16.0), x0, y, &line, TEXT, maxw);
+            self.te.draw(cv, semi, self.pf(16.0), x0, y, &line, TEXT(), maxw);
             y += self.pf(22.0);
         }
         self.compare_btns = [Rect::default(); 2];
@@ -3860,10 +4023,10 @@ impl Ui {
                 let w = self.te.measure(semi, self.pf(11.5), label) + self.pf(32.0);
                 let b = Rect::new(bx as i32, (y - self.pf(12.0)) as i32, w as i32, self.px(24.0));
                 let hot = self.is_hot(Hot::Compare(k));
-                let (bg, border) = if hot { (CONTROL_HOVER, BORDER_HOVER) } else { (BG_BAR, BORDER) };
+                let (bg, border) = if hot { (CONTROL_HOVER(), BORDER_HOVER()) } else { (BG_BAR(), BORDER()) };
                 cv.round_border(b, self.pf(6.0), border, bg);
                 let cy = b.y as f32 + b.h as f32 / 2.0;
-                self.glyph(cv, g, b.x as f32 + self.pf(13.0), cy, self.pf(5.0), TEXT_2);
+                self.glyph(cv, g, b.x as f32 + self.pf(13.0), cy, self.pf(5.0), TEXT_2());
                 self.te.draw(
                     cv,
                     semi,
@@ -3871,7 +4034,7 @@ impl Ui {
                     b.x as f32 + self.pf(22.0),
                     (cy + self.pf(4.0)).round(),
                     label,
-                    TEXT,
+                    TEXT(),
                     w,
                 );
                 self.compare_btns[k] = b;
@@ -3894,7 +4057,7 @@ impl Ui {
         for (k, line) in lines.iter().take(fit).enumerate() {
             let more = k + 1 == fit && lines.len() > fit;
             let text = if more { format!("{line} …") } else { line.clone() };
-            self.te.draw(cv, ui, s13, x0, y + self.pf(2.0), &text, TEXT_2, maxw);
+            self.te.draw(cv, ui, s13, x0, y + self.pf(2.0), &text, TEXT_2(), maxw);
             y += lh;
         }
         // Meta block.
@@ -3904,7 +4067,7 @@ impl Ui {
         let iw = self.te.measure(semi, self.pf(11.5), &ini);
         self.te.draw(cv, semi, self.pf(11.5), x0 + av - iw / 2.0, meta_y + self.pf(4.0), &ini, 0xffffff, av * 2.0);
         let mx = x0 + av * 2.0 + self.pf(12.0);
-        let end = self.te.draw(cv, semi, self.pf(13.0), mx, meta_y - self.pf(3.0), &c.author, TEXT, maxw * 0.5);
+        let end = self.te.draw(cv, semi, self.pf(13.0), mx, meta_y - self.pf(3.0), &c.author, TEXT(), maxw * 0.5);
         self.te.draw(
             cv,
             ui,
@@ -3912,32 +4075,32 @@ impl Ui {
             end + self.pf(8.0),
             meta_y - self.pf(3.0),
             &c.email,
-            TEXT_3,
+            TEXT_3(),
             x0 + maxw - end - self.pf(8.0),
         );
         let when = format!("{}  ·  {}", fmt::date_time(c.time, self.r.tz), fmt::relative(c.time, self.now, self.r.tz));
-        self.te.draw(cv, ui, self.pf(12.0), mx, meta_y + self.pf(14.0), &when, TEXT_3, maxw);
+        self.te.draw(cv, ui, self.pf(12.0), mx, meta_y + self.pf(14.0), &when, TEXT_3(), maxw);
         let sha_y = meta_y + self.pf(40.0);
-        let mut sx = self.te.draw(cv, mono, self.pf(12.0), x0, sha_y, &c.id.short(12), TEXT_2, maxw);
+        let mut sx = self.te.draw(cv, mono, self.pf(12.0), x0, sha_y, &c.id.short(12), TEXT_2(), maxw);
         for p in c.parents.iter().take(2) {
-            sx = self.te.draw(cv, ui, self.pf(12.0), sx + self.pf(14.0), sha_y, "parent", TEXT_3, maxw);
-            sx = self.te.draw(cv, mono, self.pf(12.0), sx + self.pf(6.0), sha_y, &p.short(8), TEXT_3, maxw);
+            sx = self.te.draw(cv, ui, self.pf(12.0), sx + self.pf(14.0), sha_y, "parent", TEXT_3(), maxw);
+            sx = self.te.draw(cv, mono, self.pf(12.0), sx + self.pf(6.0), sha_y, &p.short(8), TEXT_3(), maxw);
         }
         // Files.
         let fh_y = d.y + self.header_h();
-        cv.fill(Rect::new(d.x + 1, fh_y, d.w - 1, 1), BORDER_SOFT);
+        cv.fill(Rect::new(d.x + 1, fh_y, d.w - 1, 1), BORDER_SOFT());
         let fbase = fh_y as f32 + self.pf(23.0);
         let focus_files = self.focus == Focus::Files;
         match &self.r.details {
             None => {
-                self.te.draw(cv, semi, self.pf(11.5), x0, fbase, "CHANGED FILES", TEXT_3, maxw);
+                self.te.draw(cv, semi, self.pf(11.5), x0, fbase, "CHANGED FILES", TEXT_3(), maxw);
                 let fr = self.files_rect();
                 for k in 0..3 {
                     let yy = fr.y + k * self.px(26.0) + self.px(9.0);
                     cv.fill_round(
                         Rect::new(x0 as i32, yy, self.px(180.0 - k as f32 * 30.0), self.px(8.0)),
                         self.pf(4.0),
-                        BG_HOVER,
+                        BG_HOVER(),
                     );
                 }
             }
@@ -3955,7 +4118,7 @@ impl Ui {
                     x0,
                     fbase,
                     &title,
-                    if focus_files { ACCENT } else { TEXT_3 },
+                    if focus_files { ACCENT() } else { TEXT_3() },
                     maxw,
                 );
                 let e = self.te.draw(
@@ -3965,7 +4128,7 @@ impl Ui {
                     e + self.pf(10.0),
                     fbase,
                     &format!("+{}", fmt::num(adds as usize)),
-                    ADD,
+                    ADD(),
                     maxw,
                 );
                 let e = self.te.draw(
@@ -3975,7 +4138,7 @@ impl Ui {
                     e + self.pf(6.0),
                     fbase,
                     &format!("−{}", fmt::num(dels as usize)),
-                    DEL,
+                    DEL(),
                     maxw,
                 );
                 // Files that matched a content or path search (FF-34): git
@@ -3990,7 +4153,7 @@ impl Ui {
                         e + self.pf(10.0),
                         fbase,
                         &format!("· {} MATCH{}", fmt::num(nm), if nm == 1 { "" } else { "ES" }),
-                        ACCENT,
+                        ACCENT(),
                         maxw,
                     );
                 }
@@ -4000,22 +4163,22 @@ impl Ui {
                     let ry = fr.y + (k - self.r.file_top) as i32 * rh;
                     let row = Rect::new(d.x + self.px(10.0), ry, d.w - self.px(20.0), rh);
                     if k == self.r.sel_file {
-                        cv.fill_round(row, self.pf(6.0), if focus_files { BG_SELECT } else { BG_SELECT_DIM });
+                        cv.fill_round(row, self.pf(6.0), if focus_files { BG_SELECT() } else { BG_SELECT_DIM() });
                     } else if self.is_hot(Hot::File(k)) {
-                        cv.fill_round(row, self.pf(6.0), BG_HOVER);
+                        cv.fill_round(row, self.pf(6.0), BG_HOVER());
                     }
                     if nm > 0 && matched.iter().any(|p| *p == *f.path) {
                         let m = self.px(5.0);
-                        cv.fill(Rect::new(d.x + self.px(3.0), ry + m, self.px(3.0).max(2), rh - 2 * m), ACCENT);
+                        cv.fill(Rect::new(d.x + self.px(3.0), ry + m, self.px(3.0).max(2), rh - 2 * m), ACCENT());
                     }
                     let cy = ry as f32 + rh as f32 / 2.0;
                     let base = (cy + self.pf(4.5)).round();
                     let (sc, sl) = match f.status {
-                        b'A' => (ADD, "A"),
-                        b'D' => (DEL, "D"),
-                        b'R' => (REN, "R"),
-                        b'C' => (REN, "C"),
-                        _ => (MOD, "M"),
+                        b'A' => (ADD(), "A"),
+                        b'D' => (DEL(), "D"),
+                        b'R' => (REN(), "R"),
+                        b'C' => (REN(), "C"),
+                        _ => (MOD(), "M"),
                     };
                     let badge = Rect::new(x0 as i32, (cy - self.pf(8.0)) as i32, self.px(16.0), self.px(16.0));
                     cv.fill_round(badge, self.pf(4.0), crate::ui::tint(sc));
@@ -4041,7 +4204,7 @@ impl Ui {
                     let stw = self.te.measure(ui, self.pf(11.5), &stat);
                     let tx = x0 + self.pf(26.0);
                     let avail = row.right() as f32 - tx - stw - self.pf(18.0);
-                    let e = self.te.draw(cv, ui, self.pf(13.0), tx, base, name, TEXT, avail);
+                    let e = self.te.draw(cv, ui, self.pf(13.0), tx, base, name, TEXT(), avail);
                     if !dir.is_empty() {
                         self.te.draw(
                             cv,
@@ -4050,7 +4213,7 @@ impl Ui {
                             e + self.pf(8.0),
                             base,
                             dir.trim_end_matches('/'),
-                            TEXT_4,
+                            TEXT_4(),
                             avail - (e - tx) - self.pf(8.0),
                         );
                     }
@@ -4061,14 +4224,14 @@ impl Ui {
                         row.right() as f32 - stw - self.pf(10.0),
                         base,
                         &stat,
-                        TEXT_3,
+                        TEXT_3(),
                         stw + 2.0,
                     );
                 }
                 if n > self.file_rows_visible() {
                     let more = format!("{} more · Tab to browse", n - self.file_rows_visible());
                     let mw = self.te.measure(ui, self.pf(11.0), &more);
-                    self.te.draw(cv, ui, self.pf(11.0), d.right() as f32 - mw - pad, fbase, &more, TEXT_4, mw + 2.0);
+                    self.te.draw(cv, ui, self.pf(11.0), d.right() as f32 - mw - pad, fbase, &more, TEXT_4(), mw + 2.0);
                 }
             }
         }
@@ -4091,10 +4254,10 @@ impl Ui {
             return;
         }
         let (ui, semi) = (self.f.ui, self.f.semi);
-        cv.fill(Rect::new(r.x + 1, r.y, r.w - 1, r.h), BG);
+        cv.fill(Rect::new(r.x + 1, r.y, r.w - 1, r.h), BG());
         let bar = Rect::new(r.x + 1, r.y, r.w - 1, self.px(32.0));
-        cv.fill(bar, BG_BAR);
-        cv.fill(Rect::new(bar.x, bar.bottom() - 1, bar.w, 1), BORDER_SOFT);
+        cv.fill(bar, BG_BAR());
+        cv.fill(Rect::new(bar.x, bar.bottom() - 1, bar.w, 1), BORDER_SOFT());
         let base = (bar.y as f32 + bar.h as f32 / 2.0 + self.pf(4.5)).round();
         let pad = self.pf(16.0);
         let Some(diff) = self.r.diff.clone() else {
@@ -4103,7 +4266,7 @@ impl Ui {
                 None if self.r.details.is_some() => "No file changes".into(),
                 None => String::new(),
             };
-            self.te.draw(cv, semi, self.pf(12.5), r.x as f32 + pad, base, &label, TEXT_2, r.w as f32 - 2.0 * pad);
+            self.te.draw(cv, semi, self.pf(12.5), r.x as f32 + pad, base, &label, TEXT_2(), r.w as f32 - 2.0 * pad);
             return;
         };
         let focus = self.focus == Focus::Diff;
@@ -4119,14 +4282,14 @@ impl Ui {
                 r.x as f32 + pad,
                 base,
                 &diff.path,
-                if focus { ACCENT } else { TEXT },
+                if focus { ACCENT() } else { TEXT() },
                 maxw,
             );
         }
         if diff.truncated {
             let hint = "first 20,000 lines";
             let hw = self.te.measure(ui, self.pf(11.0), hint);
-            self.te.draw(cv, ui, self.pf(11.0), left - hw - pad, base, hint, MOD, hw + 2.0);
+            self.te.draw(cv, ui, self.pf(11.0), left - hw - pad, base, hint, MOD(), hw + 2.0);
         }
         let body = Rect::new(r.x + 1, bar.bottom(), r.w - 1, r.bottom() - bar.bottom());
         let top = self.r.diff_top;
@@ -4152,18 +4315,18 @@ impl Ui {
         if n == 0 || strip.h <= 0 {
             return;
         }
-        cv.fill(strip, BG_SIDEBAR);
+        cv.fill(strip, BG_SIDEBAR());
         let fit = (body.h / self.code_lh().max(1)) as usize;
         if n > fit {
             let y0 = strip.y + (self.r.diff_top * strip.h as usize / n) as i32;
             let hh = ((fit * strip.h as usize / n) as i32).max(self.px(6.0));
-            cv.fill(Rect::new(strip.x, y0, strip.w, hh), BG_HOVER);
+            cv.fill(Rect::new(strip.x, y0, strip.w, hh), BG_HOVER());
         }
         for (py, m) in self.diff_marks(strip.h as usize).into_iter().enumerate() {
             let color = match m {
-                1 => ADD,
-                2 => DEL,
-                3 => MOD,
+                1 => ADD(),
+                2 => DEL(),
+                3 => MOD(),
                 _ => continue,
             };
             cv.fill(
@@ -4240,14 +4403,14 @@ impl Ui {
                 body.x as f32 + self.pf(16.0),
                 body.y as f32 + self.pf(26.0),
                 "Binary file: no text diff",
-                TEXT_3,
+                TEXT_3(),
                 body.w as f32,
             );
             return buttons;
         }
         let num_w = self.code_px(38.0);
         let gut = Rect::new(body.x, body.y, (num_w * 2.0 + self.pf(8.0)) as i32, body.h);
-        cv.fill(gut, BG_SIDEBAR);
+        cv.fill(gut, BG_SIDEBAR());
         let fs = self.code_fs();
         let old_clip = cv.clip();
         let (pairs, blocks) = self.diff_meta(diff);
@@ -4270,18 +4433,18 @@ impl Ui {
             }
             let lb = (y as f32 + lh as f32 / 2.0 + self.code_px(4.0)).round();
             let (bgc, fg, mark) = match line.kind {
-                LineKind::Add => (ADD_BG, ADD_TEXT, "+"),
-                LineKind::Del => (DEL_BG, DEL_TEXT, "−"),
-                LineKind::Hunk => (HUNK_BG, HUNK_TEXT, ""),
-                LineKind::Meta => (BG, TEXT_4, ""),
-                LineKind::Context => (BG, TEXT_2, ""),
+                LineKind::Add => (ADD_BG(), ADD_TEXT(), "+"),
+                LineKind::Del => (DEL_BG(), DEL_TEXT(), "−"),
+                LineKind::Hunk => (HUNK_BG(), HUNK_TEXT(), ""),
+                LineKind::Meta => (BG(), TEXT_4(), ""),
+                LineKind::Context => (BG(), TEXT_2(), ""),
             };
-            if bgc != BG {
+            if bgc != BG() {
                 cv.fill(Rect::new(gut.right(), y, body.w - gut.w, h), bgc);
                 let gbg = match line.kind {
-                    LineKind::Add => DIFF_ADD_LINE,
-                    LineKind::Del => DIFF_DEL_LINE,
-                    _ => BG_SIDEBAR,
+                    LineKind::Add => DIFF_ADD_LINE(),
+                    LineKind::Del => DIFF_DEL_LINE(),
+                    _ => BG_SIDEBAR(),
                 };
                 cv.fill(Rect::new(gut.x, y, gut.w, h), gbg);
             }
@@ -4298,9 +4461,9 @@ impl Ui {
                         lh - self.px(4.0),
                     );
                     let hot = Hot::Change(hit_base + buttons.len());
-                    let (bg, border) = self.control_colors(hot, BG_BAR, HUNK_BORDER);
+                    let (bg, border) = self.control_colors(hot, BG_BAR(), HUNK_BORDER());
                     cv.round_border(b, self.pf(5.0), border, bg);
-                    self.te.draw(cv, semi, self.pf(11.0), b.x as f32 + self.pf(9.0), lb, label, HUNK_TEXT, w);
+                    self.te.draw(cv, semi, self.pf(11.0), b.x as f32 + self.pf(9.0), lb, label, HUNK_TEXT(), w);
                     buttons.push((hunk as usize - 1, b));
                     text_w -= w + self.pf(12.0);
                 }
@@ -4317,9 +4480,9 @@ impl Ui {
                 continue;
             }
             let numc = match line.kind {
-                LineKind::Add => ADD_GUTTER,
-                LineKind::Del => DEL_GUTTER,
-                _ => TEXT_4,
+                LineKind::Add => ADD_GUTTER(),
+                LineKind::Del => DEL_GUTTER(),
+                _ => TEXT_4(),
             };
             if line.old > 0 {
                 let s = line.old.to_string();
@@ -4333,7 +4496,7 @@ impl Ui {
             }
             let tx = gut.right() as f32 + self.pf(8.0);
             if !mark.is_empty() {
-                self.te.draw(cv, mono, fs, tx, lb, mark, if line.kind == LineKind::Add { ADD } else { DEL }, 20.0);
+                self.te.draw(cv, mono, fs, tx, lb, mark, if line.kind == LineKind::Add { ADD() } else { DEL() }, 20.0);
             }
             let text = diff_find::shown_text(&line.text, self.diff_tab).into_owned();
             let i = top + k;
@@ -4394,24 +4557,24 @@ impl Ui {
 
     fn paint_status(&mut self, cv: &mut Canvas) {
         let r = self.lay.status;
-        cv.fill(r, BG_SIDEBAR);
-        cv.fill(Rect::new(r.x, r.y, r.w, 1), BORDER);
+        cv.fill(r, BG_SIDEBAR());
+        cv.fill(Rect::new(r.x, r.y, r.w, 1), BORDER());
         let ui = self.f.ui;
         let base = (r.y as f32 + r.h as f32 / 2.0 + self.pf(4.0)).round();
         let cy = r.y as f32 + r.h as f32 / 2.0;
         let mut x = self.pf(14.0);
         let (dot, msg) = if let Some(e) = &self.r.error {
-            (DEL, e.clone())
+            (DEL(), e.clone())
         } else if let Some(n) = &self.notice {
-            (MOD, n.clone())
+            (MOD(), n.clone())
         } else if !self.r.log_done {
-            (MOD, format!("Reading history · {} commits", fmt::num(self.r.commits.len())))
+            (MOD(), format!("Reading history · {} commits", fmt::num(self.r.commits.len())))
         } else {
-            (ADD, "Ready".to_string())
+            (ADD(), "Ready".to_string())
         };
         cv.fill_circle(x + self.pf(3.0), cy, self.pf(3.5), dot);
         x += self.pf(14.0);
-        x = self.te.draw(cv, ui, self.pf(12.0), x, base, &msg, TEXT_2, self.pf(520.0));
+        x = self.te.draw(cv, ui, self.pf(12.0), x, base, &msg, TEXT_2(), self.pf(520.0));
         self.notice_btn = Rect::default();
         if let Some(a) = self.notice_act.filter(|_| self.r.error.is_none() && self.notice.is_some()) {
             let (label, g) = a.label();
@@ -4422,11 +4585,11 @@ impl Ui {
             cv.round_border(
                 b,
                 self.pf(5.0),
-                if hot { ACCENT } else { ACCENT_BORDER },
-                if hot { ACCENT_SOFT_HOVER } else { ACCENT_SOFT },
+                if hot { ACCENT() } else { ACCENT_BORDER() },
+                if hot { ACCENT_SOFT_HOVER() } else { ACCENT_SOFT() },
             );
-            self.glyph(cv, g, b.x as f32 + self.pf(11.0), cy, self.pf(4.5), ACCENT_FG);
-            self.te.draw(cv, semi, self.pf(11.5), b.x as f32 + self.pf(20.0), base, label, ACCENT_FG, w);
+            self.glyph(cv, g, b.x as f32 + self.pf(11.0), cy, self.pf(4.5), ACCENT_FG());
+            self.te.draw(cv, semi, self.pf(11.5), b.x as f32 + self.pf(20.0), base, label, ACCENT_FG(), w);
             self.notice_btn = b;
             x = b.right() as f32;
         }
@@ -4438,7 +4601,7 @@ impl Ui {
             if let Some(ff) = self.stats.first_frame_ms {
                 facts.push_str(&format!(" · first frame {ff:.0} ms"));
             }
-            self.te.draw(cv, ui, self.pf(12.0), x + self.pf(16.0), base, &facts, TEXT_3, self.pf(560.0));
+            self.te.draw(cv, ui, self.pf(12.0), x + self.pf(16.0), base, &facts, TEXT_3(), self.pf(560.0));
         }
         let right = format!(
             "{}  ·  CPU renderer, damage-only  ·  last paint {:.1} ms",
@@ -4446,7 +4609,7 @@ impl Ui {
             self.stats.last_paint_ms
         );
         let rw = self.te.measure(ui, self.pf(12.0), &right);
-        self.te.draw(cv, ui, self.pf(12.0), r.right() as f32 - rw - self.pf(14.0), base, &right, TEXT_4, rw + 2.0);
+        self.te.draw(cv, ui, self.pf(12.0), r.right() as f32 - rw - self.pf(14.0), base, &right, TEXT_4(), rw + 2.0);
     }
 
     fn paint_palette(&mut self, cv: &mut Canvas) {
@@ -4475,12 +4638,12 @@ impl Ui {
             .map(|i| (i.label.clone(), i.hint.clone(), i.kind, matches!(i.action, PAction::Command(_))))
             .collect();
         let old = cv.set_clip(clip.intersect(r));
-        cv.round_border(r, self.pf(12.0), BORDER_STRONG, BG_FLOAT);
+        cv.round_border(r, self.pf(12.0), BORDER_STRONG(), BG_FLOAT());
         let (ui, semi) = (self.f.ui, self.f.semi);
         let input = Rect::new(r.x, r.y, r.w, self.px(52.0));
         let base = (input.y as f32 + input.h as f32 / 2.0 + self.pf(5.5)).round();
         let ix = r.x as f32 + self.pf(20.0);
-        self.chevrons(cv, ix, input.y as f32 + input.h as f32 / 2.0, self.pf(9.0), ACCENT);
+        self.chevrons(cv, ix, input.y as f32 + input.h as f32 / 2.0, self.pf(9.0), ACCENT());
         let qx = ix + self.pf(24.0);
         let end = if query.is_empty() {
             self.te.draw(
@@ -4494,7 +4657,7 @@ impl Ui {
                 } else {
                     "Type a branch, tag, SHA or command"
                 },
-                TEXT_3,
+                TEXT_3(),
                 r.w as f32 - self.pf(80.0),
             );
             qx
@@ -4510,14 +4673,14 @@ impl Ui {
                         self.px(26.0),
                     ),
                     self.pf(4.0),
-                    BG_TEXT_SELECT,
+                    BG_TEXT_SELECT(),
                 );
             }
-            self.te.draw(cv, ui, self.pf(15.0), qx, base, &query, TEXT, r.w as f32 - self.pf(80.0));
+            self.te.draw(cv, ui, self.pf(15.0), qx, base, &query, TEXT(), r.w as f32 - self.pf(80.0));
             qx + self.te.measure(ui, self.pf(15.0), &query[..cursor.min(query.len())])
         };
-        cv.fill(Rect::new(end as i32 + 1, input.y + self.px(15.0), self.px(2.0), self.px(22.0)), ACCENT);
-        cv.fill(Rect::new(r.x + 1, input.bottom() - 1, r.w - 2, 1), BORDER);
+        cv.fill(Rect::new(end as i32 + 1, input.y + self.px(15.0), self.px(2.0), self.px(22.0)), ACCENT());
+        cv.fill(Rect::new(r.x + 1, input.bottom() - 1, r.w - 2, 1), BORDER());
         if items.is_empty() {
             self.te.draw(
                 cv,
@@ -4526,7 +4689,7 @@ impl Ui {
                 qx,
                 input.bottom() as f32 + self.pf(22.0),
                 "No matches",
-                TEXT_3,
+                TEXT_3(),
                 r.w as f32,
             );
         }
@@ -4534,26 +4697,26 @@ impl Ui {
             let y = input.bottom() + self.px(5.0) + k as i32 * self.px(34.0);
             let row = Rect::new(r.x + self.px(6.0), y, r.w - self.px(12.0), self.px(34.0));
             if k == sel {
-                cv.fill_round(row, self.pf(7.0), BG_SELECT);
+                cv.fill_round(row, self.pf(7.0), BG_SELECT());
             } else if self.is_hot(Hot::Palette(k)) {
-                cv.fill_round(row, self.pf(7.0), BG_HOVER);
+                cv.fill_round(row, self.pf(7.0), BG_HOVER());
             }
             let cy = y as f32 + self.pf(17.0);
             let b = (cy + self.pf(4.5)).round();
             let icx = ix + self.pf(4.0);
             let color = if *is_cmd {
-                TEXT_3
+                TEXT_3()
             } else {
                 match kind {
-                    RefKind::Local => LOCAL_FG,
-                    RefKind::Remote => REMOTE_FG,
-                    RefKind::Tag => TAG_FG,
-                    _ => ACCENT,
+                    RefKind::Local => LOCAL_FG(),
+                    RefKind::Remote => REMOTE_FG(),
+                    RefKind::Tag => TAG_FG(),
+                    _ => ACCENT(),
                 }
             };
             if *is_cmd {
                 if label.starts_with("AI") {
-                    self.sparkle(cv, icx, cy, self.pf(5.0), ACCENT);
+                    self.sparkle(cv, icx, cy, self.pf(5.0), ACCENT());
                 } else {
                     self.chevrons(cv, icx - self.pf(4.0), cy, self.pf(7.0), color);
                 }
@@ -4568,13 +4731,13 @@ impl Ui {
                 // Folder: a body with a small tab on its top left.
                 let (w, h) = (self.pf(12.0), self.pf(9.0));
                 let body = Rect::new((icx - w / 2.0) as i32, (cy - h / 2.0 + self.pf(1.0)) as i32, w as i32, h as i32);
-                cv.fill(Rect::new(body.x, body.y - self.px(2.0), (w * 0.45) as i32, self.px(3.0)), TEXT_3);
-                cv.round_border(body, self.pf(2.0), TEXT_3, if k == sel { BG_SELECT } else { BG_INPUT });
+                cv.fill(Rect::new(body.x, body.y - self.px(2.0), (w * 0.45) as i32, self.px(3.0)), TEXT_3());
+                cv.round_border(body, self.pf(2.0), TEXT_3(), if k == sel { BG_SELECT() } else { BG_INPUT() });
             } else {
                 self.branch_icon(cv, icx, cy, color);
             }
             let font = if k == sel { semi } else { ui };
-            self.te.draw(cv, font, self.pf(13.5), qx, b, label, TEXT, r.w as f32 - self.pf(220.0));
+            self.te.draw(cv, font, self.pf(13.5), qx, b, label, TEXT(), r.w as f32 - self.pf(220.0));
             if !hint.is_empty() {
                 let hw = self.te.measure(ui, self.pf(11.5), hint);
                 if *is_cmd {
@@ -4587,7 +4750,7 @@ impl Ui {
                         row.right() as f32 - hw - self.pf(14.0),
                         b,
                         hint,
-                        TEXT_3,
+                        TEXT_3(),
                         hw + 2.0,
                     );
                 }
@@ -4622,7 +4785,7 @@ pub(super) fn fit_middle(te: &mut TextEngine, font: FontId, size: f32, text: &st
 }
 
 pub fn tint(c: u32) -> u32 {
-    ffwd_render::mix(BG_PANEL, c, 46)
+    ffwd_render::mix(BG_PANEL(), c, 46)
 }
 
 fn wrap(te: &mut TextEngine, f: FontId, size: f32, text: &str, maxw: f32) -> Vec<String> {
@@ -5483,13 +5646,13 @@ mod tests {
         assert_eq!(a.get(0).unwrap().title, "Stage 1 file");
         assert_eq!(&*a.get(0).unwrap().repo, dir.file_name().unwrap().to_str().unwrap());
         assert_eq!(a.unseen_failures, 1);
-        assert!(ui.r.side.iter().any(|i| i.key == "activity" && i.badge == "1 failed"));
+        assert_eq!(ui.view_stat("activity").as_deref(), Some("1 failed"));
         // Open the view: the badge clears; moving and copying works.
         let mut screen = vec![0u32; 1280 * 800];
         ui.paint(&mut Canvas::new(&mut screen, 1280, 800), true);
         ui.enter_activity();
         assert_eq!(ui.activity.unseen_failures, 0);
-        assert!(ui.r.side.iter().any(|i| i.key == "activity" && i.badge.is_empty()), "the badge clears");
+        assert_eq!(ui.view_stat("activity").as_deref(), Some("all fine"), "the badge clears");
         assert_partial_paint_is_full(&mut ui, &mut screen, "open the activity log");
         ui.key(Key::Down);
         assert_eq!(ui.activity.sel, 1);
@@ -8669,8 +8832,51 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The WSL distribution (FF-23): the Agents page lists the installed
-    /// ones as choices; picking one sets agents.wsl_distro, Default clears it.
+    /// Clicks a settings row's control; a dropdown then picks choice `i`
+    /// from its menu, a segmented row clicks segment `i`.
+    fn settings_pick(ui: &mut Ui, screen: &mut [u32], row: settings_view::Row, i: usize) {
+        let (w, h) = (ui.w, ui.h);
+        ui.paint(&mut Canvas::new(screen, w, h), true);
+        let seg = ui.settings_target(row, i).filter(|_| i > 0);
+        let r = seg.or_else(|| ui.settings_target(row, 0)).unwrap_or_else(|| panic!("{row:?} is on screen"));
+        ui.click(r.x + r.w / 2, r.y + r.h / 2);
+        ui.last_click = None;
+        if ui.menu.is_some() {
+            ui.menu_activate(i);
+        }
+    }
+
+    /// Check for updates keeps Settings open and answers under its button;
+    /// About names the version and offers the licences.
+    #[test]
+    fn update_check_stays_in_settings_and_about_shows_the_version() {
+        use settings_view::Row;
+        let mut te = TextEngine::new();
+        let Some(f) = load_fonts(&mut te) else { return };
+        let empty = crate::settings::Settings::parse("");
+        let sinks: SinkFactory = Arc::new(|_| Arc::new(|_| {}));
+        let mut ui = Ui::new(te, f, empty.clone(), empty, None, sinks, 1280, 800, 1.0);
+        let mut screen = vec![0u32; 1280 * 800];
+        ui.open_settings();
+        ui.settings_go("Updates");
+        settings_pick(&mut ui, &mut screen, Row::CheckUpdates, 0);
+        assert!(ui.settings_view.is_some(), "Settings stays open");
+        assert!(ui.take_update_check_requested());
+        assert_eq!(ui.row_hint(Row::CheckUpdates), "Checking for updates…");
+        ui.set_update_message("ffwd 1.0.0 is the newest version.".into());
+        assert_eq!(ui.row_hint(Row::CheckUpdates), "ffwd 1.0.0 is the newest version.");
+        assert_partial_paint_is_full(&mut ui, &mut screen, "update answer");
+        ui.settings_go("About");
+        assert_eq!(ui.rows(), [Row::AboutVersion, Row::AboutLicense, Row::AboutNotices, Row::AboutSource]);
+        ui.paint(&mut Canvas::new(&mut screen, 1280, 800), true);
+        for row in [Row::AboutLicense, Row::AboutNotices, Row::AboutSource] {
+            assert!(ui.settings_target(row, 0).is_some(), "{row:?} has its button");
+        }
+    }
+
+    /// The WSL distribution (FF-23): a dropdown of the installed ones
+    /// (without WSL's own helper distributions); picking one sets
+    /// agents.wsl_distro, the default clears it.
     #[test]
     fn wsl_distribution_is_a_choice() {
         let mut te = TextEngine::new();
@@ -8678,23 +8884,19 @@ mod tests {
         let empty = crate::settings::Settings::parse("");
         let sinks: SinkFactory = Arc::new(|_| Arc::new(|_| {}));
         let mut ui = Ui::new(te, f, empty.clone(), empty, None, sinks, 1280, 800, 1.0);
-        ui.wsl_distros = vec!["Ubuntu-24.04".into(), "Debian".into()];
+        ui.wsl_distros = vec!["Ubuntu-24.04".into(), "docker-desktop".into(), "Debian".into()];
         ui.open_settings_page(1);
+        ui.settings_go("Sandbox");
+        assert_eq!(ui.row_choices(settings_view::Row::WslDistro), ["Default", "Ubuntu-24.04", "Debian"]);
         let mut screen = vec![0u32; 1280 * 800];
-        ui.paint(&mut Canvas::new(&mut screen, 1280, 800), true);
-        let choices = ui.row_choices(settings_view::Row::WslDistro);
-        assert_eq!(choices, ["Default", "Ubuntu-24.04", "Debian"]);
-        let hits = ui.settings_view.as_ref().unwrap().hits.clone();
-        let row = settings_view::AGENT_ROWS.iter().position(|r| *r == settings_view::Row::WslDistro).unwrap();
-        let (_, _, r) = *hits.iter().find(|h| h.0 == row && h.1 == 1).expect("the Ubuntu choice is on screen");
-        ui.click(r.x + r.w / 2, r.y + r.h / 2);
+        settings_pick(&mut ui, &mut screen, settings_view::Row::WslDistro, 1);
         assert_eq!(ui.settings.get("agents.wsl_distro"), Some("Ubuntu-24.04"));
-        let (_, _, r) = *hits.iter().find(|h| h.0 == row && h.1 == 0).unwrap();
-        ui.click(r.x + r.w / 2, r.y + r.h / 2);
-        assert_eq!(ui.settings.get("agents.wsl_distro").unwrap_or(""), "", "Default clears it");
+        assert!(ui.menu.is_none(), "the dropdown closes");
+        settings_pick(&mut ui, &mut screen, settings_view::Row::WslDistro, 0);
+        assert_eq!(ui.settings.get("agents.wsl_distro").unwrap_or(""), "", "the default clears it");
     }
 
-    /// Per-path access (FF-23): the Agents page lists the preset's own
+    /// Per-path access (FF-23): the Access section lists the preset's own
     /// paths (Off / Read / Write) and the user's (Remove / Read / Write);
     /// a typed path is added read-only.
     #[test]
@@ -8707,6 +8909,7 @@ mod tests {
         let sinks: SinkFactory = Arc::new(|_| Arc::new(|_| {}));
         let mut ui = Ui::new(te, f, s, empty, None, sinks, 1280, 900, 1.0);
         ui.open_settings_page(1);
+        ui.settings_go("Access");
         let mut screen = vec![0u32; 1280 * 900];
         ui.paint(&mut Canvas::new(&mut screen, 1280, 900), true);
         let g = ui.grants();
@@ -8714,19 +8917,10 @@ mod tests {
             g.iter().map(|g| (g.path.as_str(), g.level)).collect::<Vec<_>>(),
             [("~/.claude", 2), ("~/.claude.json", 2)]
         );
-        let rows = ui.rows();
-        let row = rows.iter().position(|r| *r == Row::Grant(0)).expect("a row per path");
+        assert!(ui.rows().contains(&Row::Grant(0)), "a row per path");
         assert_eq!(ui.row_choices(Row::Grant(0)), ["Off", "Read", "Write"]);
-        // The preset's path to Read, by its button.
-        ui.settings_view.as_mut().unwrap().sel = row;
-        ui.settings_follow();
-        ui.paint(&mut Canvas::new(&mut screen, 1280, 900), true);
-        let hits = ui.settings_view.as_ref().unwrap().hits.clone();
-        let (_, _, r) = *hits
-            .iter()
-            .find(|h| h.0 == row && h.1 == 1)
-            .unwrap_or_else(|| panic!("its Read choice: row {row} rows {rows:?} hits {hits:?}"));
-        ui.click(r.x + r.w / 2, r.y + r.h / 2);
+        // The preset's path to Read, by its segment.
+        settings_pick(&mut ui, &mut screen, Row::Grant(0), 1);
         assert_eq!(ui.settings.get("agents.preset_access"), Some("~/.claude=read"));
         assert_partial_paint_is_full(&mut ui, &mut screen, "preset path read");
         // Add a file: Enter on the add row, type, Enter.
@@ -8756,8 +8950,8 @@ mod tests {
         assert_eq!(ui.settings.get("agents.preset_access").unwrap_or(""), "");
     }
 
-    /// Merge and diff tools (FF-42): Settings lists the tools Git can
-    /// start; picking one sets tools.merge_tool, "Git config" clears it.
+    /// Merge and diff tools (FF-42): dropdowns of the tools Git can start;
+    /// picking one sets tools.merge_tool, "Git config" clears it.
     #[test]
     fn merge_and_diff_tools_are_choices() {
         let mut te = TextEngine::new();
@@ -8766,23 +8960,297 @@ mod tests {
         let sinks: SinkFactory = Arc::new(|_| Arc::new(|_| {}));
         let mut ui = Ui::new(te, f, empty.clone(), empty, None, sinks, 1280, 900, 1.0);
         ui.open_settings_page(0);
+        ui.settings_go("Tools");
         ui.on_tab_msg(0, Msg::Tools(vec!["tool-a".into(), "tool-b".into()], vec!["tool-c".into()]));
         assert_eq!(ui.row_choices(settings_view::Row::MergeTool), ["Git config", "tool-a", "tool-b"]);
         assert_eq!(ui.row_choices(settings_view::Row::DiffTool), ["Git config", "tool-c"]);
         let mut screen = vec![0u32; 1280 * 900];
-        ui.paint(&mut Canvas::new(&mut screen, 1280, 900), true);
-        let rows = ui.rows();
-        let row = rows.iter().position(|r| *r == settings_view::Row::MergeTool).unwrap();
-        ui.settings_view.as_mut().unwrap().sel = row;
-        ui.settings_follow();
-        ui.paint(&mut Canvas::new(&mut screen, 1280, 900), true);
-        let hits = ui.settings_view.as_ref().unwrap().hits.clone();
-        let (_, _, r) = *hits.iter().find(|h| h.0 == row && h.1 == 2).expect("tool-b is on screen");
-        ui.click(r.x + r.w / 2, r.y + r.h / 2);
+        settings_pick(&mut ui, &mut screen, settings_view::Row::MergeTool, 2);
         assert_eq!(ui.settings.get("tools.merge_tool"), Some("tool-b"));
         assert_partial_paint_is_full(&mut ui, &mut screen, "merge tool chosen");
         ui.set_choice(settings_view::Row::MergeTool, 0);
         assert_eq!(ui.settings.get("tools.merge_tool").unwrap_or(""), "");
+    }
+
+    /// The Git section (FF-57): Git's own settings from a worker, edited in
+    /// place (tests never write git config), certificate checks as a
+    /// switch, and Browse beside path fields.
+    #[test]
+    fn git_section_shows_and_edits_git_config() {
+        use settings_view::Row;
+        let mut te = TextEngine::new();
+        let Some(f) = load_fonts(&mut te) else { return };
+        let empty = crate::settings::Settings::parse("");
+        let sinks: SinkFactory = Arc::new(|_| Arc::new(|_| {}));
+        let mut ui = Ui::new(te, f, empty.clone(), empty, None, sinks, 1400, 900, 1.0);
+        ui.open_settings();
+        ui.settings_go("Git");
+        ui.on_tab_msg(
+            0,
+            Msg::GitConf(vec![("git:global:user.name".into(), "Ada".into()), ("git:version".into(), "2.47.1".into())]),
+        );
+        let rows = ui.rows();
+        assert!(rows.contains(&Row::GitName) && rows.contains(&Row::SslVerify));
+        assert!(!rows.contains(&Row::RepoGitName), "no repository: no repository identity");
+        let mut screen = vec![0u32; 1400 * 900];
+        ui.paint(&mut Canvas::new(&mut screen, 1400, 900), true);
+        let has_browse =
+            ui.settings_view.as_ref().unwrap().hits.iter().any(|h| matches!(h.1, settings_view::SHit::Browse(_)));
+        assert!(has_browse, "the Git program has Browse…");
+        assert_eq!(ui.git_conf.get("git:global:user.name").map(String::as_str), Some("Ada"));
+        // Certificates off, then on again (Git's default: the key goes).
+        settings_pick(&mut ui, &mut screen, Row::SslVerify, 0);
+        assert_eq!(ui.git_conf.get("git:global:http.sslVerify").map(String::as_str), Some("false"));
+        settings_pick(&mut ui, &mut screen, Row::SslVerify, 0);
+        assert_eq!(ui.git_conf.get("git:global:http.sslVerify").map(String::as_str), Some(""));
+        assert_partial_paint_is_full(&mut ui, &mut screen, "git section");
+        // A picked folder joins the repository folders.
+        ui.on_tab_msg(0, Msg::Picked("repos.roots", Some("E:/Work".into())));
+        assert_eq!(ui.settings.get("repos.roots"), Some("E:/Work"));
+    }
+
+    /// Themes (FF-57): the Theme row switches dark and light at once and
+    /// repaints everything; System follows the window's report.
+    #[test]
+    fn theme_follows_the_setting_and_the_system() {
+        use settings_view::Row;
+        let mut te = TextEngine::new();
+        let Some(f) = load_fonts(&mut te) else { return };
+        let empty = crate::settings::Settings::parse("");
+        let sinks: SinkFactory = Arc::new(|_| Arc::new(|_| {}));
+        let mut ui = Ui::new(te, f, empty.clone(), empty, None, sinks, 1200, 800, 1.0);
+        assert!(!crate::theme::is_light(), "dark by default");
+        let dark_bg = crate::theme::BG();
+        ui.set_system_light(true);
+        assert!(crate::theme::is_light(), "System follows the system");
+        assert_ne!(crate::theme::BG(), dark_bg);
+        ui.open_settings();
+        let mut screen = vec![0u32; 1200 * 800];
+        settings_pick(&mut ui, &mut screen, Row::Theme, 1);
+        assert_eq!(ui.settings.get("ui.theme"), Some("dark"));
+        assert!(!crate::theme::is_light() && ui.theme_changed);
+        assert_partial_paint_is_full(&mut ui, &mut screen, "dark again");
+        settings_pick(&mut ui, &mut screen, Row::Theme, 2);
+        assert!(crate::theme::is_light());
+        ui.set_system_light(false);
+        assert!(crate::theme::is_light(), "Light stays light whatever the system says");
+        crate::theme::set_light(false);
+    }
+
+    /// The settings page (FF-57): sections in a sidebar, switches, search,
+    /// and the scope picker with overrides that say so and reset.
+    #[test]
+    fn settings_page_sections_search_and_scope() {
+        use settings_view::Row;
+        let mut te = TextEngine::new();
+        let Some(f) = load_fonts(&mut te) else { return };
+        let dir = std::env::temp_dir().join(format!("ffwd-ui-settings-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let empty = crate::settings::Settings::parse("");
+        let sinks: SinkFactory = Arc::new(|_| Arc::new(|_| {}));
+        let mut ui = Ui::new(te, f, empty.clone(), empty, Some((1, dir.clone())), sinks, 1280, 860, 1.0);
+        let mut screen = vec![0u32; 1280 * 860];
+        ui.open_settings();
+        ui.paint(&mut Canvas::new(&mut screen, 1280, 860), true);
+        assert_eq!(ui.settings_section_now(), Some("Appearance"));
+        // Ctrl+Tab goes to the next section.
+        ui.key(Key::NextTab);
+        assert_eq!(ui.settings_section_now(), Some("Updates"));
+        ui.settings_go("Agent");
+        // A switch: Agents on.
+        assert_eq!(ui.settings.get("agents.enabled"), None);
+        settings_pick(&mut ui, &mut screen, Row::AgentsOn, 0);
+        assert_eq!(ui.settings.get("agents.enabled"), Some("true"));
+        assert_partial_paint_is_full(&mut ui, &mut screen, "switch on");
+        // The agent as a dropdown: Codex.
+        settings_pick(&mut ui, &mut screen, Row::Preset, 2);
+        assert_eq!(ui.settings.get("agents.preset"), Some("codex"));
+        // Typing searches every section.
+        for c in "hosted model".chars() {
+            ui.key(Key::Char(c));
+        }
+        assert_eq!(ui.rows(), [Row::Network]);
+        assert_partial_paint_is_full(&mut ui, &mut screen, "search");
+        ui.key(Key::Esc);
+        assert!(ui.rows().len() > 1, "Esc clears the search");
+        // The scope picker: this repository only, then an override that
+        // says so and resets.
+        ui.key(Key::Esc);
+        ui.settings_go("Sandbox");
+        ui.set_settings_scope(true);
+        settings_pick(&mut ui, &mut screen, Row::Network, 0);
+        let repo = ui.current_repo_settings().unwrap().get("agents.network").map(str::to_string);
+        assert_eq!(repo.as_deref(), Some("false"), "set for this repository only");
+        assert_eq!(ui.settings.get("agents.network"), None, "not for all repositories");
+        ui.paint(&mut Canvas::new(&mut screen, 1280, 860), true);
+        let reset = ui
+            .settings_view
+            .as_ref()
+            .unwrap()
+            .hits
+            .iter()
+            .find(|h| matches!(h.1, settings_view::SHit::Reset(_)))
+            .map(|h| h.0);
+        let r = reset.expect("an overridden row offers Reset");
+        ui.click(r.x + r.w / 2, r.y + r.h / 2);
+        assert_eq!(ui.current_repo_settings().unwrap().get("agents.network"), None, "reset");
+        assert_partial_paint_is_full(&mut ui, &mut screen, "reset");
+        ui.key(Key::Esc);
+        assert!(ui.settings_view.is_none(), "Esc closes");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The agents page (FF-23, FF-57): runs grouped by state, actions that
+    /// fit the selected run, Run again into the composer, example tasks on
+    /// an empty page, and the sidebar entry with its badge.
+    #[test]
+    fn agents_page_groups_runs_and_fits_actions() {
+        let mut te = TextEngine::new();
+        let Some(f) = load_fonts(&mut te) else { return };
+        let dir = std::env::temp_dir().join(format!("ffwd-ui-agentspage-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let empty = crate::settings::Settings::parse("");
+        let sinks: SinkFactory = Arc::new(|_| Arc::new(|_| {}));
+        let mut ui = Ui::new(te, f, empty.clone(), empty, Some((1, dir.clone())), sinks, 1400, 900, 1.0);
+        let mut screen = vec![0u32; 1400 * 900];
+        // Empty: example tasks fill the composer.
+        ui.settings.set_string("agents.enabled", "true");
+        ui.open_agents();
+        ui.paint(&mut Canvas::new(&mut screen, 1400, 900), true);
+        let labels = |ui: &Ui| ui.agent_view_hits();
+        let ex =
+            labels(&ui).into_iter().find(|(_, h)| h.starts_with("Example")).map(|(r, _)| r).expect("example tasks");
+        ui.click(ex.x + 4, ex.y + 4);
+        assert!(ui.agent_input().starts_with("Write a README"), "{}", ui.agent_input());
+        ui.close_agents();
+        // Runs: running, to review, failed; the sidebar says what runs.
+        ui.snapshot_agents_demo();
+        ui.rebuild_side();
+        assert_eq!(ui.view_stat("agents").as_deref(), Some("1 running"));
+        ui.paint(&mut Canvas::new(&mut screen, 1400, 900), true);
+        let order: Vec<String> = ui.agent_rail_titles();
+        assert_eq!(
+            order,
+            ["Add a blame view for the selected file", "Fix the tab close button hit area", "Speed up the refs loader"]
+        );
+        let buttons = |ui: &Ui| -> Vec<String> {
+            labels(ui).into_iter().filter(|(_, h)| h.starts_with("Button")).map(|(_, h)| h).collect()
+        };
+        assert_eq!(buttons(&ui), ["Button(Cancel)", "Button(Folder)", "Button(Log)"], "running");
+        // The run to review: Review changes first.
+        let card = labels(&ui).into_iter().find(|(_, h)| h == "Run(1)").map(|(r, _)| r).unwrap();
+        ui.click(card.x + 8, card.y + 8);
+        ui.last_click = None;
+        assert_partial_paint_is_full(&mut ui, &mut screen, "run to review");
+        assert_eq!(
+            buttons(&ui),
+            ["Button(Review)", "Button(Merge)", "Button(Terminal)", "Button(Again)", "Button(Discard)"]
+        );
+        // Run again puts the task back in the composer.
+        let again = labels(&ui).into_iter().find(|(_, h)| h == "Button(Again)").map(|(r, _)| r).unwrap();
+        ui.click(again.x + 4, again.y + 4);
+        assert_eq!(ui.agent_input(), "Fix the tab close button hit area");
+        assert_partial_paint_is_full(&mut ui, &mut screen, "run again");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Movable pane borders (FF-57): the sidebar's edge, the history /
+    /// details border and Local Changes' column follow a drag, show the
+    /// resize cursor, are kept in the window state, and a double click
+    /// resets them.
+    #[test]
+    fn pane_borders_follow_a_drag() {
+        let mut te = TextEngine::new();
+        let Some(f) = load_fonts(&mut te) else { return };
+        let dir = std::env::temp_dir().join(format!("ffwd-ui-split-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let empty = crate::settings::Settings::parse("");
+        let sinks: SinkFactory = Arc::new(|_| Arc::new(|_| {}));
+        let mut ui = Ui::new(te, f, empty.clone(), empty, Some((1, dir.clone())), sinks, 1400, 900, 1.0);
+        let mut screen = vec![0u32; 1400 * 900];
+        ui.paint(&mut Canvas::new(&mut screen, 1400, 900), true);
+        // The sidebar's edge.
+        let w0 = ui.lay.side.w;
+        let (x, y) = (ui.lay.side.right() - 1, ui.lay.side.y + 300);
+        ui.pointer(x, y);
+        assert_eq!(ui.cursor, Cursor::ColResize);
+        ui.click(x, y);
+        ui.pointer(x + 120, y);
+        ui.release(x + 120, y);
+        ui.last_click = None;
+        assert!((ui.lay.side.w - (w0 + 120)).abs() <= 2, "{} → {}", w0, ui.lay.side.w);
+        assert!(ui.state.get("ui.split.side").is_some(), "kept");
+        assert_partial_paint_is_full(&mut ui, &mut screen, "sidebar wider");
+        // The history / details border (details below): a row cursor.
+        let d = ui.lay.details;
+        ui.pointer(d.x + 200, d.y);
+        assert_eq!(ui.cursor, Cursor::RowResize);
+        ui.click(d.x + 200, d.y);
+        ui.pointer(d.x + 200, d.y - 100);
+        ui.release(d.x + 200, d.y - 100);
+        ui.last_click = None;
+        assert!((ui.lay.details.y - (d.y - 100)).abs() <= 3, "{} → {}", d.y, ui.lay.details.y);
+        // A double click puts the sidebar back.
+        let (x, y) = (ui.lay.side.right() - 1, ui.lay.side.y + 300);
+        ui.click(x, y);
+        ui.release(x, y);
+        ui.click(x, y);
+        ui.release(x, y);
+        assert_eq!(ui.lay.side.w, w0, "reset");
+        assert!(ui.state.get("ui.split.side").is_none());
+        // Local Changes: its column.
+        ui.enter_changes();
+        let l = ui.changes_layout();
+        let (x, y) = (l.left.right(), l.area.y + 200);
+        ui.pointer(x, y);
+        assert_eq!(ui.cursor, Cursor::ColResize);
+        ui.click(x, y);
+        ui.pointer(x + 80, y);
+        ui.release(x + 80, y);
+        assert!((ui.changes_layout().left.w - (l.left.w + 80)).abs() <= 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn every_sidebar_style_opens_every_view() {
+        let mut te = TextEngine::new();
+        let Some(f) = load_fonts(&mut te) else { return };
+        let dir = std::env::temp_dir().join(format!("ffwd-ui-styles-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let empty = crate::settings::Settings::parse("");
+        let sinks: SinkFactory = Arc::new(|_| Arc::new(|_| {}));
+        let mut ui = Ui::new(te, f, empty.clone(), empty, Some((1, dir.clone())), sinks, 1400, 900, 1.0);
+        let mut screen = vec![0u32; 1400 * 900];
+        // The icon bar is the default.
+        assert_eq!(ui.side_style(), SideStyle::Bar);
+        for style in SideStyle::KEYS {
+            ui.set_side_style(style);
+            ui.paint(&mut Canvas::new(&mut screen, 1400, 900), true);
+            if style == "tabs" {
+                // The tabs sit over the content; the sidebar keeps its height.
+                assert!(ui.lay.views.h > 0);
+                assert_eq!(ui.lay.list.y, ui.lay.views.bottom());
+                assert!(ui.lay.side.y < ui.lay.list.y);
+                assert_eq!(ui.agents_rect().y, ui.lay.list.y);
+            } else {
+                assert_eq!(ui.lay.views.h, 0, "{style}");
+            }
+            let keys: Vec<&str> = ui.views().iter().map(|v| v.key).collect();
+            for (k, key) in keys.into_iter().enumerate() {
+                let r = ui.view_rects()[k];
+                ui.last_click = None;
+                ui.click(r.x + r.w / 2, r.y + r.h / 2);
+                ui.release(r.x + r.w / 2, r.y + r.h / 2);
+                assert_eq!(ui.current_view(), key, "{style}: {key}");
+                assert_partial_paint_is_full(&mut ui, &mut screen, &format!("{style}: {key}"));
+            }
+            ui.view_activate("all");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Terminal sessions (FF-23) and the worktree menu (FF-45): the agents

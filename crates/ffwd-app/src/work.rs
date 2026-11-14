@@ -40,12 +40,19 @@ pub enum Msg {
     Repos(Vec<PathBuf>),
     /// The installed WSL distributions (Windows; for the agents' sandbox).
     WslDistros(Vec<String>),
+    /// Git's settings for the Settings page, and a save's result (FF-57).
+    GitConf(Vec<(String, String)>),
+    GitConfSaved(Result<(), String>),
+    /// A path from the system's picker for a settings key.
+    Picked(&'static str, Option<String>),
     /// The merge and diff tools Git can start here (FF-42).
     Tools(Vec<String>, Vec<String>),
     /// A terminal session opened, or why not (FF-23).
     AgentNotice(Result<String, String>),
     /// The automatic fetch is due (FF-39).
     AutoFetchTick,
+    /// A line for the status bar from a worker (Settings → About).
+    Notice(String),
     OpProgress(String),
     /// A branch or history operation's progress, ready to show (FF-48).
     RefProgress(String),

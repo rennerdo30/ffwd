@@ -41,6 +41,13 @@ pub fn run(args: &Args, t0: Instant) -> i32 {
     let state =
         crate::settings::Settings::parse(&format!("[session]\ntabs = \"{}\"\n", tabs.join("|").replace('\\', "\\\\")));
     let mut ui = Ui::new(te, fonts, settings, state, Some((1, repo.clone())), sinks, w, h, args.scale.unwrap_or(1.0));
+    if let Some(st) = &args.sidebar {
+        ui.set_side_style(st);
+    }
+    if let Some(t) = &args.theme {
+        ui.settings.set_string("ui.theme", t);
+        ui.apply_theme_now();
+    }
     let deadline = Instant::now() + Duration::from_secs(30);
     let mut selected = false;
     let mut have_refs = false;
@@ -237,6 +244,16 @@ pub fn run(args: &Args, t0: Instant) -> i32 {
     }
     if let Some(p) = args.settings_page {
         ui.open_settings_page(p);
+    }
+    if let Some(on) = args.agents_page {
+        if on {
+            ui.settings.set_string("agents.enabled", "true");
+            ui.settings.set_string("agents.preset", "claude");
+        }
+        ui.open_agents();
+    }
+    if let Some(s) = &args.settings_section {
+        ui.open_settings_named(s);
     }
     if args.agents_demo {
         ui.snapshot_agents_demo();

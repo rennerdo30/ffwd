@@ -35,6 +35,8 @@ pub struct Refs {
     pub refs: Vec<Ref>,
     pub stashes: Vec<(Box<str>, Box<str>)>,
     pub worktrees: Vec<Box<str>>,
+    /// Each worktree's branch (same order), or "detached".
+    pub worktree_branches: Vec<Box<str>>,
     /// The configured remotes with their URLs.
     pub remotes: Vec<crate::remotes::Remote>,
     /// The submodules (only read when `.gitmodules` exists).
@@ -134,6 +136,15 @@ pub fn load(git: &Git) -> Result<Refs, GitError> {
         for line in w.split(|&b| b == b'\n') {
             if let Some(p) = line.strip_prefix(b"worktree ") {
                 refs.worktrees.push(text(p));
+                refs.worktree_branches.push("".into());
+            } else if let Some(b) = line.strip_prefix(b"branch refs/heads/") {
+                if let Some(last) = refs.worktree_branches.last_mut() {
+                    *last = text(b);
+                }
+            } else if line == b"detached"
+                && let Some(last) = refs.worktree_branches.last_mut()
+            {
+                *last = "detached".into();
             }
         }
     }

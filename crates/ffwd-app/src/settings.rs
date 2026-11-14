@@ -108,11 +108,6 @@ impl Settings {
         self.errors.extend(other.errors);
     }
 
-    /// Keys starting with `prefix` (`agents.`) that have a value.
-    pub fn keys_with(&self, prefix: &str) -> Vec<String> {
-        self.values.keys().filter(|k| k.starts_with(prefix)).cloned().collect()
-    }
-
     fn load_from(file: Option<PathBuf>) -> Settings {
         let mut s = match file.as_ref().and_then(|p| std::fs::read_to_string(p).ok()) {
             Some(text) => Settings::parse(&text),

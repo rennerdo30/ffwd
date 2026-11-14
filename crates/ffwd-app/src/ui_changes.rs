@@ -142,9 +142,15 @@ impl Ui {
         let side = self.lay.side;
         let area =
             Rect::new(side.right(), self.lay.list.y, self.w as i32 - side.right(), self.lay.status.y - self.lay.list.y);
-        let lw = ((area.w as f32 * 0.38) as i32).clamp(self.px(320.0), self.px(560.0)).min(area.w / 2);
+        let lw = match self.split_get(Split::ChangesLeft) {
+            Some(v) => self.px(v).max(self.px(260.0)).min((area.w - self.px(300.0)).max(0)),
+            None => ((area.w as f32 * 0.38) as i32).clamp(self.px(320.0), self.px(560.0)).min(area.w / 2),
+        };
         let left = Rect::new(area.x, area.y, lw, area.h);
-        let ch = self.px(172.0).min(left.h / 2);
+        let ch = match self.split_get(Split::ChangesCommit) {
+            Some(v) => self.px(v).max(self.px(120.0)).min((left.h - self.px(200.0)).max(self.px(120.0))),
+            None => self.px(172.0).min(left.h / 2),
+        };
         let commit = Rect::new(left.x, left.bottom() - ch, left.w, ch);
         let head = self.px(32.0);
         // The stopped-operation banner: two rows (state, then buttons)
@@ -163,7 +169,10 @@ impl Ui {
         let need = |n: usize| (n.max(1) as i32 * rh + self.px(12.0)) as i64;
         let (n0, n1) = (need(self.side_len(Side::Unstaged)), need(self.side_len(Side::Staged)));
         let min = self.px(96.0).min(lists_h / 2);
-        let uh = ((lists_h as i64 * n0 / (n0 + n1).max(1)) as i32).clamp(min, (lists_h - min).max(min));
+        let uh = match self.split_get(Split::ChangesLists) {
+            Some(f) => ((lists_h as f32 * f) as i32).clamp(min, (lists_h - min).max(min)),
+            None => ((lists_h as i64 * n0 / (n0 + n1).max(1)) as i32).clamp(min, (lists_h - min).max(min)),
+        };
         let h0 = Rect::new(left.x, left.y + bh, left.w, head);
         let l0 = Rect::new(left.x, h0.bottom(), left.w, uh);
         let h1 = Rect::new(left.x, l0.bottom(), left.w, head);
@@ -1066,25 +1075,33 @@ impl Ui {
         let l = self.changes_layout();
         let mut hits: Vec<(Rect, CHit)> = Vec::new();
         let (ui, semi, mono) = (self.f.ui, self.f.semi, self.f.mono);
-        cv.fill(l.left, BG);
+        cv.fill(l.left, BG());
         if l.banner.h > 0 {
             self.paint_op_banner(cv, l.banner, &mut hits);
         }
-        cv.fill(Rect::new(l.left.right() - 1, l.left.y, 1, l.left.h), BORDER);
+        cv.fill(Rect::new(l.left.right() - 1, l.left.y, 1, l.left.h), BORDER());
         let loading = self.r.changes.status.is_none();
         let rh = self.change_row_h();
         for side in [Side::Unstaged, Side::Staged] {
             let i = side_ix(side);
             let (head, list) = (l.heads[i], l.lists[i]);
             let n_side = self.side_len(side);
-            cv.fill(head, BG_BAR);
-            cv.fill(Rect::new(head.x, head.bottom() - 1, head.w, 1), BORDER_SOFT);
+            cv.fill(head, BG_BAR());
+            cv.fill(Rect::new(head.x, head.bottom() - 1, head.w, 1), BORDER_SOFT());
             let base = (head.y as f32 + head.h as f32 / 2.0 + self.pf(4.5)).round();
             let title = if side == Side::Unstaged { "Unstaged" } else { "Staged" };
-            let e =
-                self.te.draw(cv, semi, self.pf(12.5), head.x as f32 + self.pf(14.0), base, title, TEXT, self.pf(120.0));
+            let e = self.te.draw(
+                cv,
+                semi,
+                self.pf(12.5),
+                head.x as f32 + self.pf(14.0),
+                base,
+                title,
+                TEXT(),
+                self.pf(120.0),
+            );
             let count = if loading { "…".to_string() } else { n_side.to_string() };
-            self.te.draw(cv, ui, self.pf(12.0), e + self.pf(8.0), base, &count, TEXT_3, self.pf(80.0));
+            self.te.draw(cv, ui, self.pf(12.0), e + self.pf(8.0), base, &count, TEXT_3(), self.pf(80.0));
             // Stage all / Unstage all.
             let (label, hit) =
                 if side == Side::Unstaged { ("Stage all", CHit::StageAll) } else { ("Unstage all", CHit::UnstageAll) };
@@ -1098,22 +1115,22 @@ impl Ui {
             if side == Side::Unstaged {
                 let ow = self.px(26.0);
                 let ob = Rect::new(b.x - self.px(6.0) - ow, b.y, ow, b.h);
-                let (bg, border) = self.control_colors(Hot::Change(hits.len()), BG_BAR, BORDER);
+                let (bg, border) = self.control_colors(Hot::Change(hits.len()), BG_BAR(), BORDER());
                 cv.round_border(ob, self.pf(6.0), border, bg);
                 let (cx, cy) = (ob.x as f32 + ob.w as f32 / 2.0, ob.y as f32 + ob.h as f32 / 2.0);
                 for k in [-1.0f32, 0.0, 1.0] {
-                    cv.fill_circle(cx + k * self.pf(4.5), cy, self.pf(1.4), TEXT_2);
+                    cv.fill_circle(cx + k * self.pf(4.5), cy, self.pf(1.4), TEXT_2());
                 }
                 hits.push((ob, CHit::ListOptions));
                 let hidden = self.r.changes.hidden_untracked;
                 if hidden > 0 {
                     let t = format!("{hidden} untracked hidden");
                     let tw = self.te.measure(ui, self.pf(11.0), &t);
-                    self.te.draw(cv, ui, self.pf(11.0), ob.x as f32 - tw - self.pf(10.0), base, &t, TEXT_4, tw + 2.0);
+                    self.te.draw(cv, ui, self.pf(11.0), ob.x as f32 - tw - self.pf(10.0), base, &t, TEXT_4(), tw + 2.0);
                 }
             }
             if n_side > 0 {
-                let (bg, border) = self.control_colors(Hot::Change(hits.len()), BG_BAR, BORDER);
+                let (bg, border) = self.control_colors(Hot::Change(hits.len()), BG_BAR(), BORDER());
                 cv.round_border(b, self.pf(6.0), border, bg);
                 self.te.draw(
                     cv,
@@ -1122,13 +1139,13 @@ impl Ui {
                     b.x as f32 + self.pf(10.0),
                     base - self.pf(0.5),
                     label,
-                    TEXT_2,
+                    TEXT_2(),
                     bw,
                 );
                 hits.push((b, hit));
             }
             // Rows.
-            cv.fill(list, BG);
+            cv.fill(list, BG());
             if n_side == 0 && !loading {
                 let t = if side == Side::Unstaged {
                     "No changes in the working tree"
@@ -1142,7 +1159,7 @@ impl Ui {
                     list.x as f32 + self.pf(16.0),
                     list.y as f32 + self.pf(22.0),
                     t,
-                    TEXT_3,
+                    TEXT_3(),
                     list.w as f32,
                 );
             }
@@ -1159,20 +1176,20 @@ impl Ui {
                     (CFocus::Unstaged, Side::Unstaged) | (CFocus::Staged, Side::Staged)
                 );
                 if selected {
-                    cv.fill_round(row, self.pf(6.0), if focused { BG_SELECT } else { BG_SELECT_DIM });
+                    cv.fill_round(row, self.pf(6.0), if focused { BG_SELECT() } else { BG_SELECT_DIM() });
                 } else if self.change_hot(hits.len()) {
-                    cv.fill_round(row, self.pf(6.0), BG_HOVER);
+                    cv.fill_round(row, self.pf(6.0), BG_HOVER());
                 }
                 let cy = ry as f32 + rh as f32 / 2.0;
                 let b = (cy + self.pf(4.5)).round();
                 let letter = en.letter(side);
                 let sc = match letter {
-                    b'A' => ADD,
-                    b'D' => DEL,
-                    b'R' | b'C' => REN,
-                    b'U' => DEL,
-                    b'I' => TEXT_4,
-                    _ => MOD,
+                    b'A' => ADD(),
+                    b'D' => DEL(),
+                    b'R' | b'C' => REN(),
+                    b'U' => DEL(),
+                    b'I' => TEXT_4(),
+                    _ => MOD(),
                 };
                 let badge = Rect::new(row.x + self.px(8.0), (cy - self.pf(8.0)) as i32, self.px(16.0), self.px(16.0));
                 cv.fill_round(badge, self.pf(4.0), crate::ui::tint(sc));
@@ -1194,7 +1211,7 @@ impl Ui {
                 };
                 let nx = badge.right() as f32 + self.pf(10.0);
                 let e2 =
-                    self.te.draw(cv, ui, self.pf(12.5), nx, b, &name, TEXT, row.right() as f32 - nx - self.pf(8.0));
+                    self.te.draw(cv, ui, self.pf(12.5), nx, b, &name, TEXT(), row.right() as f32 - nx - self.pf(8.0));
                 if !dir.is_empty() {
                     self.te.draw(
                         cv,
@@ -1203,7 +1220,7 @@ impl Ui {
                         e2 + self.pf(8.0),
                         b,
                         &dir,
-                        TEXT_4,
+                        TEXT_4(),
                         row.right() as f32 - e2 - self.pf(16.0),
                     );
                 }
@@ -1219,21 +1236,33 @@ impl Ui {
 
     fn paint_commit_box(&mut self, cv: &mut Canvas, r: Rect, hits: &mut Vec<(Rect, CHit)>) {
         let (ui, semi) = (self.f.ui, self.f.semi);
-        cv.fill(r, BG_PANEL);
-        cv.fill(Rect::new(r.x, r.y, r.w - 1, 1), BORDER);
+        cv.fill(r, BG_PANEL());
+        cv.fill(Rect::new(r.x, r.y, r.w - 1, 1), BORDER());
         let pad = self.px(12.0);
         let focus = self.r.changes.focus;
+        // When the checkboxes, AI and Commit don't fit in one line, the
+        // checkboxes get a line of their own above the buttons.
+        let two_rows = {
+            let cb = |ui_: &mut Ui, t: &str| ui_.te.measure(ui, ui_.pf(12.5), t) + ui_.pf(38.0);
+            let boxes = cb(self, "Amend") + cb(self, "Skip hooks") + cb(self, "Push");
+            let ai = self.te.measure(semi, self.pf(12.0), "AI") + self.pf(26.0);
+            let commit = self.te.measure(semi, self.pf(12.5), "Commit and push")
+                + self.te.measure(ui, self.pf(10.5), "Ctrl ↵")
+                + self.pf(48.0);
+            boxes + ai + commit > (r.w - 2 * pad) as f32
+        };
+        let row2 = if two_rows { self.px(36.0) } else { 0 };
         // Subject.
         let sf = Rect::new(r.x + pad, r.y + pad, r.w - 2 * pad, self.px(32.0));
         let on = focus == CFocus::Subject;
         let border = if on {
-            ACCENT
+            ACCENT()
         } else if self.change_hot(hits.len()) {
-            BORDER_HOVER
+            BORDER_HOVER()
         } else {
-            BORDER
+            BORDER()
         };
-        cv.round_border(sf, self.pf(7.0), border, BG_INPUT);
+        cv.round_border(sf, self.pf(7.0), border, BG_INPUT());
         let sb = (sf.y as f32 + sf.h as f32 / 2.0 + self.pf(4.5)).round();
         let tx = sf.x as f32 + self.pf(10.0);
         let maxw = sf.w as f32 - self.pf(60.0);
@@ -1244,49 +1273,53 @@ impl Ui {
             } else {
                 "Commit subject · Ctrl+R recent messages"
             };
-            self.te.draw(cv, ui, self.pf(12.5), tx, sb, ph, TEXT_4, maxw);
+            self.te.draw(cv, ui, self.pf(12.5), tx, sb, ph, TEXT_4(), maxw);
         } else {
             if subject.all_selected() {
                 let w = self.te.measure(ui, self.pf(12.5), subject.text()).min(maxw);
                 cv.fill_round(
                     Rect::new(tx as i32 - 2, sf.y + self.px(6.0), w as i32 + 4, sf.h - self.px(12.0)),
                     self.pf(3.0),
-                    BG_TEXT_SELECT,
+                    BG_TEXT_SELECT(),
                 );
             }
-            self.te.draw(cv, semi, self.pf(12.5), tx, sb, subject.text(), TEXT, maxw);
+            self.te.draw(cv, semi, self.pf(12.5), tx, sb, subject.text(), TEXT(), maxw);
         }
         if on {
             let cx = tx + self.te.measure(semi, self.pf(12.5), &subject.text()[..subject.cursor()]);
-            cv.fill(Rect::new(cx as i32 + 1, sf.y + self.px(7.0), self.px(1.5).max(1), sf.h - self.px(14.0)), ACCENT);
+            cv.fill(Rect::new(cx as i32 + 1, sf.y + self.px(7.0), self.px(1.5).max(1), sf.h - self.px(14.0)), ACCENT());
         }
         // Subject length: Git convention is 50, a hard look at 72.
         let n = subject.text().chars().count();
         if n > 0 {
             let s = n.to_string();
             let c = if n > 72 {
-                DEL
+                DEL()
             } else if n > 50 {
-                MOD
+                MOD()
             } else {
-                TEXT_4
+                TEXT_4()
             };
             let w = self.te.measure(ui, self.pf(11.0), &s);
             self.te.draw(cv, ui, self.pf(11.0), sf.right() as f32 - w - self.pf(10.0), sb, &s, c, w + 2.0);
         }
         hits.push((sf, CHit::Subject));
         // Description.
-        let df =
-            Rect::new(sf.x, sf.bottom() + self.px(8.0), sf.w, r.bottom() - sf.bottom() - self.px(8.0) - self.px(50.0));
+        let df = Rect::new(
+            sf.x,
+            sf.bottom() + self.px(8.0),
+            sf.w,
+            r.bottom() - sf.bottom() - self.px(8.0) - self.px(50.0) - row2,
+        );
         let on = focus == CFocus::Desc;
         let border = if on {
-            ACCENT
+            ACCENT()
         } else if self.change_hot(hits.len()) {
-            BORDER_HOVER
+            BORDER_HOVER()
         } else {
-            BORDER
+            BORDER()
         };
-        cv.round_border(df, self.pf(7.0), border, BG_INPUT);
+        cv.round_border(df, self.pf(7.0), border, BG_INPUT());
         let desc = self.r.changes.desc.clone();
         let lh = self.pf(18.0);
         let old = cv.set_clip(cv.clip().intersect(df.inset(self.px(2.0), self.px(2.0))));
@@ -1298,7 +1331,7 @@ impl Ui {
                 tx,
                 df.y as f32 + self.pf(20.0),
                 "Description (optional) · Ctrl+Enter commits",
-                TEXT_4,
+                TEXT_4(),
                 maxw,
             );
         } else {
@@ -1314,14 +1347,14 @@ impl Ui {
                     tx,
                     y,
                     line,
-                    if desc.all_selected() { ACCENT_FG } else { TEXT_2 },
+                    if desc.all_selected() { ACCENT_FG() } else { TEXT_2() },
                     df.w as f32 - self.pf(20.0),
                 );
                 if on && k == row {
                     let cx = tx + self.te.measure(ui, self.pf(12.5), &line[..col.min(line.len())]);
                     cv.fill(
                         Rect::new(cx as i32 + 1, (y - self.pf(13.0)) as i32, self.px(1.5).max(1), self.px(17.0)),
-                        ACCENT,
+                        ACCENT(),
                     );
                 }
             }
@@ -1330,18 +1363,19 @@ impl Ui {
         hits.push((df, CHit::Desc));
         // Amend and Commit.
         let by = r.bottom() - self.px(42.0);
+        let cby = by - row2;
         let amend = self.r.changes.amend;
         let hot = self.change_hot(hits.len());
-        let ab = self.checkbox(cv, sf.x, by, "Amend", amend, hot);
+        let ab = self.checkbox(cv, sf.x, cby, "Amend", amend, hot);
         hits.push((ab, CHit::Amend));
         let hot = self.change_hot(hits.len());
         let skip = self.r.changes.skip_hooks;
-        let hb = self.checkbox(cv, ab.right() + self.px(4.0), by, "Skip hooks", skip, hot);
+        let hb = self.checkbox(cv, ab.right() + self.px(4.0), cby, "Skip hooks", skip, hot);
         hits.push((hb, CHit::SkipHooks));
         // Push after committing ("commit and push").
         let hot = self.change_hot(hits.len());
         let push = self.push_after_commit();
-        let hb = self.checkbox(cv, hb.right() + self.px(4.0), by, "Push", push, hot);
+        let hb = self.checkbox(cv, hb.right() + self.px(4.0), cby, "Push", push, hot);
         hits.push((hb, CHit::PushAfter));
         // AI draft: a message from the staged changes.
         let hot = self.change_hot(hits.len());
@@ -1361,10 +1395,12 @@ impl Ui {
             + self.pf(40.0);
         let commit_x = r.right() as f32 - pad as f32 - commit_w;
         let full = self.te.measure(semi, self.pf(12.0), "AI draft") + self.pf(20.0);
-        let label = if hb.right() as f32 + self.pf(6.0) + full + self.pf(8.0) <= commit_x { "AI draft" } else { "AI" };
+        // On a line of its own the AI button starts at the left edge.
+        let ax = if two_rows { sf.x } else { hb.right() + self.px(6.0) };
+        let label = if ax as f32 + full + self.pf(8.0) <= commit_x { "AI draft" } else { "AI" };
         let aw = self.te.measure(semi, self.pf(12.0), label) + self.pf(20.0);
-        let air = Rect::new(hb.right() + self.px(6.0), by, aw as i32, self.px(30.0));
-        let (bg, border) = if hot { (CONTROL_HOVER, ACCENT_BORDER) } else { (BG_BAR, BORDER) };
+        let air = Rect::new(ax, by, aw as i32, self.px(30.0));
+        let (bg, border) = if hot { (CONTROL_HOVER(), ACCENT_BORDER()) } else { (BG_BAR(), BORDER()) };
         cv.round_border(air, self.pf(7.0), border, bg);
         self.te.draw(
             cv,
@@ -1373,7 +1409,7 @@ impl Ui {
             air.x as f32 + self.pf(10.0),
             (air.y as f32 + self.pf(20.0)).round(),
             label,
-            ACCENT_FG,
+            ACCENT_FG(),
             aw,
         );
         hits.push((air, CHit::Ai));
@@ -1394,13 +1430,13 @@ impl Ui {
         let cb = Rect::new(r.right() - pad - w as i32, by, w as i32, self.px(30.0));
         let hot = self.change_hot(hits.len());
         let (bg, border, fg) = if !can {
-            (BG_INPUT, BORDER_SOFT, TEXT_4)
+            (BG_INPUT(), BORDER_SOFT(), TEXT_4())
         } else if self.is_pressed(Hot::Change(hits.len())) {
-            (ACCENT_SOFT, ACCENT, ACCENT_FG)
+            (ACCENT_SOFT(), ACCENT(), ACCENT_FG())
         } else if hot {
-            (ACCENT, ACCENT, ACCENT_TEXT)
+            (ACCENT(), ACCENT(), ACCENT_TEXT())
         } else {
-            (ACCENT_SOFT_HOVER, ACCENT_BORDER, ACCENT_FG)
+            (ACCENT_SOFT_HOVER(), ACCENT_BORDER(), ACCENT_FG())
         };
         cv.round_border(cb, self.pf(7.0), border, bg);
         self.te.draw(
@@ -1421,11 +1457,11 @@ impl Ui {
             (cb.y as f32 + self.pf(19.5)).round(),
             kc,
             if can && hot {
-                ACCENT_TEXT
+                ACCENT_TEXT()
             } else if can {
-                TAG_FG
+                TAG_FG()
             } else {
-                TEXT_4
+                TEXT_4()
             },
             kw + 2.0,
         );
@@ -1441,7 +1477,7 @@ impl Ui {
                 ex,
                 (by as f32 + self.pf(20.0)).round(),
                 &e,
-                DEL,
+                DEL(),
                 cb.x as f32 - ex - self.pf(8.0),
             );
         }
@@ -1453,11 +1489,11 @@ impl Ui {
         let tw = self.te.measure(ui, self.pf(12.5), label);
         let r = Rect::new(x, y, self.px(34.0) + tw as i32, self.px(30.0));
         if hot {
-            cv.fill_round(r, self.pf(6.0), BG_HOVER);
+            cv.fill_round(r, self.pf(6.0), BG_HOVER());
         }
         let bx = Rect::new(r.x + self.px(8.0), r.y + self.px(8.0), self.px(14.0), self.px(14.0));
         if on {
-            cv.fill_round(bx, self.pf(3.0), ACCENT);
+            cv.fill_round(bx, self.pf(3.0), ACCENT());
             let (x0, y0) = (bx.x as f32, bx.y as f32);
             cv.stroke(
                 &[
@@ -1466,13 +1502,13 @@ impl Ui {
                     (x0 + self.pf(11.0), y0 + self.pf(4.0)),
                 ],
                 self.pf(1.8),
-                ACCENT_TEXT,
+                ACCENT_TEXT(),
             );
         } else {
-            cv.round_border(bx, self.pf(3.0), BORDER_HOVER, BG_INPUT);
+            cv.round_border(bx, self.pf(3.0), BORDER_HOVER(), BG_INPUT());
         }
         let b = (r.y as f32 + self.pf(20.0)).round();
-        self.te.draw(cv, ui, self.pf(12.5), bx.right() as f32 + self.pf(8.0), b, label, TEXT_2, tw + 2.0);
+        self.te.draw(cv, ui, self.pf(12.5), bx.right() as f32 + self.pf(8.0), b, label, TEXT_2(), tw + 2.0);
         r
     }
 
@@ -1484,10 +1520,10 @@ impl Ui {
             return self.paint_conflict(cv, r, hits);
         }
         let (ui, semi) = (self.f.ui, self.f.semi);
-        cv.fill(r, BG);
+        cv.fill(r, BG());
         let bar = Rect::new(r.x, r.y, r.w, self.px(32.0));
-        cv.fill(bar, BG_BAR);
-        cv.fill(Rect::new(bar.x, bar.bottom() - 1, bar.w, 1), BORDER_SOFT);
+        cv.fill(bar, BG_BAR());
+        cv.fill(Rect::new(bar.x, bar.bottom() - 1, bar.w, 1), BORDER_SOFT());
         let base = (bar.y as f32 + bar.h as f32 / 2.0 + self.pf(4.5)).round();
         let pad = self.pf(16.0);
         let side = self.r.changes.side;
@@ -1501,7 +1537,7 @@ impl Ui {
             r.x as f32 + pad,
             base,
             &title,
-            if focus { ACCENT } else { TEXT },
+            if focus { ACCENT() } else { TEXT() },
             r.w as f32 - self.pf(200.0),
         );
         // Unified or side by side, clickable (FF-35).
@@ -1510,9 +1546,9 @@ impl Ui {
         let layout_btn =
             Rect::new(r.right() - self.px(10.0) - lw as i32, bar.y + self.px(4.0), lw as i32, bar.h - self.px(8.0));
         let hot = Hot::Change(hits.len());
-        let (lbg, lborder) = self.control_colors(hot, BG_BAR, BORDER);
+        let (lbg, lborder) = self.control_colors(hot, BG_BAR(), BORDER());
         cv.round_border(layout_btn, self.pf(5.0), lborder, lbg);
-        self.te.draw(cv, semi, self.pf(11.5), layout_btn.x as f32 + self.pf(8.0), base, lt, TEXT_2, lw);
+        self.te.draw(cv, semi, self.pf(11.5), layout_btn.x as f32 + self.pf(8.0), base, lt, TEXT_2(), lw);
         hits.push((layout_btn, CHit::Layout));
         let hint = match side {
             Side::Unstaged => "unstaged · Space or click picks lines · S stages them",
@@ -1521,12 +1557,21 @@ impl Ui {
         let hw = self.te.measure(ui, self.pf(11.0), hint);
         let hint_right = layout_btn.x as f32 - self.pf(12.0);
         if hint_right - hw > r.x as f32 + self.pf(260.0) {
-            self.te.draw(cv, ui, self.pf(11.0), hint_right - hw, base, hint, TEXT_4, hw + 2.0);
+            self.te.draw(cv, ui, self.pf(11.0), hint_right - hw, base, hint, TEXT_4(), hw + 2.0);
         }
         let body = Rect::new(r.x, bar.bottom(), r.w, r.bottom() - bar.bottom());
         let Some(diff) = self.r.changes.diff.clone() else {
             let t = if sel.is_some() { "Loading the diff…" } else { "Select a file to see its changes" };
-            self.te.draw(cv, ui, self.pf(12.5), r.x as f32 + pad, body.y as f32 + self.pf(26.0), t, TEXT_4, r.w as f32);
+            self.te.draw(
+                cv,
+                ui,
+                self.pf(12.5),
+                r.x as f32 + pad,
+                body.y as f32 + self.pf(26.0),
+                t,
+                TEXT_4(),
+                r.w as f32,
+            );
             return;
         };
         if sel.as_ref().is_some_and(|e| e.conflicted) {
@@ -1537,7 +1582,7 @@ impl Ui {
                 r.x as f32 + pad,
                 body.y as f32 + self.pf(26.0),
                 "Conflicted: resolve it in your merge tool, then stage it (the resolver comes with FF-42)",
-                MOD,
+                MOD(),
                 r.w as f32,
             );
             return;
@@ -1562,10 +1607,10 @@ impl Ui {
                 self.diff_line_y(&diff, top, body, i).map(|(y, h)| (body.x, y, h))
             };
             let Some((x, y, h)) = at else { continue };
-            let c = if picked.contains(&i) { ACCENT } else { BORDER_HOVER };
+            let c = if picked.contains(&i) { ACCENT() } else { BORDER_HOVER() };
             cv.fill(Rect::new(x, y, self.px(3.0), h), c);
             if picked.contains(&i) && !split {
-                cv.fill_circle(x as f32 + self.pf(12.0), y as f32 + lh as f32 / 2.0, self.pf(3.0), ACCENT);
+                cv.fill_circle(x as f32 + self.pf(12.0), y as f32 + lh as f32 / 2.0, self.pf(3.0), ACCENT());
             }
         }
         if !picked.is_empty() {
@@ -1576,10 +1621,11 @@ impl Ui {
             let b = Rect::new(r.right() - self.px(16.0) - w as i32, r.y + self.px(4.0), w as i32, self.px(24.0));
             let hot = Hot::Change(hits.len() + buttons.len());
             // Over the bar's hint text.
-            cv.fill(Rect::new(b.x - self.px(10.0), r.y, r.right() - b.x + self.px(10.0), self.px(31.0)), BG_BAR);
-            let (bg, border) = if self.is_hot(hot) { (ACCENT, ACCENT) } else { (ACCENT_SOFT_HOVER, ACCENT_BORDER) };
+            cv.fill(Rect::new(b.x - self.px(10.0), r.y, r.right() - b.x + self.px(10.0), self.px(31.0)), BG_BAR());
+            let (bg, border) =
+                if self.is_hot(hot) { (ACCENT(), ACCENT()) } else { (ACCENT_SOFT_HOVER(), ACCENT_BORDER()) };
             cv.round_border(b, self.pf(6.0), border, bg);
-            let fg = if self.is_hot(hot) { ACCENT_TEXT } else { ACCENT_FG };
+            let fg = if self.is_hot(hot) { ACCENT_TEXT() } else { ACCENT_FG() };
             self.te.draw(
                 cv,
                 semi,

@@ -64,6 +64,13 @@ pub enum MenuAct {
         sandboxed: bool,
         preset: Option<&'static str>,
     },
+    /// A settings row's choice from its dropdown, and the agent settings'
+    /// scope (true: this repository only).
+    SettingChoice(super::settings_view::Row, usize),
+    SettingScope(bool),
+    /// The agent for the next task on the agents page (None: the
+    /// configured one).
+    AgentTool(Option<&'static str>),
     /// Open a folder (a worktree) in a new tab.
     OpenTab(PathBuf),
     /// Pick a sidebar item for a batch, or take it out (FF-36).
@@ -861,6 +868,9 @@ impl Ui {
                 self.agent_terminal(path, worktree, sandboxed, preset)
             }
             Some(MenuAct::OpenTab(p)) => self.open_tab(p),
+            Some(MenuAct::SettingChoice(row, i)) => self.set_choice(row, i),
+            Some(MenuAct::SettingScope(repo)) => self.set_settings_scope(repo),
+            Some(MenuAct::AgentTool(t)) => self.set_agent_tool(t),
             Some(MenuAct::SidePick(key)) => {
                 if let Some(i) = self.r.side.iter().position(|it| it.key == key) {
                     self.side_pick(i, false);
@@ -1624,7 +1634,10 @@ impl Ui {
     /// Right mouse button: the menu for the commit row or the sidebar ref
     /// under the pointer.
     pub fn right_click(&mut self, x: i32, y: i32) {
-        if self.dialog.is_some() || self.settings_view.is_some() || self.agent_view.is_some() {
+        if self.dialog.is_some()
+            || self.settings_view.is_some()
+            || (self.agent_view.is_some() && self.agents_rect().contains(x, y))
+        {
             return;
         }
         self.close_menu();
@@ -1755,7 +1768,7 @@ impl Ui {
         let rects = self.menu_item_rects();
         let Some(m) = self.menu.take() else { return };
         let old = cv.set_clip(cv.clip().intersect(r));
-        cv.round_border(r, self.pf(9.0), BORDER_STRONG, BG_FLOAT);
+        cv.round_border(r, self.pf(9.0), BORDER_STRONG(), BG_FLOAT());
         let ui = self.f.ui;
         // Icons from each item's action (FF-57); a gutter when any has one.
         let icons: Vec<Option<super::Glyph>> =
@@ -1765,15 +1778,15 @@ impl Ui {
         for (i, it) in m.items.iter().enumerate() {
             let h = self.menu_item_h(it);
             if it.act.is_none() {
-                cv.fill(Rect::new(r.x + self.px(12.0), y + h / 2, r.w - self.px(24.0), 1), BORDER);
+                cv.fill(Rect::new(r.x + self.px(12.0), y + h / 2, r.w - self.px(24.0), 1), BORDER());
             } else if let Some(&(_, ir)) = rects.iter().find(|(j, _)| *j == i) {
                 let on = m.sel == Some(i) || self.is_hot(Hot::Menu(i));
                 if on {
-                    cv.fill_round(ir, self.pf(6.0), BG_SELECT);
+                    cv.fill_round(ir, self.pf(6.0), BG_SELECT());
                 }
-                let c = if it.danger { DEL_TEXT } else { TEXT };
+                let c = if it.danger { DEL_TEXT() } else { TEXT() };
                 if let Some(g) = icons[i] {
-                    let ic = if it.danger { DEL_TEXT } else { TEXT_2 };
+                    let ic = if it.danger { DEL_TEXT() } else { TEXT_2() };
                     let cy = ir.y as f32 + self.pf(15.0);
                     self.glyph(cv, g, ir.x as f32 + self.pf(19.0), cy, self.pf(7.0), ic);
                 }
@@ -1798,7 +1811,7 @@ impl Ui {
         let Some(mut d) = self.dialog.take() else { return };
         let r = self.dialog_rect();
         let old = cv.set_clip(cv.clip().intersect(r));
-        cv.round_border(r, self.pf(12.0), BORDER_STRONG, BG_FLOAT);
+        cv.round_border(r, self.pf(12.0), BORDER_STRONG(), BG_FLOAT());
         let (ui, semi) = (self.f.ui, self.f.semi);
         let pad = self.px(22.0);
         let x0 = (r.x + pad) as f32;
@@ -1857,12 +1870,12 @@ impl Ui {
                 ),
             },
         };
-        self.te.draw(cv, semi, self.pf(15.5), x0, r.y as f32 + self.pf(36.0), &title, TEXT, inner);
+        self.te.draw(cv, semi, self.pf(15.5), x0, r.y as f32 + self.pf(36.0), &title, TEXT(), inner);
         let mut y = r.y as f32 + self.pf(62.0);
         if !text.is_empty() {
             let size = self.pf(12.5);
             for l in wrap(&mut self.te, ui, size, &text, inner) {
-                self.te.draw(cv, ui, self.pf(12.5), x0, y, &l, TEXT_2, inner);
+                self.te.draw(cv, ui, self.pf(12.5), x0, y, &l, TEXT_2(), inner);
                 y += self.pf(18.0);
             }
             if matches!(d.kind, DialogKind::Name { .. }) {
@@ -1871,7 +1884,7 @@ impl Ui {
         }
         if let DialogKind::Name { field, checkout, act } = &d.kind {
             let f = Rect::new(x0 as i32, y as i32 - self.px(12.0), inner as i32, self.px(36.0));
-            cv.round_border(f, self.pf(7.0), ACCENT, BG_INPUT);
+            cv.round_border(f, self.pf(7.0), ACCENT(), BG_INPUT());
             let fb = (f.y as f32 + f.h as f32 / 2.0 + self.pf(4.5)).round();
             let tx = f.x as f32 + self.pf(12.0);
             if field.text().is_empty() {
@@ -1889,20 +1902,20 @@ impl Ui {
                     NameAct::SavePatch { .. } | NameAct::ApplyPatchFile => "File path",
                     _ => "feature/my-change",
                 };
-                self.te.draw(cv, ui, self.pf(13.0), tx, fb, ph, TEXT_4, inner);
+                self.te.draw(cv, ui, self.pf(13.0), tx, fb, ph, TEXT_4(), inner);
             } else {
                 if field.all_selected() {
                     let w = self.te.measure(ui, self.pf(13.0), field.text());
                     cv.fill_round(
                         Rect::new(tx as i32 - 2, f.y + self.px(8.0), w as i32 + 4, f.h - self.px(16.0)),
                         self.pf(3.0),
-                        BG_TEXT_SELECT,
+                        BG_TEXT_SELECT(),
                     );
                 }
-                self.te.draw(cv, ui, self.pf(13.0), tx, fb, field.text(), TEXT, inner);
+                self.te.draw(cv, ui, self.pf(13.0), tx, fb, field.text(), TEXT(), inner);
             }
             let cx = tx + self.te.measure(ui, self.pf(13.0), &field.text()[..field.cursor()]);
-            cv.fill(Rect::new(cx as i32 + 1, f.y + self.px(9.0), self.px(1.5).max(1), f.h - self.px(18.0)), ACCENT);
+            cv.fill(Rect::new(cx as i32 + 1, f.y + self.px(9.0), self.px(1.5).max(1), f.h - self.px(18.0)), ACCENT());
             hits.push((f, DHit::Field));
             y = f.bottom() as f32 + self.pf(24.0);
             if matches!(act, NameAct::CreateBranch { .. } | NameAct::StashSave) {
@@ -1920,14 +1933,14 @@ impl Ui {
                     self.px(24.0),
                 );
                 if self.is_hot(Hot::Dialog(hits.len())) {
-                    cv.fill_round(t, self.pf(5.0), BG_HOVER);
+                    cv.fill_round(t, self.pf(5.0), BG_HOVER());
                 }
-                self.te.draw(cv, ui, self.pf(12.5), x0, y, label, TEXT_2, inner);
+                self.te.draw(cv, ui, self.pf(12.5), x0, y, label, TEXT_2(), inner);
                 hits.push((t, DHit::Toggle));
             }
         }
         if let Some(e) = &d.error {
-            self.te.draw(cv, ui, self.pf(12.0), x0, (r.bottom() - self.px(58.0)) as f32, e, DEL, inner);
+            self.te.draw(cv, ui, self.pf(12.0), x0, (r.bottom() - self.px(58.0)) as f32, e, DEL(), inner);
         }
         // Buttons, right to left: Cancel, then the choices.
         let choices: Vec<(String, bool)> = match &d.kind {
@@ -1960,7 +1973,7 @@ impl Ui {
         let mut bx = r.right() - pad;
         let cw = (self.te.measure(semi, self.pf(12.5), "Cancel") + self.pf(28.0)) as i32;
         let cancel = Rect::new(bx - cw, by, cw, bh);
-        let (bg, border) = self.control_colors(Hot::Dialog(hits.len()), BG_BAR, BORDER);
+        let (bg, border) = self.control_colors(Hot::Dialog(hits.len()), BG_BAR(), BORDER());
         cv.round_border(cancel, self.pf(7.0), border, bg);
         self.te.draw(
             cv,
@@ -1969,7 +1982,7 @@ impl Ui {
             cancel.x as f32 + self.pf(14.0),
             (by as f32 + self.pf(21.0)).round(),
             "Cancel",
-            TEXT_2,
+            TEXT_2(),
             cw as f32,
         );
         hits.push((cancel, DHit::Cancel));
@@ -1981,10 +1994,10 @@ impl Ui {
             let selected = i == d.sel;
             let hot = self.is_hot(Hot::Dialog(hits.len()));
             let (bg, border, fg) = match (*dangerous, selected || hot) {
-                (true, true) => (DEL_BG, DEL, DEL_TEXT),
-                (true, false) => (BG_BAR, DANGER_BORDER, DEL_TEXT),
-                (false, true) => (ACCENT, ACCENT, ACCENT_TEXT),
-                (false, false) => (BG_BAR, BORDER, TEXT),
+                (true, true) => (DEL_BG(), DEL(), DEL_TEXT()),
+                (true, false) => (BG_BAR(), DANGER_BORDER(), DEL_TEXT()),
+                (false, true) => (ACCENT(), ACCENT(), ACCENT_TEXT()),
+                (false, false) => (BG_BAR(), BORDER(), TEXT()),
             };
             cv.round_border(b, self.pf(7.0), border, bg);
             self.te.draw(
@@ -2008,7 +2021,7 @@ impl Ui {
             x0,
             (by as f32 + self.pf(21.0)).round(),
             hint,
-            TEXT_4,
+            TEXT_4(),
             (bx - x0 as i32) as f32 - self.pf(8.0),
         );
         cv.set_clip(old);

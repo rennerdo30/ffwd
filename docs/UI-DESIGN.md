@@ -36,6 +36,18 @@ The capture above is the real PoC UI. `ffwd --snapshot` rendered it offscreen fr
 - **The details pane has three layers that arrive at different times.** The header (subject, author, date, SHA, parents) paints in the same frame as the selection, from the history row. The body, the files and the diff fill in behind it. Placeholders are solid, still bars, never spinners.
 - **The status bar tells the truth:** what is loading, real measured timings, the session type (local or remote) and the renderer.
 
+## Themes and pane borders (FF-57)
+
+- **Themes:** dark ("graphite and amber") and light ("paper and amber") keep the same roles and contrast steps. Settings → Appearance → Theme: **System** (default; follows the computer's light or dark mode, also when it changes), **Dark**, **Light** (`ui.theme`). The Windows title bar follows.
+- **Pane borders move:** sidebar | content, history / details, details header | diff, Local Changes' column | diff, unstaged / staged, lists / commit box, the Files tree and the agents rail. The pointer shows a resize cursor and the border an accent line; drag to move, double click to reset. Sizes are kept in `state.toml` (`ui.split.*`).
+- **The views** (Changes, History, Files, Activity, Reflog, Agents), each with a live figure: changed files (conflicts in red), commits, failures in red, agents running or to review. Settings → Appearance → Views offers them four ways:
+  - **Icon bar** (default): a row of icons under the card; the open view is lit, a dot marks a view that asks for attention, and a line beneath names the open view (or the hovered one) with its figure.
+  - **Rail:** labelled icons along the sidebar's left edge, counts as badges; the sidebar grows by the rail's width.
+  - **Tabs:** the views as tabs over the content, right of the sidebar; counts as badges.
+  - **List:** one row per view under the card, its figure at the right.
+- **Branch rows** wear their lane's colour from the history graph; ahead and behind are chips; ages fade with time and branches untouched for a month step back; the current branch has an amber tint. Section counts are pills.
+- **The sidebar's "here" card** (top): the branch (or the detached commit), its sync as chips (↑ ahead, ↓ behind, in sync, no upstream, upstream gone), the upstream, and changed files or a stopped merge or rebase with its conflicts; a click opens Local Changes. Branches show their age, worktrees their branch; empty Stashes is hidden and Remotes without a remote offers Add remote….
+
 ## Window frame
 
 - **Windows 11:** the top bar is the title row, the way Explorer, Settings and Terminal look. ffwd draws minimise, maximise/restore and close with Windows 11 metrics (46 px wide, red close hover). The maximise button reports itself as `HTMAXBUTTON`, so hovering it opens Snap Layouts. The empty parts of the bar drag the window and double-click maximises; side, bottom and top resize edges stay native (`crates/ffwd-app/src/frame.rs`, the same approach as Ferrow).
@@ -304,21 +316,33 @@ The capture above is the real PoC UI. `ffwd --snapshot` rendered it offscreen fr
 
 ## Settings
 
-The gear in the top bar (or `Ctrl+,`) opens Settings: details layout, automatic updates and channel, repository folders, AI endpoint and model, **Open settings.toml**, **Check for updates now**. Changes save at once; the file keeps your comments.
+The gear in the top bar (or `Ctrl+,`) opens Settings as a page of its own: the whole window below the top bar. Changes save at once; the file keeps your comments.
 
-## Agents panel (experimental)
+- **Sidebar:** sections in two groups. General: Appearance (theme: System, Dark, Light; commit details), Updates, Repositories, Git (name and email for every repository and for the open one, the Git program and its version, credential helper, certificate checks, CA file, TLS backend: Git's own settings, read and written on a worker), Tools (editor, merge and diff tools), Remotes, AI, Advanced, About (version, licence, third-party licences, source). **Check for updates** answers under its button and Settings stays open. Path rows have **Browse…** (the system's picker). Agents (experimental): Agent, Sandbox, Access, Scripts & limits. `Ctrl+Tab` goes to the next section.
+- **Cards:** each section has a heading, a sentence on what it is for, and a card of rows. Every row has its label, a full description (up to three lines, never cut mid-word) and its control on the right.
+- **Controls:** on/off settings are switches with their state written next to them; long lists (agent, sandbox, WSL distribution, merge and diff tools, fetch interval) are dropdowns with readable names; only two or three short choices are segmented; text settings are fields.
+- **Search:** the field at the top, or just typing, finds any setting across every section; `Esc` clears it.
+- **Scope (agent sections):** **Applies to: all repositories ▾** in the header switches to the open repository's own values. A row set for this repository says "Set for <repo>" with **Reset**; seen from all repositories, it says "<repo> has its own value" with **Show it**.
+- **Status (agent sections):** a box says what is in effect for the open repository (on or off, the tool, the sandbox, and why it cannot run). When agents are off it has a **Turn on** button.
+- **Done** (or `Esc`) closes Settings.
 
-`Ctrl+Shift+A` (or *Agents (experimental)…* in `Ctrl+K`) opens the agents panel of the current repository. It is off by default and labelled EXPERIMENTAL in the panel and on its settings page. All settings are listed in [AGENTS-EXPERIMENTAL.md](AGENTS-EXPERIMENTAL.md).
+## Agents page (experimental)
 
-- **Top:** one line names what the agent can reach (the sandbox, network, Git access and time limit). It turns amber when ffwd would refuse to start and red when the agent is not sandboxed.
-- **Prompt field:** `Enter` starts a run on a new branch, in its own worktree.
-- **Left:** the runs of this repository, newest first, each with a status dot.
-- **Right:** the selected run's branch, status, worktree, buttons (Show branch, Merge…, Discard…, Cancel run, Open folder, Open log) and its live log.
-- **Confirmation:** Merge and discard ask in place and name exactly what happens. `Enter` confirms; `Esc` keeps the run.
-- **Keys:** `↑ ↓`, `Enter` shows the branch, `m` merges, `d` discards, `c` cancels, `o` opens the folder, `l` opens the log, `PageUp`/`PageDown` scroll the log, and typing starts a new task.
-- **Tab badge:** a dot after the tab's name. Accent while an agent runs; green or red when a run ended and you have not opened the panel since.
+**Agents** in the sidebar's Workspace section (shown when agents are on, with a badge such as "2 running" or "1 to review"), `Ctrl+Shift+A`, or *Agents (experimental)…* in `Ctrl+K` opens the agents page of the current repository: the whole window below the top bar. It is off by default and labelled EXPERIMENTAL. All settings are listed in [AGENTS-EXPERIMENTAL.md](AGENTS-EXPERIMENTAL.md).
 
-Settings has two pages, **General** and **Agents** (`Ctrl+Tab` switches between them). From the agents panel, `Ctrl+,` opens the Agents page. Its first row, **Applies to**, switches between the global values and the current repository's overrides. An overridden row carries a dot (accent in repository scope, dim in global scope), and `Delete` resets it. The **Agent** row picks a preset; while the command is empty, the command field shows the preset's command in grey. Below **Home folder**, the access list has one row per path the agent may use: the preset's own paths (its login and settings, hint names the tool) with **Off / Read / Write**, then the paths you added with **Remove / Read / Write**. The last row, **Add a folder or file**, adds a typed path read-only on `Enter` (files work too, for example `~/.gitconfig`).
+- **Header:** a chip says what runs and where (the tool, the sandbox, the network, or why it cannot run); a click opens the agent settings. **Done** (or `Esc`) closes the page.
+- **Composer (left, top):** the task field, the agent for this task (the configured one, or any built-in one), **Terminal** (the tool's CLI in a terminal window: in a new worktree or here, sandboxed or not) and **Start** (or `Enter`).
+- **Runs (left):** cards grouped as Running, To review, Failed and Finished. A card shows the title, the phase or status with its age, and the live last output line or the change summary; a dot marks a result you have not seen.
+- **The selected run (right):** title, a status pill, branch and base, when and in which sandbox, the result in a sentence, and the actions that fit its state, the main one first:
+  - running: **Cancel run**, Open folder, Open log;
+  - to review: **Review changes** (the branch against its base, in the history's compare), Merge…, Continue in terminal, Run again, Discard…;
+  - merged: Show branch, Run again, Discard…;
+  - failed or stopped: **Run again** (the task back in the composer), Open log, Open terminal here, Discard….
+- **Output / Details:** the live log (`PageUp`/`PageDown` or the wheel scroll it), or the run's facts (task, branch, base, worktree, sandbox, times, commits, changes, result).
+- **Confirmation:** Merge and Discard ask in place and name exactly what happens. `Enter` confirms; `Esc` keeps the run.
+- **Empty page:** how it works in three steps and example tasks that fill the composer; when agents are off, **Turn on** and **Agent settings**.
+- **Keys:** `↑ ↓` select a run, `Enter` or `r` reviews, `m` merges, `d` discards, `c` cancels, `t` opens a terminal in its worktree, `o` opens the folder, `l` the log; typing starts a new task.
+- **Tab badge:** a dot after the tab's name. Accent while an agent runs; green or red when a run ended and you have not opened the page since.
 
 ## Repository tabs
 
@@ -380,6 +404,7 @@ Planned M1 keys follow common Git-client conventions (for example `Ctrl+Shift+G`
   - Depth comes from value steps, never from shadows, blur or gradients. That keeps remote sessions cheap and the screen calm.
 - **One accent:** amber `#E8A33E`. It marks only what is active: the current tab, focus, the selection bar, HEAD, the primary button and the logo.
   - Graph lanes use ten hues at one muted saturation.
+  - The graph column is as wide as the lanes of the rows on screen (at most ten), so a long-lived branch further down does not push every message to the right; when scrolling changes that width, the list repaints instead of copying pixels.
   - Ref chips and diff colours are tinted, never neon.
 - **Text contrast:** four steps.
   - `#ECEAE6` for primary text.

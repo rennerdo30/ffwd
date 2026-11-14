@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **History:** the messages start right after the graph lanes on screen; branches further down no longer push them far to the right.
+- **Settings → About:** the version, ffwd's licence, the third-party licences and the source code. **Check for updates** no longer closes Settings; its answer shows under the button.
+- **Sidebar, rebuilt:** Changes, History, Files, Activity, Reflog and Agents in a bar of icons under the card, each with a live figure (Settings → Appearance → Views also offers a rail, tabs over the content or a list); branches in their graph lane's colour with ahead/behind chips, fading ages and stale branches set back.
+- **Light theme:** Settings → Appearance → Theme: System (follows your computer, also when it changes), Dark or Light.
+- **Pane borders move:** drag any border between panes (sidebar, history and details, the diff, Local Changes, Files, agents); double click resets it; sizes are kept.
+- **Sidebar:** a card at the top says where you are: branch, ahead/behind or in sync, upstream, changed files or a stopped merge or rebase. Branches show their age, worktrees their branch, and empty sections stay out of the way.
+- **Settings → Git:** your name and email (for every repository and for the open one), the Git program and version, credential helper and certificates; **Browse…** beside every path.
+- **Local Changes:** the commit controls no longer overlap in a narrow column.
+- **Agents (experimental), redesigned:** a page of its own (and **Agents** in the sidebar, with a live badge). A composer with the agent to use, runs as cards grouped by state, and for each run the actions that fit: **Review changes** opens the branch's diff in the history, then Merge, Continue in terminal, Run again or Discard. Empty and off states explain how it works and turn agents on in one click.
+- **Settings, redesigned:** a page of its own with sections in a sidebar, cards with full descriptions, switches and dropdowns instead of rows of buttons, search, and a clear **Applies to** picker for agent settings: every row set for one repository says so and can be reset. The agent sections show what is in effect for the open repository.
 - **Agents (experimental), fix:** with the network on, a sandboxed agent inside WSL could not reach any server: names did not resolve, because WSL's DNS settings live outside the folders the sandbox shares. They are now shared read-only.
 - **Agents (experimental), fix:** terminal sessions on Windows still closed at once: the tool got an empty input from the way its window was started, and quit. ffwd now creates the window's console directly, so the tool gets the console's own keyboard and screen (checked on Windows with WSL: the sandboxed session stays open).
 ## 0.2.0-beta.6

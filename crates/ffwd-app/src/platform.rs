@@ -152,6 +152,87 @@ pub fn set_clipboard(text: &str) {
     }
 }
 
+/// Asks for a folder (or a file) with the system's own picker and waits
+/// for the answer: Windows' folder and file dialogs, zenity on Linux, the
+/// chooser on macOS. Blocking: call it on a worker thread (FF-57). None
+/// when cancelled or when no picker is available.
+pub fn pick_path(folder: bool, title: &str) -> Option<String> {
+    #[cfg(windows)]
+    {
+        win_pick::pick(folder, title)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let what = if folder { "folder" } else { "file" };
+        let script = format!("POSIX path of (choose {what} with prompt \"{}\")", title.replace('"', "'"));
+        let out = std::process::Command::new("osascript").args(["-e", &script]).output().ok()?;
+        let p = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        (out.status.success() && !p.is_empty()).then_some(p)
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let mut c = std::process::Command::new("zenity");
+        c.args(["--file-selection", "--title", title]);
+        if folder {
+            c.arg("--directory");
+        }
+        let out = c.output().ok()?;
+        let p = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        (out.status.success() && !p.is_empty()).then_some(p)
+    }
+}
+
+#[cfg(windows)]
+mod win_pick {
+    use windows_sys::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoTaskMemFree};
+    use windows_sys::Win32::UI::Controls::Dialogs::{
+        GetOpenFileNameW, OFN_EXPLORER, OFN_FILEMUSTEXIST, OFN_NOCHANGEDIR, OFN_PATHMUSTEXIST, OPENFILENAMEW,
+    };
+    use windows_sys::Win32::UI::Shell::{BROWSEINFOW, SHBrowseForFolderW, SHGetPathFromIDListW};
+
+    fn wide(s: &str) -> Vec<u16> {
+        s.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    fn from_wide(b: &[u16]) -> String {
+        let n = b.iter().position(|&c| c == 0).unwrap_or(b.len());
+        String::from_utf16_lossy(&b[..n])
+    }
+
+    pub(super) fn pick(folder: bool, title: &str) -> Option<String> {
+        // The dialogs want an apartment-threaded COM (this worker thread).
+        unsafe { CoInitializeEx(std::ptr::null(), COINIT_APARTMENTTHREADED as u32) };
+        let title_w = wide(title);
+        if folder {
+            // BIF_RETURNONLYFSDIRS | BIF_EDITBOX | BIF_NEWDIALOGSTYLE.
+            let mut bi: BROWSEINFOW = unsafe { std::mem::zeroed() };
+            bi.lpszTitle = title_w.as_ptr();
+            bi.ulFlags = 0x0001 | 0x0010 | 0x0040;
+            let pidl = unsafe { SHBrowseForFolderW(&bi) };
+            if pidl.is_null() {
+                return None;
+            }
+            let mut buf = vec![0u16; 32 * 1024];
+            let ok = unsafe { SHGetPathFromIDListW(pidl, buf.as_mut_ptr()) };
+            unsafe { CoTaskMemFree(pidl as *const _) };
+            return (ok != 0).then(|| from_wide(&buf)).filter(|p| !p.is_empty());
+        }
+        let mut buf = vec![0u16; 32 * 1024];
+        let filter: Vec<u16> =
+            "Programs\0*.exe;*.cmd;*.bat\0Certificates\0*.pem;*.crt;*.cer\0All files\0*.*\0\0".encode_utf16().collect();
+        let mut of: OPENFILENAMEW = unsafe { std::mem::zeroed() };
+        of.lStructSize = std::mem::size_of::<OPENFILENAMEW>() as u32;
+        of.lpstrFile = buf.as_mut_ptr();
+        of.nMaxFile = buf.len() as u32;
+        of.lpstrFilter = filter.as_ptr();
+        of.nFilterIndex = if title.to_lowercase().contains("certificate") { 2 } else { 1 };
+        of.lpstrTitle = title_w.as_ptr();
+        of.Flags = OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+        let ok = unsafe { GetOpenFileNameW(&mut of) };
+        (ok != 0).then(|| from_wide(&buf)).filter(|p| !p.is_empty())
+    }
+}
+
 /// The installed WSL distributions (`wsl.exe -l -q`), at most five
 /// seconds; empty when WSL is missing or slow. Windows only.
 #[cfg(windows)]
@@ -216,11 +297,12 @@ pub fn parse_wsl_list(out: &[u8]) -> Vec<String> {
         .collect()
 }
 
-/// Dark title bar on Windows 10/11 so the native caption matches the theme.
+/// A dark (or light) title bar on Windows 10/11, so the native caption
+/// matches the theme.
 #[cfg(windows)]
-pub fn dark_title_bar(hwnd: isize) {
+pub fn dark_title_bar(hwnd: isize, dark: bool) {
     use windows_sys::Win32::Graphics::Dwm::{DWMWA_USE_IMMERSIVE_DARK_MODE, DwmSetWindowAttribute};
-    let on: i32 = 1;
+    let on: i32 = dark as i32;
     unsafe {
         let hwnd = hwnd as windows_sys::Win32::Foundation::HWND;
         DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE as u32, (&on as *const i32).cast(), 4);
@@ -228,7 +310,7 @@ pub fn dark_title_bar(hwnd: isize) {
 }
 
 #[cfg(not(windows))]
-pub fn dark_title_bar(_hwnd: isize) {}
+pub fn dark_title_bar(_hwnd: isize, _dark: bool) {}
 
 /// Opens `dir` in the file manager. Runs on its own thread; the path is
 /// passed as one argument, never through a shell.

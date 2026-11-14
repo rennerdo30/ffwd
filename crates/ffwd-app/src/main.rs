@@ -49,6 +49,13 @@ pub struct Args {
     pub side: Option<String>,
     /// Snapshot with the settings view on this page (0 general, 1 agents).
     pub settings_page: Option<usize>,
+    pub settings_section: Option<String>,
+    /// Snapshot: the sidebar style.
+    pub sidebar: Option<String>,
+    /// Snapshot: "light" or "dark".
+    pub theme: Option<String>,
+    /// Snapshot: the agents page with agents on (true) or off.
+    pub agents_page: Option<bool>,
     /// Snapshot with the agents panel open, showing example runs.
     pub agents_demo: bool,
     /// Snapshot of Settings → Agents for one repository (example values).
@@ -105,6 +112,10 @@ fn parse_args() -> Result<Args, String> {
         settings: false,
         side: None,
         settings_page: None,
+        settings_section: None,
+        sidebar: None,
+        theme: None,
+        agents_page: None,
         agents_demo: false,
         scope_demo: false,
         access_demo: false,
@@ -155,6 +166,10 @@ fn parse_args() -> Result<Args, String> {
             "--palette" => a.palette = Some(val("--palette")?),
             "--layout" => a.layout = Some(val("--layout")?),
             "--settings" => a.settings = true,
+            "--agents-page" => a.agents_page = Some(val("--agents-page")? == "on"),
+            "--sidebar" => a.sidebar = Some(val("--sidebar")?),
+            "--theme" => a.theme = Some(val("--theme")?),
+            "--settings-section" => a.settings_section = Some(val("--settings-section")?),
             "--settings-page" => a.settings_page = Some(val("--settings-page")?.parse().map_err(|_| "bad page")?),
             "--agents-demo" => a.agents_demo = true,
             "--settings-scope-demo" => a.scope_demo = true,

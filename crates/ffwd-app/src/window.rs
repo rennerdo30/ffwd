@@ -189,6 +189,8 @@ impl App {
                 crate::ui::Cursor::Default => CursorIcon::Default,
                 crate::ui::Cursor::Pointer => CursorIcon::Pointer,
                 crate::ui::Cursor::Text => CursorIcon::Text,
+                crate::ui::Cursor::ColResize => CursorIcon::ColResize,
+                crate::ui::Cursor::RowResize => CursorIcon::RowResize,
             });
             self.shown_cursor = want;
         }
@@ -346,6 +348,11 @@ impl App {
     /// Work the UI asked for that needs the window or the event loop.
     fn after_input(&mut self) {
         self.process_update_request();
+        if let (Some(ui), Some(g)) = (&mut self.ui, &self.gfx)
+            && std::mem::take(&mut ui.theme_changed)
+        {
+            platform::dark_title_bar(g.hwnd, !crate::theme::is_light());
+        }
         if self.ui.as_mut().is_some_and(|ui| ui.take_update_check_requested()) {
             self.spawn_update_check(true);
         }
@@ -417,12 +424,12 @@ impl App {
         for y in 0..h {
             let row = &mut buf[y * w..(y + 1) * w];
             if y < bar {
-                row.fill(crate::theme::BG_BAR);
+                row.fill(crate::theme::BG_BAR());
             } else if y < bar + tabs || y + status >= h {
-                row.fill(crate::theme::BG_SIDEBAR);
+                row.fill(crate::theme::BG_SIDEBAR());
             } else {
-                row[..side].fill(crate::theme::BG_SIDEBAR);
-                row[side..].fill(crate::theme::BG);
+                row[..side].fill(crate::theme::BG_SIDEBAR());
+                row[side..].fill(crate::theme::BG());
             }
         }
         if buf.present().is_ok() {
@@ -455,6 +462,7 @@ impl App {
             window.scale_factor() as f32,
         );
         ui.remote = platform::is_remote_session();
+        ui.set_system_light(window.theme() == Some(winit::window::Theme::Light));
         // Fetches the open repository in the background (FF-39).
         ui.start_auto_fetch_clock();
         if ui.chrome == Chrome::Windows11 && !framed {
@@ -525,7 +533,7 @@ impl ApplicationHandler<UserEvent> for App {
             _ => 0,
         };
         trace(self.t0, "surface created");
-        platform::dark_title_bar(hwnd);
+        platform::dark_title_bar(hwnd, !crate::theme::is_light());
         // Before reading the size: removing the caption grows the client area.
         #[cfg(windows)]
         let framed = {
@@ -683,6 +691,13 @@ impl ApplicationHandler<UserEvent> for App {
             }
             // RDP connects and disconnects resize and refocus the window, so the
             // session type is re-read on those events (no timer, no polling).
+            WindowEvent::ThemeChanged(t) => {
+                if let Some(ui) = &mut self.ui {
+                    ui.set_system_light(t == winit::window::Theme::Light);
+                }
+                self.after_input();
+                self.render();
+            }
             WindowEvent::Focused(focused) => {
                 if let Some(ui) = &mut self.ui {
                     ui.set_active(focused);

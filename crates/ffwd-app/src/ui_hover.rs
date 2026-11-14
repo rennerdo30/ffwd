@@ -26,7 +26,6 @@ pub enum Hot {
     Palette(usize),
     /// An entry of the settings view's hit list (row, choice).
     Setting(usize, usize),
-    SettingsPage(usize),
     /// An entry of the agents panel's hit list.
     Agent(usize),
     /// An entry of the Local Changes view's hit list.
@@ -58,6 +57,10 @@ pub enum Cursor {
     Pointer,
     /// A text field.
     Text,
+    /// A vertical pane border (FF-57).
+    ColResize,
+    /// A horizontal pane border.
+    RowResize,
 }
 
 impl Ui {
@@ -89,7 +92,7 @@ impl Ui {
         if let Some(i) = self.agent_hit_at(x, y) {
             return Some(Hot::Agent(i));
         }
-        if self.agent_view.is_some() {
+        if self.agent_view.is_some() && self.agents_rect().contains(x, y) {
             return None;
         }
         if let Some(h) = self.settings_hit_at(x, y) {
@@ -170,7 +173,7 @@ impl Ui {
             Hot::Row(r) => self.row_rect(r).unwrap_or_default(),
             Hot::File(k) => self.file_row_rect(k),
             Hot::Palette(_) => self.palette_rect(10),
-            Hot::Setting(..) | Hot::SettingsPage(_) => self.settings_rect(),
+            Hot::Setting(..) => self.settings_rect(),
             Hot::Agent(_) => self.agents_rect(),
             Hot::Menu(_) => self.menu_rect(),
             Hot::Find(_) => self.lay.list_head,
@@ -195,9 +198,9 @@ impl Ui {
     /// Background and border of a control in its current state.
     pub(super) fn control_colors(&self, h: Hot, bg: u32, border: u32) -> (u32, u32) {
         if self.is_pressed(h) {
-            (BG_PRESS, BORDER_HOVER)
+            (BG_PRESS(), BORDER_HOVER())
         } else if self.is_hot(h) {
-            (CONTROL_HOVER, BORDER_HOVER)
+            (CONTROL_HOVER(), BORDER_HOVER())
         } else {
             (bg, border)
         }

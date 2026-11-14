@@ -24,16 +24,17 @@ pub(super) struct SideItem {
     pub current: bool,
     /// `Some(expanded)` for headers, folders and remotes.
     pub expander: Option<bool>,
+    /// A quiet note at the right: a branch's age, a worktree's branch.
+    pub age: String,
+    /// How old a branch's last commit is, in seconds (0: unknown).
+    pub age_secs: i64,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum SideKind {
     Header,
-    Changes,
-    Files,
-    Activity,
-    Reflog,
-    All,
+    /// "Add remote…" where a repository has none.
+    AddRemote,
     Branch,
     Folder,
     Remote,
@@ -43,6 +44,47 @@ pub(super) enum SideKind {
     Worktree,
     PullRequest,
     Submodule,
+}
+
+/// How the sidebar offers the views (setting `ui.sidebar`, FF-57).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SideStyle {
+    /// A rail of labelled icons along the left edge.
+    Rail,
+    /// Tabs over the content, right of the sidebar.
+    Tabs,
+    /// One row per view under the card.
+    List,
+    /// A row of icons under the card, the open view named beneath.
+    Bar,
+}
+
+impl SideStyle {
+    pub const KEYS: [&'static str; 4] = ["rail", "tabs", "list", "bar"];
+
+    pub fn from_setting(s: Option<&str>) -> SideStyle {
+        // The icon bar is the default (owner, 2026-11-14).
+        match s {
+            Some("rail") => SideStyle::Rail,
+            Some("tabs") => SideStyle::Tabs,
+            Some("list") => SideStyle::List,
+            _ => SideStyle::Bar,
+        }
+    }
+}
+
+/// A view the sidebar (or the tabs) opens, with its live figure.
+pub(super) struct View {
+    pub key: &'static str,
+    pub name: &'static str,
+    pub glyph: Glyph,
+    /// The figure in words: "3 changed", "1 failed".
+    pub stat: String,
+    /// The figure as a count for a badge; empty when calm.
+    pub count: String,
+    pub color: u32,
+    /// The figure asks for attention.
+    pub alert: bool,
 }
 
 impl SideItem {
@@ -56,6 +98,8 @@ impl SideItem {
             target: None,
             current: false,
             expander: None,
+            age: String::new(),
+            age_secs: 0,
         }
     }
 }
@@ -105,6 +149,7 @@ fn tree(
     } else {
         leaves.sort_by_key(|a| a.0.to_lowercase());
     }
+    let now = super::now_secs();
     for (name, r) in leaves {
         let mut it = SideItem::new(depth, kind, &name, format!("{prefix}{name}"));
         it.target = Some(r.target);
@@ -125,6 +170,11 @@ fn tree(
                 b.push_str(&format!("↓{}", r.behind));
             }
             it.badge = b;
+            if it.badge.is_empty() && r.time > 0 {
+                // How old its last commit is, quietly.
+                it.age = short_age(now - r.time);
+                it.age_secs = now - r.time;
+            }
         }
         out.push(it);
     }
@@ -135,16 +185,531 @@ impl Ui {
         self.px(SIDE_ROW)
     }
 
-    /// The filter field at the top of the sidebar.
-    pub(super) fn side_filter_rect(&self) -> Rect {
+    /// How the sidebar offers the views (setting `ui.sidebar`).
+    pub(super) fn side_style(&self) -> SideStyle {
+        SideStyle::from_setting(self.settings.get("ui.sidebar"))
+    }
+
+    /// Switches the sidebar style ("rail", "tabs", "list", "bar").
+    pub fn set_side_style(&mut self, key: &str) {
+        self.settings.set_string("ui.sidebar", key);
+        self.side_view_hot = None;
+        self.resize(self.w, self.h, self.s);
+        self.rebuild_side();
+    }
+
+    /// The icon rail's width (Rail style), else 0.
+    fn rail_w(&self) -> i32 {
+        if self.side_style() == SideStyle::Rail { self.px(64.0) } else { 0 }
+    }
+
+    /// The sidebar without the rail and without its right border.
+    fn side_panel(&self) -> Rect {
         let s = self.lay.side;
-        Rect::new(s.x + self.px(10.0), s.y + self.px(8.0), s.w - self.px(20.0), self.px(FILTER_H - 14.0))
+        let rw = self.rail_w();
+        Rect::new(s.x + rw, s.y, (s.w - rw - 1).max(0), s.h)
+    }
+
+    /// Where you are, at the top of the sidebar (FF-57): the branch, its
+    /// sync with the upstream, the changes and a stopped operation.
+    pub(super) fn side_here_rect(&self) -> Rect {
+        let p = self.side_panel();
+        Rect::new(p.x + self.px(10.0), p.y + self.px(10.0), p.w - self.px(20.0), self.px(62.0))
+    }
+
+    /// The views, with their live figures (FF-57).
+    pub(super) fn views(&self) -> Vec<View> {
+        let calm = |key, name, glyph, stat: &str| View {
+            key,
+            name,
+            glyph,
+            stat: stat.to_string(),
+            count: String::new(),
+            color: TEXT_4(),
+            alert: false,
+        };
+        let loud = |key, name, glyph, stat: String, n: usize, color| View {
+            key,
+            name,
+            glyph,
+            stat,
+            count: fmt::num(n),
+            color,
+            alert: true,
+        };
+        let changes = match self.r.status {
+            Some(s) if s.conflicted > 0 => {
+                let n = s.conflicted as usize;
+                loud("changes", "Changes", Glyph::Changes, format!("{} conflicts", fmt::num(n)), n, DEL())
+            }
+            Some(s) if s.total() > 0 => {
+                let n = s.total() as usize;
+                loud("changes", "Changes", Glyph::Changes, format!("{} changed", fmt::num(n)), n, MOD())
+            }
+            Some(_) => calm("changes", "Changes", Glyph::Changes, "clean"),
+            None => calm("changes", "Changes", Glyph::Changes, "…"),
+        };
+        let n = self.r.commits.len();
+        let history = if self.r.log_done { format!("{} commits", fmt::num(n)) } else { format!("{}…", fmt::num(n)) };
+        let activity = match self.activity.unseen_failures {
+            0 => calm("activity", "Activity", Glyph::Text, "all fine"),
+            f => loud("activity", "Activity", Glyph::Text, format!("{f} failed"), f as usize, DEL()),
+        };
+        let agents = if !self.agent_config().0.enabled {
+            calm("agents", "Agents", Glyph::Terminal, "off")
+        } else {
+            match self.agent_counts() {
+                (0, 0) => calm("agents", "Agents", Glyph::Terminal, "idle"),
+                (0, r) => loud("agents", "Agents", Glyph::Terminal, format!("{r} to review"), r, ADD()),
+                (n, _) => loud("agents", "Agents", Glyph::Terminal, format!("{n} running"), n, ACCENT_FG()),
+            }
+        };
+        vec![
+            changes,
+            calm("all", "History", Glyph::Commit, &history),
+            calm("files", "Files", Glyph::Folder, "browse the tree"),
+            activity,
+            calm("reflog", "Reflog", Glyph::Clock, "undo trail"),
+            agents,
+        ]
+    }
+
+    /// The view on screen.
+    pub(super) fn current_view(&self) -> &'static str {
+        if self.agent_view.is_some() {
+            return "agents";
+        }
+        match self.r.side_sel.as_str() {
+            "changes" => "changes",
+            "files" => "files",
+            "activity" => "activity",
+            "reflog" => "reflog",
+            _ => "all",
+        }
+    }
+
+    /// The rail's buttons (Rail style).
+    fn rail_rects(&self) -> Vec<Rect> {
+        let s = self.lay.side;
+        let (h, gap) = (self.px(50.0), self.px(4.0));
+        (0..6)
+            .map(|k| {
+                Rect::new(s.x + self.px(6.0), s.y + self.px(10.0) + k * (h + gap), self.rail_w() - self.px(12.0), h)
+            })
+            .collect()
+    }
+
+    /// The rows under the card (List style).
+    fn view_list_rects(&self) -> Vec<Rect> {
+        let p = self.side_panel();
+        let top = self.side_here_rect().bottom() + self.px(8.0);
+        let h = self.px(28.0);
+        (0..6).map(|k| Rect::new(p.x + self.px(6.0), top + k * h, p.w - self.px(12.0), h)).collect()
+    }
+
+    /// The icon bar under the card (Bar style), and its segments.
+    fn view_bar_rect(&self) -> Rect {
+        let p = self.side_panel();
+        Rect::new(
+            p.x + self.px(10.0),
+            self.side_here_rect().bottom() + self.px(8.0),
+            p.w - self.px(20.0),
+            self.px(36.0),
+        )
+    }
+
+    fn view_bar_rects(&self) -> Vec<Rect> {
+        let b = self.view_bar_rect().inset(self.px(3.0), self.px(3.0));
+        (0..6)
+            .map(|k| {
+                let x0 = b.x + b.w * k / 6;
+                let x1 = b.x + b.w * (k + 1) / 6;
+                Rect::new(x0, b.y, x1 - x0, b.h)
+            })
+            .collect()
+    }
+
+    /// The tabs over the content (Tabs style): equal widths, so they stay
+    /// put while their figures change.
+    fn view_tab_rects(&self) -> Vec<Rect> {
+        let v = self.lay.views;
+        let w = self.px(124.0).min((v.w - self.px(16.0)) / 6).max(1);
+        (0..6).map(|k| Rect::new(v.x + self.px(8.0) + k * w, v.y, w, v.h)).collect()
+    }
+
+    /// The view buttons of the current style, in the order of `views`.
+    pub(super) fn view_rects(&self) -> Vec<Rect> {
+        match self.side_style() {
+            SideStyle::Rail => self.rail_rects(),
+            SideStyle::Tabs => self.view_tab_rects(),
+            SideStyle::List => self.view_list_rects(),
+            SideStyle::Bar => self.view_bar_rects(),
+        }
+    }
+
+    /// The view button under the pointer.
+    fn view_at(&self, x: i32, y: i32) -> Option<usize> {
+        self.view_rects().iter().position(|r| r.contains(x, y))
+    }
+
+    /// A click in the tabs strip over the content.
+    pub(super) fn view_click(&mut self, x: i32, y: i32) {
+        if let Some(k) = self.view_at(x, y) {
+            let key = self.views()[k].key;
+            self.view_activate(key);
+        }
+    }
+
+    /// Opens a view.
+    pub(super) fn view_activate(&mut self, key: &str) {
+        if key != "agents" {
+            self.close_agents();
+        }
+        match key {
+            "changes" => self.enter_changes(),
+            "files" => self.enter_files(),
+            "activity" => self.enter_activity(),
+            "reflog" => self.enter_reflog(),
+            "agents" => self.open_agents(),
+            _ => {
+                self.leave_changes();
+                self.leave_files();
+                self.leave_activity();
+                self.leave_reflog();
+                self.side_select("all");
+            }
+        }
+        self.damage.rects.extend([self.lay.side, self.lay.views]);
+    }
+
+    /// Tests: a view's live figure.
+    #[cfg(test)]
+    pub(super) fn view_stat(&self, key: &str) -> Option<String> {
+        self.views().into_iter().find(|t| t.key == key).map(|t| t.stat)
+    }
+
+    /// A count badge: a pill in the view's colour.
+    fn view_badge(&mut self, cv: &mut Canvas, right: f32, cy: f32, v: &View) {
+        let semi = self.f.semi;
+        let fs = self.pf(10.0);
+        let tw = self.te.measure(semi, fs, &v.count);
+        let h = self.pf(15.0);
+        let w = (tw + self.pf(9.0)).max(h);
+        let r = Rect::new((right - w) as i32, (cy - h / 2.0) as i32, w as i32, h as i32);
+        cv.fill_round(r, h / 2.0, v.color);
+        let fg = if crate::theme::is_light() { 0xffffff } else { BG() };
+        self.te.draw(cv, semi, fs, right - w + (w - tw) / 2.0, cy + self.pf(3.5), &v.count, fg, w);
+    }
+
+    fn paint_views(&mut self, cv: &mut Canvas) {
+        match self.side_style() {
+            SideStyle::Rail => self.paint_rail(cv),
+            SideStyle::Tabs => {}
+            SideStyle::List => self.paint_view_list(cv),
+            SideStyle::Bar => self.paint_view_bar(cv),
+        }
+    }
+
+    /// Rail: a labelled icon per view down the left edge; the open one
+    /// lit, with an accent bar at the edge; counts as pills on the icon.
+    fn paint_rail(&mut self, cv: &mut Canvas) {
+        let s = self.lay.side;
+        let rw = self.rail_w();
+        cv.fill(Rect::new(s.x, s.y, rw, s.h), BG_BAR());
+        cv.fill(Rect::new(s.x + rw - 1, s.y, 1, s.h), BORDER_SOFT());
+        let cur = self.current_view();
+        let ui = self.f.ui;
+        for (k, (v, r)) in self.views().into_iter().zip(self.rail_rects()).enumerate() {
+            let on = v.key == cur;
+            let hot = self.side_view_hot == Some(k);
+            if on {
+                cv.fill_round(r, self.pf(9.0), ACCENT_SOFT());
+                cv.fill_round(
+                    Rect::new(s.x, r.y + self.px(12.0), self.px(3.0), r.h - self.px(24.0)),
+                    self.pf(1.5),
+                    ACCENT(),
+                );
+            } else if hot {
+                cv.fill_round(r, self.pf(9.0), BG_HOVER());
+            }
+            let cx = r.x as f32 + r.w as f32 / 2.0;
+            let gy = r.y as f32 + self.pf(18.0);
+            let gc = if on {
+                ACCENT_FG()
+            } else if hot {
+                TEXT()
+            } else {
+                TEXT_3()
+            };
+            self.glyph(cv, v.glyph, cx, gy, self.pf(7.0), gc);
+            if v.alert {
+                self.view_badge(cv, r.right() as f32 - self.pf(3.0), r.y as f32 + self.pf(9.0), &v);
+            }
+            let fs = self.pf(10.5);
+            let tw = self.te.measure(ui, fs, v.name);
+            let tc = if on { ACCENT_FG() } else { TEXT_3() };
+            self.te.draw(cv, ui, fs, cx - tw / 2.0, r.y as f32 + self.pf(41.0), v.name, tc, r.w as f32);
+        }
+    }
+
+    /// List: one row per view, its figure at the right.
+    fn paint_view_list(&mut self, cv: &mut Canvas) {
+        let (ui, semi) = (self.f.ui, self.f.semi);
+        let cur = self.current_view();
+        for (k, (v, r)) in self.views().into_iter().zip(self.view_list_rects()).enumerate() {
+            let on = v.key == cur;
+            let hot = self.side_view_hot == Some(k);
+            if on {
+                cv.fill_round(r, self.pf(6.0), BG_SELECT_DIM());
+                cv.fill_round(
+                    Rect::new(r.x, r.y + self.px(6.0), self.px(3.0), r.h - self.px(12.0)),
+                    self.pf(1.5),
+                    ACCENT(),
+                );
+            } else if hot {
+                cv.fill_round(r, self.pf(6.0), BG_HOVER());
+            }
+            let cy = r.y as f32 + r.h as f32 / 2.0;
+            let base = (cy + self.pf(4.5)).round();
+            let gx = r.x as f32 + self.pf(16.0);
+            self.glyph(cv, v.glyph, gx, cy, self.pf(5.5), if on { ACCENT() } else { TEXT_3() });
+            let font = if on { semi } else { ui };
+            self.te.draw(
+                cv,
+                font,
+                self.pf(13.0),
+                gx + self.pf(14.0),
+                base,
+                v.name,
+                if on { TEXT() } else { TEXT_2() },
+                r.w as f32,
+            );
+            let fs = self.pf(11.5);
+            let f2 = if v.alert { semi } else { ui };
+            let tw = self.te.measure(f2, fs, &v.stat);
+            let mut sx = r.right() as f32 - tw - self.pf(10.0);
+            self.te.draw(cv, f2, fs, sx, base - self.pf(0.5), &v.stat, v.color, tw + 2.0);
+            if v.alert {
+                sx -= self.pf(9.0);
+                cv.fill_circle(sx, cy, self.pf(3.0), v.color);
+            }
+        }
+        // A quiet rule between the views and the refs.
+        let rs = self.view_list_rects();
+        if let Some(last) = rs.last() {
+            let p = self.side_panel();
+            cv.fill(
+                Rect::new(p.x + self.px(14.0), last.bottom() + self.px(5.0), p.w - self.px(28.0), 1),
+                BORDER_SOFT(),
+            );
+        }
+    }
+
+    /// Bar: a segmented row of icons, the open view (or the hovered one)
+    /// named with its figure beneath.
+    fn paint_view_bar(&mut self, cv: &mut Canvas) {
+        let (ui, semi) = (self.f.ui, self.f.semi);
+        let bar = self.view_bar_rect();
+        cv.round_border(bar, self.pf(9.0), BORDER_SOFT(), BG_PANEL());
+        let cur = self.current_view();
+        let views = self.views();
+        for (k, (v, r)) in views.iter().zip(self.view_bar_rects()).enumerate() {
+            let on = v.key == cur;
+            let hot = self.side_view_hot == Some(k);
+            if on {
+                cv.fill_round(r, self.pf(7.0), ACCENT_SOFT());
+            } else if hot {
+                cv.fill_round(r, self.pf(7.0), BG_HOVER());
+            }
+            let cy = r.y as f32 + r.h as f32 / 2.0;
+            // With a count, the icon steps left so the badge reads beside it.
+            let cx = r.x as f32 + r.w as f32 / 2.0 - if v.alert { self.pf(7.5) } else { 0.0 };
+            let gc = if on {
+                ACCENT_FG()
+            } else if hot {
+                TEXT()
+            } else {
+                TEXT_3()
+            };
+            self.glyph(cv, v.glyph, cx, cy, self.pf(6.5), gc);
+            if v.alert {
+                let right = (cx + self.pf(9.5) + self.bar_badge_w(v)).min(r.right() as f32 - self.pf(1.0));
+                self.view_badge(cv, right, cy, v);
+            }
+        }
+        // The caption: what the hovered (else the open) view is and holds.
+        let k = self.side_view_hot.unwrap_or_else(|| views.iter().position(|v| v.key == cur).unwrap_or(0));
+        if let Some(v) = views.get(k) {
+            let base = bar.bottom() as f32 + self.pf(17.0);
+            let x = bar.x as f32 + self.pf(6.0);
+            let end = self.te.draw(cv, semi, self.pf(12.0), x, base, v.name, TEXT_2(), bar.w as f32);
+            self.te.draw(
+                cv,
+                if v.alert { semi } else { ui },
+                self.pf(12.0),
+                end + self.pf(8.0),
+                base,
+                &v.stat,
+                v.color,
+                bar.right() as f32 - end - self.pf(8.0),
+            );
+        }
+    }
+
+    /// A count badge's width (see `view_badge`).
+    fn bar_badge_w(&mut self, v: &View) -> f32 {
+        let fs = self.pf(10.0);
+        (self.te.measure(self.f.semi, fs, &v.count) + self.pf(9.0)).max(self.pf(15.0))
+    }
+
+    /// Tabs: the views over the content, right of the sidebar.
+    pub(super) fn paint_view_tabs(&mut self, cv: &mut Canvas) {
+        let v = self.lay.views;
+        if v.h == 0 {
+            return;
+        }
+        let (ui, semi) = (self.f.ui, self.f.semi);
+        cv.fill(v, BG_BAR());
+        cv.fill(Rect::new(v.x, v.bottom() - 1, v.w, 1), BORDER());
+        let cur = self.current_view();
+        for (k, (t, r)) in self.views().into_iter().zip(self.view_tab_rects()).enumerate() {
+            let on = t.key == cur;
+            let hot = self.side_view_hot == Some(k);
+            let inner = Rect::new(r.x + self.px(2.0), r.y + self.px(5.0), r.w - self.px(4.0), r.h - self.px(10.0));
+            if on {
+                cv.fill_round(inner, self.pf(7.0), BG());
+                cv.fill(
+                    Rect::new(r.x + self.px(10.0), r.bottom() - self.px(2.0), r.w - self.px(20.0), self.px(2.0)),
+                    ACCENT(),
+                );
+            } else if hot {
+                cv.fill_round(inner, self.pf(7.0), BG_HOVER());
+            }
+            let cy = r.y as f32 + r.h as f32 / 2.0;
+            let gx = r.x as f32 + self.pf(18.0);
+            self.glyph(cv, t.glyph, gx, cy, self.pf(5.5), if on { ACCENT() } else { TEXT_3() });
+            let font = if on { semi } else { ui };
+            let right = r.right() as f32 - self.pf(8.0);
+            let end = self.te.draw(
+                cv,
+                font,
+                self.pf(12.5),
+                gx + self.pf(13.0),
+                (cy + self.pf(4.5)).round(),
+                t.name,
+                if on { TEXT() } else { TEXT_2() },
+                right - gx,
+            );
+            if t.alert {
+                let fs = self.pf(10.0);
+                let w = (self.te.measure(semi, fs, &t.count) + self.pf(9.0)).max(self.pf(15.0));
+                self.view_badge(cv, (end + self.pf(6.0) + w).min(right), cy, &t);
+            }
+        }
+    }
+
+    /// The filter field under the card (and the views, when they live in
+    /// the sidebar).
+    pub(super) fn side_filter_rect(&self) -> Rect {
+        let p = self.side_panel();
+        let top = match self.side_style() {
+            SideStyle::Rail | SideStyle::Tabs => self.side_here_rect().bottom() + self.px(10.0),
+            SideStyle::List => self.view_list_rects().last().map_or(0, |r| r.bottom()) + self.px(12.0),
+            SideStyle::Bar => self.view_bar_rect().bottom() + self.px(28.0),
+        };
+        Rect::new(p.x + self.px(10.0), top, p.w - self.px(20.0), self.px(FILTER_H - 14.0))
     }
 
     pub(super) fn side_list_rect(&self) -> Rect {
-        let s = self.lay.side;
-        let top = s.y + self.px(FILTER_H);
-        Rect::new(s.x, top, s.w - 1, (s.bottom() - top).max(0))
+        let p = self.side_panel();
+        let top = self.side_filter_rect().bottom() + self.px(8.0);
+        Rect::new(p.x, top, p.w, (p.bottom() - top).max(0))
+    }
+
+    /// The card: line one the branch (or the detached commit) and its sync
+    /// as chips, line two the upstream and what waits in the working tree.
+    fn paint_side_here(&mut self, cv: &mut Canvas) {
+        let (ui, semi, mono) = (self.f.ui, self.f.semi, self.f.mono);
+        let r = self.side_here_rect();
+        let hot = self.side_here_hot;
+        cv.round_border(
+            r,
+            self.pf(9.0),
+            if hot { BORDER_HOVER() } else { BORDER_SOFT() },
+            if hot { BG_HOVER() } else { BG_PANEL() },
+        );
+        let head = self.r.refs.refs.iter().find(|x| x.kind == RefKind::Local && x.is_head).cloned();
+        let x0 = r.x as f32 + self.pf(12.0);
+        let b1 = r.y as f32 + self.pf(24.0);
+        let b2 = r.y as f32 + self.pf(46.0);
+        let right = r.right() as f32 - self.pf(10.0);
+        // Line one: branch, then the sync chips from the right.
+        let mut chips: Vec<(String, u32, u32)> = Vec::new();
+        match &head {
+            Some(h) if h.upstream_gone => chips.push(("upstream gone".into(), DEL_BG(), DEL_TEXT())),
+            Some(h) if h.upstream.is_none() => chips.push(("no upstream".into(), BG_HOVER(), TEXT_3())),
+            Some(h) if h.ahead == 0 && h.behind == 0 => chips.push(("in sync".into(), ADD_BG(), ADD_TEXT())),
+            Some(h) => {
+                if h.behind > 0 {
+                    chips.push((format!("↓{}", h.behind), REMOTE_BG(), REMOTE_FG()));
+                }
+                if h.ahead > 0 {
+                    chips.push((format!("↑{}", h.ahead), ACCENT_SOFT(), ACCENT_FG()));
+                }
+            }
+            None => {}
+        }
+        let mut cx = right;
+        for (t, bg, fg) in chips.iter().rev() {
+            let w = self.te.measure(semi, self.pf(11.0), t) + self.pf(14.0);
+            cx -= w;
+            let cr = Rect::new(cx as i32, (b1 - self.pf(14.0)) as i32, w as i32, self.px(19.0));
+            cv.fill_round(cr, self.pf(9.5), *bg);
+            self.te.draw(cv, semi, self.pf(11.0), cx + self.pf(7.0), b1 - self.pf(0.5), t, *fg, w);
+            cx -= self.pf(6.0);
+        }
+        let name_w = cx - x0 - self.pf(20.0);
+        match &head {
+            Some(h) => {
+                self.branch_icon(cv, x0 + self.pf(5.0), b1 - self.pf(4.5), ACCENT());
+                let fs = self.pf(14.0);
+                let name = super::fit_middle(&mut self.te, semi, fs, &h.name, name_w);
+                self.te.draw(cv, semi, self.pf(14.0), x0 + self.pf(18.0), b1, &name, TEXT(), name_w + 2.0);
+            }
+            None => {
+                let at = self.r.refs.head.map(|h| h.short(8)).unwrap_or_default();
+                let t = if at.is_empty() { "No commit yet".to_string() } else { format!("Detached at {at}") };
+                self.te.draw(cv, semi, self.pf(14.0), x0, b1, &t, MOD(), name_w + 20.0);
+            }
+        }
+        // Line two: a stopped operation first; else upstream and changes.
+        let st = self.r.status;
+        let conflicts = st.map_or(0, |s| s.conflicted as usize);
+        let changed = st.map_or(0, |s| s.total() as usize);
+        let mut x = x0;
+        let w2 = right - x0;
+        if let Some(op) = self.r.changes.in_progress {
+            let t = if conflicts > 0 {
+                format!("{op} stopped · {conflicts} conflicts")
+            } else {
+                format!("{op} in progress")
+            };
+            cv.fill_circle(x + self.pf(3.5), b2 - self.pf(4.0), self.pf(3.5), DEL());
+            self.te.draw(cv, semi, self.pf(12.0), x + self.pf(12.0), b2, &t, DEL_TEXT(), w2);
+            return;
+        }
+        if let Some(up) = head.as_ref().and_then(|h| h.upstream.clone()) {
+            x = self.te.draw(cv, mono, self.pf(11.5), x, b2, &format!("→ {up}"), TEXT_3(), w2 * 0.6) + self.pf(10.0);
+        }
+        let (t, c) = match changed {
+            0 => ("clean".to_string(), TEXT_4()),
+            n => (format!("{n} changed"), MOD()),
+        };
+        if changed > 0 {
+            cv.fill_circle(x + self.pf(3.0), b2 - self.pf(4.0), self.pf(3.0), MOD());
+            x += self.pf(10.0);
+        }
+        self.te.draw(cv, if changed > 0 { semi } else { ui }, self.pf(12.0), x, b2, &t, c, right - x);
     }
 
     fn side_visible_rows(&self) -> usize {
@@ -166,22 +731,6 @@ impl Ui {
             open(key)
         };
 
-        if !filtering && header(&mut v, "Workspace", "h:workspace", String::new()) {
-            let mut c = SideItem::new(0, SideKind::Changes, "Local Changes", "changes".into());
-            c.badge = self
-                .r
-                .status
-                .map_or(String::new(), |s| if s.total() > 0 { fmt::num(s.total() as usize) } else { String::new() });
-            v.push(c);
-            v.push(SideItem::new(0, SideKind::All, "All Commits", "all".into()));
-            v.push(SideItem::new(0, SideKind::Files, "Files", "files".into()));
-            let mut a = SideItem::new(0, SideKind::Activity, "Activity", "activity".into());
-            if self.activity.unseen_failures > 0 {
-                a.badge = format!("{} failed", self.activity.unseen_failures);
-            }
-            v.push(a);
-            v.push(SideItem::new(0, SideKind::Reflog, "Reflog", "reflog".into()));
-        }
         let refs = &self.r.refs.refs;
         let recent = self.settings.get("sidebar.branch_order") == Some("recent");
         let locals: Vec<(String, &Ref)> = refs
@@ -199,13 +748,23 @@ impl Ui {
         // Configured remotes show even before their first fetch; the header
         // always shows (its menu adds a remote).
         let configured = &self.r.refs.remotes;
-        if (!filtering || !remotes.is_empty()) && header(&mut v, "Remotes", "h:remotes", fmt::num(configured.len())) {
+        if (!filtering || !remotes.is_empty())
+            && header(
+                &mut v,
+                "Remotes",
+                "h:remotes",
+                if configured.is_empty() { String::new() } else { fmt::num(configured.len()) },
+            )
+        {
             let mut names: Vec<&str> = remotes.iter().filter_map(|r| r.name.split('/').next()).collect();
             if !filtering {
                 names.extend(configured.iter().map(|r| &*r.name));
             }
             names.sort_unstable();
             names.dedup();
+            if names.is_empty() && !filtering {
+                v.push(SideItem::new(0, SideKind::AddRemote, "Add remote…", "act:addremote".into()));
+            }
             for n in names {
                 let rs: Vec<(String, &Ref)> = remotes
                     .iter()
@@ -233,7 +792,7 @@ impl Ui {
             }
         }
         let stashes: Vec<&(Box<str>, Box<str>)> = self.r.refs.stashes.iter().filter(|(_, m)| matches(m)).collect();
-        if !filtering || !stashes.is_empty() {
+        if !stashes.is_empty() {
             let n = fmt::num(stashes.len());
             if header(&mut v, "Stashes", "h:stashes", n) {
                 for (name, msg) in stashes {
@@ -281,10 +840,17 @@ impl Ui {
         if self.r.refs.worktrees.len() > 1 {
             let n = fmt::num(self.r.refs.worktrees.len());
             if header(&mut v, "Worktrees", "h:worktrees", n) {
-                for w in &self.r.refs.worktrees {
+                let here = self.r.git.as_ref().map(|g| g.root.clone());
+                for (k, w) in self.r.refs.worktrees.iter().enumerate() {
                     let name = w.rsplit(['/', '\\']).next().unwrap_or(w);
                     if matches(name) {
-                        v.push(SideItem::new(0, SideKind::Worktree, name, format!("w:{w}")));
+                        let mut it = SideItem::new(0, SideKind::Worktree, name, format!("w:{w}"));
+                        // Its branch, unless the name already says it
+                        // (agent worktrees: agent/<folder>).
+                        let b = self.r.refs.worktree_branches.get(k).map(|b| b.to_string()).unwrap_or_default();
+                        it.age = if b.rsplit('/').next() == Some(name) { String::new() } else { b };
+                        it.current = here.as_ref().is_some_and(|h| same_path(h, std::path::Path::new(&**w)));
+                        v.push(it);
                     }
                 }
             }
@@ -292,7 +858,7 @@ impl Ui {
         self.r.side = v;
         let max = self.r.side.len().saturating_sub(self.side_visible_rows());
         self.r.side_top = self.r.side_top.min(max);
-        self.damage.rects.push(self.lay.side);
+        self.damage.rects.extend([self.lay.side, self.lay.views]);
     }
 
     fn side_index(&self, key: &str) -> Option<usize> {
@@ -319,7 +885,7 @@ impl Ui {
                 self.r.side_top = i + 1 - vis;
             }
         }
-        self.damage.rects.push(self.lay.side);
+        self.damage.rects.extend([self.lay.side, self.lay.views]);
     }
 
     /// The ref item for a commit chosen elsewhere (palette), if any.
@@ -372,20 +938,18 @@ impl Ui {
     /// Acts on an item: refs jump the history to their commit.
     fn side_activate(&mut self, i: usize) {
         let Some(it) = self.r.side.get(i).cloned() else { return };
+        if !matches!(it.kind, SideKind::Header | SideKind::Folder | SideKind::Remote | SideKind::AddRemote) {
+            self.close_agents();
+        }
         self.side_select(&it.key);
         match it.kind {
             SideKind::Header | SideKind::Folder | SideKind::Remote => self.toggle_side(i),
-            SideKind::Changes => self.enter_changes(),
-            SideKind::Files => self.enter_files(),
             SideKind::Submodule => self.open_submodule(it.key.trim_start_matches("m:")),
-            SideKind::Activity => self.enter_activity(),
-            SideKind::Reflog => self.enter_reflog(),
-            SideKind::All => {
-                self.leave_changes();
-                self.leave_files();
-                self.leave_activity();
-                self.leave_reflog();
-            }
+            SideKind::AddRemote => self.open_dialog(super::menu::DialogKind::Name {
+                act: super::menu::NameAct::AddRemoteUrl,
+                field: TextField::default(),
+                checkout: false,
+            }),
             _ => match it.target.and_then(|t| self.r.by_id.get(&t).copied()) {
                 Some(row) => {
                     self.leave_changes();
@@ -402,6 +966,14 @@ impl Ui {
     }
 
     pub(super) fn side_click(&mut self, x: i32, y: i32) {
+        if self.side_here_rect().contains(x, y) {
+            // The card leads to the working tree.
+            return self.view_activate("changes");
+        }
+        if let Some(k) = self.view_at(x, y) {
+            let key = self.views()[k].key;
+            return self.view_activate(key);
+        }
         if self.side_filter_rect().contains(x, y) {
             self.focus = Focus::SideFilter;
             self.damage.rects.push(self.lay.side);
@@ -560,20 +1132,22 @@ impl Ui {
 
     pub(super) fn paint_side(&mut self, cv: &mut Canvas) {
         let r = self.lay.side;
-        cv.fill(r, BG_SIDEBAR);
-        cv.fill(Rect::new(r.right() - 1, r.y, 1, r.h), BORDER);
+        cv.fill(r, BG_SIDEBAR());
+        cv.fill(Rect::new(r.right() - 1, r.y, 1, r.h), BORDER());
+        self.paint_side_here(cv);
+        self.paint_views(cv);
         let (ui, semi) = (self.f.ui, self.f.semi);
         // Filter field.
         let fr = self.side_filter_rect();
         let typing = self.focus == Focus::SideFilter;
-        cv.round_border(fr, self.pf(6.0), if typing { ACCENT } else { BORDER }, BG_INPUT);
+        cv.round_border(fr, self.pf(6.0), if typing { ACCENT() } else { BORDER() }, BG_INPUT());
         let fcy = fr.y as f32 + fr.h as f32 / 2.0;
         let fx = fr.x as f32 + self.pf(12.0);
-        cv.ring(fx + self.pf(3.5), fcy - self.pf(1.0), self.pf(4.0), self.pf(1.4), TEXT_3);
+        cv.ring(fx + self.pf(3.5), fcy - self.pf(1.0), self.pf(4.0), self.pf(1.4), TEXT_3());
         cv.stroke(
             &[(fx + self.pf(6.5), fcy + self.pf(2.0)), (fx + self.pf(9.0), fcy + self.pf(4.5))],
             self.pf(1.4),
-            TEXT_3,
+            TEXT_3(),
         );
         let fb = (fcy + self.pf(4.5)).round();
         let tx = fx + self.pf(16.0);
@@ -585,16 +1159,16 @@ impl Ui {
                 tx,
                 fb,
                 "Filter branches and tags",
-                TEXT_4,
+                TEXT_4(),
                 fr.w as f32 - self.pf(40.0),
             );
         } else {
             let filt = self.side_filter.clone();
-            let end = self.te.draw(cv, ui, self.pf(12.5), tx, fb, &filt, TEXT, fr.w as f32 - self.pf(40.0));
+            let end = self.te.draw(cv, ui, self.pf(12.5), tx, fb, &filt, TEXT(), fr.w as f32 - self.pf(40.0));
             if typing {
                 cv.fill(
                     Rect::new(end as i32 + 1, fr.y + self.px(6.0), self.px(1.5).max(1), fr.h - self.px(12.0)),
-                    ACCENT,
+                    ACCENT(),
                 );
             }
         }
@@ -616,18 +1190,18 @@ impl Ui {
             let selected = it.key == self.r.side_sel;
             let picked = self.r.side_multi.contains(&it.key);
             if selected {
-                cv.fill_round(row, self.pf(6.0), if focus { BG_SELECT } else { BG_SELECT_DIM });
+                cv.fill_round(row, self.pf(6.0), if focus { BG_SELECT() } else { BG_SELECT_DIM() });
             } else if picked {
-                cv.fill_round(row, self.pf(6.0), BG_SELECT_DIM);
+                cv.fill_round(row, self.pf(6.0), BG_SELECT_DIM());
             } else if self.side_hover == Some(k) {
-                cv.fill_round(row, self.pf(6.0), BG_HOVER);
+                cv.fill_round(row, self.pf(6.0), BG_HOVER());
             }
             if picked {
                 // Picked for a batch: an accent bar on the left edge.
                 cv.fill_round(
                     Rect::new(row.x, row.y + self.px(5.0), self.px(3.0).max(2), row.h - self.px(10.0)),
                     self.pf(1.5),
-                    ACCENT,
+                    ACCENT(),
                 );
             }
             let cy = y as f32 + rh as f32 / 2.0;
@@ -635,7 +1209,7 @@ impl Ui {
             let indent = it.depth as f32 * self.pf(14.0);
             let cx = row.x as f32 + self.pf(12.0) + indent;
             if let Some(open) = it.expander {
-                self.chevron(cv, cx, cy, open, TEXT_3);
+                self.chevron(cv, cx, cy, open, TEXT_3());
             }
             if it.kind == SideKind::Header {
                 self.te.draw(
@@ -645,19 +1219,23 @@ impl Ui {
                     cx + self.pf(10.0),
                     base - self.pf(0.5),
                     &it.label.to_uppercase(),
-                    TEXT_3,
+                    TEXT_3(),
                     row.w as f32,
                 );
                 if !it.badge.is_empty() {
-                    let bw = self.te.measure(ui, self.pf(11.0), &it.badge);
+                    let bw = self.te.measure(semi, self.pf(10.5), &it.badge);
+                    let pw = bw + self.pf(14.0);
+                    let px = row.right() as f32 - pw - self.pf(6.0);
+                    let pr = Rect::new(px as i32, (cy - self.pf(8.5)) as i32, pw as i32, self.px(17.0));
+                    cv.fill_round(pr, self.pf(8.5), BG_HOVER());
                     self.te.draw(
                         cv,
-                        ui,
-                        self.pf(11.0),
-                        row.right() as f32 - bw - self.pf(10.0),
-                        base - self.pf(0.5),
+                        semi,
+                        self.pf(10.5),
+                        px + self.pf(7.0),
+                        base - self.pf(1.0),
                         &it.badge,
-                        TEXT_4,
+                        TEXT_3(),
                         bw + 2.0,
                     );
                 }
@@ -665,23 +1243,41 @@ impl Ui {
             }
             let ix = cx + if it.expander.is_some() { self.pf(16.0) } else { self.pf(4.0) };
             let (icon, text) = match it.kind {
-                SideKind::Branch if it.current => (ACCENT, TEXT),
-                SideKind::Branch => (LOCAL_FG, TEXT_2),
-                SideKind::Folder => (TEXT_3, TEXT_2),
-                SideKind::Remote => (REMOTE_FG, TEXT_2),
-                SideKind::RemoteBranch => (REMOTE_FG, TEXT_3),
-                SideKind::Tag => (TAG_FG, TEXT_2),
-                SideKind::Stash => (STASH_FG, TEXT_2),
-                SideKind::Changes => (MOD, TEXT),
-                SideKind::Worktree | SideKind::Submodule | SideKind::PullRequest => (TEXT_3, TEXT_2),
-                SideKind::All | SideKind::Files | SideKind::Activity | SideKind::Reflog => (TEXT_2, TEXT),
-                SideKind::Header => (TEXT_3, TEXT_3),
+                SideKind::Branch if it.current => (ACCENT(), TEXT()),
+                SideKind::Branch => (LOCAL_FG(), TEXT_2()),
+                SideKind::Folder => (TEXT_3(), TEXT_2()),
+                SideKind::Remote => (REMOTE_FG(), TEXT_2()),
+                SideKind::RemoteBranch => (REMOTE_FG(), TEXT_3()),
+                SideKind::Tag => (TAG_FG(), TEXT_2()),
+                SideKind::Stash => (STASH_FG(), TEXT_2()),
+                SideKind::Worktree | SideKind::Submodule | SideKind::PullRequest => (TEXT_3(), TEXT_2()),
+                SideKind::Header => (TEXT_3(), TEXT_3()),
+                SideKind::AddRemote => (ACCENT(), TEXT_3()),
             };
-            let text = if selected { TEXT } else { text };
+            // A branch wears its lane's colour from the history graph.
+            let lane = it
+                .target
+                .filter(|_| matches!(it.kind, SideKind::Branch | SideKind::RemoteBranch))
+                .and_then(|t| self.r.by_id.get(&t))
+                .and_then(|&row| self.r.graph.rows.get(row as usize))
+                .map(|g| crate::theme::lane(g.color));
+            let icon = lane.filter(|_| !it.current).unwrap_or(icon);
+            // A branch untouched for a month steps back.
+            let stale = it.kind == SideKind::Branch && !it.current && it.age_secs > 30 * 86_400;
+            let text = if selected {
+                TEXT()
+            } else if stale {
+                TEXT_4()
+            } else {
+                text
+            };
+            if it.current && !selected && it.kind == SideKind::Branch {
+                cv.fill_round(row, self.pf(6.0), ACCENT_SOFT());
+            }
             match it.kind {
                 SideKind::Branch if it.current => self.check(cv, ix, cy, icon),
                 SideKind::Branch | SideKind::RemoteBranch => self.branch_icon(cv, ix, cy, icon),
-                SideKind::Folder | SideKind::Files => self.folder_icon(cv, ix, cy, icon),
+                SideKind::Folder => self.folder_icon(cv, ix, cy, icon),
                 SideKind::Tag => {
                     let s = self.pf(4.0);
                     cv.stroke(
@@ -697,38 +1293,13 @@ impl Ui {
                 SideKind::Stash => {
                     let b =
                         Rect::new((ix - self.pf(5.0)) as i32, (cy - self.pf(4.0)) as i32, self.px(10.0), self.px(8.0));
-                    cv.round_border(b, self.pf(2.0), icon, BG_SIDEBAR);
-                }
-                SideKind::Changes => cv.fill_circle(ix, cy, self.pf(4.0), icon),
-                // A clock: where HEAD has been.
-                SideKind::Reflog => self.glyph(cv, super::Glyph::Clock, ix, cy, self.pf(5.8), icon),
-                SideKind::Activity => {
-                    // A pulse line.
-                    let s = self.pf(5.0);
-                    cv.stroke(
-                        &[
-                            (ix - s, cy),
-                            (ix - s * 0.4, cy),
-                            (ix - s * 0.1, cy - s * 0.8),
-                            (ix + s * 0.3, cy + s * 0.8),
-                            (ix + s * 0.6, cy),
-                            (ix + s, cy),
-                        ],
-                        self.pf(1.4),
-                        icon,
-                    );
-                }
-                SideKind::All => {
-                    for j in 0..3 {
-                        let yy = cy - self.pf(4.0) + j as f32 * self.pf(4.0);
-                        cv.stroke(&[(ix - self.pf(5.0), yy), (ix + self.pf(5.0), yy)], self.pf(1.5), icon);
-                    }
+                    cv.round_border(b, self.pf(2.0), icon, BG_SIDEBAR());
                 }
                 SideKind::Submodule => {
                     // A box inside a box: a repository in the repository.
                     let o =
                         Rect::new((ix - self.pf(5.0)) as i32, (cy - self.pf(5.0)) as i32, self.px(10.0), self.px(10.0));
-                    cv.round_border(o, self.pf(2.0), icon, BG_SIDEBAR);
+                    cv.round_border(o, self.pf(2.0), icon, BG_SIDEBAR());
                     cv.fill(
                         Rect::new((ix - self.pf(1.5)) as i32, (cy - self.pf(1.5)) as i32, self.px(3.0), self.px(3.0)),
                         icon,
@@ -749,43 +1320,82 @@ impl Ui {
                         icon,
                     );
                 }
-                SideKind::Worktree => {
-                    let b =
-                        Rect::new((ix - self.pf(5.0)) as i32, (cy - self.pf(5.0)) as i32, self.px(10.0), self.px(10.0));
-                    cv.round_border(b, self.pf(2.5), icon, BG_SIDEBAR);
+                SideKind::Worktree if it.current => self.check(cv, ix, cy, ACCENT()),
+                SideKind::Worktree if it.key.contains(".ffwd-agents") => {
+                    self.glyph(cv, super::Glyph::Terminal, ix, cy, self.pf(5.5), icon)
                 }
+                SideKind::Worktree => self.folder_icon(cv, ix, cy, icon),
+                SideKind::AddRemote => self.glyph(cv, super::Glyph::Plus, ix, cy, self.pf(5.0), icon),
                 SideKind::Header => {}
             }
             let font = if it.current || selected { semi } else { ui };
             let lx = ix + self.pf(14.0);
-            let badge_w =
-                if it.badge.is_empty() { 0.0 } else { self.te.measure(semi, self.pf(11.0), &it.badge) + self.pf(14.0) };
+            let note = if it.badge.is_empty() { it.age.clone() } else { String::new() };
+            let note_font = if it.kind == SideKind::Worktree { self.f.mono } else { ui };
+            let note_w = if note.is_empty() {
+                0.0
+            } else {
+                (self.te.measure(note_font, self.pf(11.0), &note) + self.pf(12.0)).min(row.w as f32 * 0.45)
+            };
+            let badge_w = if it.badge.is_empty() {
+                note_w
+            } else if it.kind == SideKind::Branch {
+                let parts = it.badge.split_whitespace().count() as f32;
+                self.te.measure(semi, self.pf(10.5), &it.badge) + parts * self.pf(16.0) + self.pf(8.0)
+            } else {
+                self.te.measure(semi, self.pf(11.0), &it.badge) + self.pf(14.0)
+            };
             // Long names keep both ends (they often differ only at the end).
             let lw = row.right() as f32 - lx - badge_w - self.pf(6.0);
             let fs = self.pf(13.0);
             let label = super::fit_middle(&mut self.te, font, fs, &it.label, lw);
             self.te.draw(cv, font, self.pf(13.0), lx, base, &label, text, lw + 2.0);
-            if !it.badge.is_empty() {
+            if !note.is_empty() {
+                let nw = note_w - self.pf(8.0);
+                let nfs = self.pf(11.0);
+                let shown = super::fit_middle(&mut self.te, note_font, nfs, &note, nw);
+                let tw = self.te.measure(note_font, self.pf(11.0), &shown);
+                self.te.draw(
+                    cv,
+                    note_font,
+                    self.pf(11.0),
+                    row.right() as f32 - tw - self.pf(10.0),
+                    base - self.pf(0.5),
+                    &shown,
+                    match it.age_secs {
+                        s if s > 0 && s < 86_400 => TEXT_3(),
+                        _ => TEXT_4(),
+                    },
+                    nw + 2.0,
+                );
+            }
+            if it.kind == SideKind::Branch && !it.badge.is_empty() {
+                // Sync as chips: ↑ ahead (accent), ↓ behind (remote blue),
+                // gone (red), from the right.
+                let mut x = row.right() as f32 - self.pf(8.0);
+                for part in it.badge.split_whitespace().collect::<Vec<_>>().into_iter().rev() {
+                    let (bg, fg) = match part {
+                        p if p.starts_with('↑') => (ACCENT_SOFT(), ACCENT_FG()),
+                        p if p.starts_with('↓') => (REMOTE_BG(), REMOTE_FG()),
+                        _ => (DEL_BG(), DEL_TEXT()),
+                    };
+                    let w = self.te.measure(semi, self.pf(10.5), part) + self.pf(12.0);
+                    x -= w;
+                    let r = Rect::new(x as i32, (cy - self.pf(8.5)) as i32, w as i32, self.px(17.0));
+                    cv.fill_round(r, self.pf(8.5), bg);
+                    self.te.draw(cv, semi, self.pf(10.5), x + self.pf(6.0), base - self.pf(1.0), part, fg, w);
+                    x -= self.pf(4.0);
+                }
+            } else if !it.badge.is_empty() {
                 let bw = badge_w - self.pf(14.0);
                 let bx = row.right() as f32 - bw - self.pf(10.0);
                 let color = match it.kind {
-                    SideKind::Changes => MOD,
-                    SideKind::Activity => DEL,
                     // A gone upstream reads as a warning.
-                    SideKind::Branch if it.badge.starts_with("gone") => DEL,
-                    SideKind::Branch => ACCENT,
-                    _ => TEXT_4,
+                    SideKind::Branch if it.badge.starts_with("gone") => DEL(),
+                    SideKind::Branch => ACCENT(),
+                    _ => TEXT_4(),
                 };
-                if it.kind == SideKind::Changes {
-                    let b = Rect::new(
-                        (bx - self.pf(6.0)) as i32,
-                        (cy - self.pf(9.0)) as i32,
-                        (bw + self.pf(12.0)) as i32,
-                        self.px(18.0),
-                    );
-                    cv.fill_round(b, self.pf(9.0), ACCENT_SOFT);
-                }
-                self.te.draw(cv, semi, self.pf(11.0), bx, base - self.pf(0.5), &it.badge, color, bw + 2.0);
+                self.te.draw(cv, semi, self.pf(11.0), bx, base - self.pf(0.5), &it.badge, color, bw + 8.0);
             }
         }
         // Scroll thumb when the list is longer than the panel.
@@ -793,7 +1403,7 @@ impl Ui {
         if items.len() > vis {
             let th = ((l.h as f32 * vis as f32 / items.len() as f32) as i32).max(self.px(20.0));
             let ty = l.y + ((l.h - th) as f32 * self.r.side_top as f32 / (items.len() - vis) as f32) as i32;
-            cv.fill_round(Rect::new(l.right() - self.px(5.0), ty, self.px(3.0), th), self.pf(1.5), BORDER_HOVER);
+            cv.fill_round(Rect::new(l.right() - self.px(5.0), ty, self.px(3.0), th), self.pf(1.5), BORDER_HOVER());
         }
         self.r.side = items;
         cv.set_clip(old);
@@ -810,6 +1420,17 @@ impl Ui {
     }
 
     pub(super) fn side_pointer(&mut self, x: i32, y: i32) {
+        let here = self.side_here_rect().contains(x, y);
+        if here != self.side_here_hot {
+            self.side_here_hot = here;
+            let r = self.side_here_rect();
+            self.damage.rects.push(r);
+        }
+        let d = self.view_at(x, y);
+        if d != self.side_view_hot {
+            self.side_view_hot = d;
+            self.damage.rects.extend([self.lay.side, self.lay.views]);
+        }
         let h = self.side_item_at(x, y);
         if h != self.side_hover {
             self.side_hover = h;
@@ -836,11 +1457,22 @@ impl Ui {
         let (w, h) = (self.pf(12.0), self.pf(9.0));
         let body = Rect::new((cx - w / 2.0) as i32, (cy - h / 2.0 + self.pf(1.0)) as i32, w as i32, h as i32);
         cv.fill(Rect::new(body.x, body.y - self.px(2.0), (w * 0.45) as i32, self.px(3.0)), color);
-        cv.round_border(body, self.pf(2.0), color, BG_SIDEBAR);
+        cv.round_border(body, self.pf(2.0), color, BG_SIDEBAR());
     }
 }
 
 /// Descending order that compares digit runs as numbers (v0.10 > v0.9).
+/// An age in a few characters: 5m, 3h, 2d, 6w, 1y.
+pub(super) fn short_age(secs: i64) -> String {
+    match secs.max(0) {
+        s if s < 3600 => format!("{}m", (s / 60).max(1)),
+        s if s < 86_400 => format!("{}h", s / 3600),
+        s if s < 14 * 86_400 => format!("{}d", s / 86_400),
+        s if s < 365 * 86_400 => format!("{}w", s / (7 * 86_400)),
+        s => format!("{}y", s / (365 * 86_400)),
+    }
+}
+
 /// Items that can be picked for a batch (FF-36): branches, remote
 /// branches, tags and stashes.
 pub(super) fn multi_kind(k: SideKind) -> bool {

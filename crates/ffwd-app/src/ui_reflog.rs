@@ -145,12 +145,12 @@ impl Ui {
     pub(super) fn paint_reflog(&mut self, cv: &mut Canvas) {
         let area = self.reflog_area();
         let (ui, semi, mono) = (self.f.ui, self.f.semi, self.f.mono);
-        cv.fill(area, BG);
+        cv.fill(area, BG());
         let head = Rect::new(area.x, area.y, area.w, self.px(44.0));
-        cv.fill(Rect::new(head.x, head.bottom() - 1, head.w, 1), BORDER_SOFT);
+        cv.fill(Rect::new(head.x, head.bottom() - 1, head.w, 1), BORDER_SOFT());
         let x0 = area.x as f32 + self.pf(18.0);
         let b = (head.y as f32 + self.pf(27.0)).round();
-        let e = self.te.draw(cv, semi, self.pf(14.0), x0, b, "Reflog", TEXT, self.pf(200.0));
+        let e = self.te.draw(cv, semi, self.pf(14.0), x0, b, "Reflog", TEXT(), self.pf(200.0));
         let hint = "Where HEAD has been. Commits marked \u{2018}lost\u{2019} are on no branch: a branch here brings one back. Enter or right click for actions.";
         self.te.draw(
             cv,
@@ -159,7 +159,7 @@ impl Ui {
             e + self.pf(14.0),
             b,
             hint,
-            TEXT_3,
+            TEXT_3(),
             area.right() as f32 - e - self.pf(40.0),
         );
         let mut hits = Vec::new();
@@ -173,17 +173,17 @@ impl Ui {
                     x0,
                     list.y as f32 + self.pf(26.0),
                     "Reading the reflog…",
-                    TEXT_3,
+                    TEXT_3(),
                     list.w as f32,
                 );
             }
             Some(Err(e)) => {
-                self.te.draw(cv, ui, self.pf(12.5), x0, list.y as f32 + self.pf(26.0), &e, DEL, list.w as f32);
+                self.te.draw(cv, ui, self.pf(12.5), x0, list.y as f32 + self.pf(26.0), &e, DEL(), list.w as f32);
             }
             Some(Ok(entries)) => {
                 if entries.is_empty() {
                     let t = "The reflog is empty.";
-                    self.te.draw(cv, ui, self.pf(12.5), x0, list.y as f32 + self.pf(26.0), t, TEXT_3, list.w as f32);
+                    self.te.draw(cv, ui, self.pf(12.5), x0, list.y as f32 + self.pf(26.0), t, TEXT_3(), list.w as f32);
                 }
                 let rh = self.px(30.0);
                 let fit = (list.h / rh.max(1)) as usize + 1;
@@ -194,13 +194,13 @@ impl Ui {
                     let row =
                         Rect::new(list.x + self.px(8.0), y + self.px(2.0), list.w - self.px(16.0), rh - self.px(4.0));
                     if k == self.r.reflog.sel {
-                        cv.fill_round(row, self.pf(6.0), BG_SELECT);
+                        cv.fill_round(row, self.pf(6.0), BG_SELECT());
                     } else if self.is_hot(Hot::Reflog(hits.len())) {
-                        cv.fill_round(row, self.pf(6.0), BG_HOVER);
+                        cv.fill_round(row, self.pf(6.0), BG_HOVER());
                     }
                     let rb = (row.y as f32 + row.h as f32 / 2.0 + self.pf(4.5)).round();
                     let rx = row.x as f32 + self.pf(10.0);
-                    self.te.draw(cv, mono, self.pf(11.5), rx, rb, &en.selector, TEXT_4, self.pf(90.0));
+                    self.te.draw(cv, mono, self.pf(11.5), rx, rb, &en.selector, TEXT_4(), self.pf(90.0));
                     self.te.draw(
                         cv,
                         mono,
@@ -208,7 +208,7 @@ impl Ui {
                         rx + self.pf(96.0),
                         rb,
                         &en.id.short(8),
-                        TEXT_3,
+                        TEXT_3(),
                         self.pf(70.0),
                     );
                     let lost = !self.r.by_id.contains_key(&en.id) && self.r.log_done;
@@ -216,7 +216,7 @@ impl Ui {
                     if lost {
                         let lw = self.te.measure(semi, self.pf(10.5), "lost") + self.pf(12.0);
                         let chip = Rect::new(tx as i32, (rb - self.pf(13.5)) as i32, lw as i32, self.px(18.0));
-                        cv.fill_round(chip, self.pf(5.0), DEL_BG);
+                        cv.fill_round(chip, self.pf(5.0), DEL_BG());
                         self.te.draw(
                             cv,
                             semi,
@@ -224,7 +224,7 @@ impl Ui {
                             tx + self.pf(6.0),
                             rb - self.pf(1.0),
                             "lost",
-                            DEL_TEXT,
+                            DEL_TEXT(),
                             lw,
                         );
                         tx += lw + self.pf(8.0);
@@ -238,11 +238,11 @@ impl Ui {
                         row.right() as f32 - ww - self.pf(10.0),
                         rb,
                         &when,
-                        TEXT_3,
+                        TEXT_3(),
                         ww + 2.0,
                     );
                     let right = row.right() as f32 - ww - self.pf(24.0);
-                    self.te.draw(cv, ui, self.pf(13.0), tx, rb, &en.message, TEXT, right - tx);
+                    self.te.draw(cv, ui, self.pf(13.0), tx, rb, &en.message, TEXT(), right - tx);
                     hits.push((row, k));
                 }
                 cv.set_clip(old);

@@ -313,13 +313,13 @@ impl Ui {
     pub(super) fn paint_ai(&mut self, cv: &mut Canvas, r: Rect, hits: &mut Vec<(Rect, changes_view::CHit)>) {
         let (ui, semi) = (self.f.ui, self.f.semi);
         let Some(a) = self.r.changes.ai.take() else { return };
-        cv.fill(r, BG);
+        cv.fill(r, BG());
         let x0 = r.x as f32 + self.pf(18.0);
         let w = r.w as f32 - self.pf(36.0);
         // Header: what this is and where it goes.
         let local = a.endpoint.is_local();
         let title = "AI commit message";
-        let e = self.te.draw(cv, semi, self.pf(14.0), x0, r.y as f32 + self.pf(28.0), title, TEXT, w);
+        let e = self.te.draw(cv, semi, self.pf(14.0), x0, r.y as f32 + self.pf(28.0), title, TEXT(), w);
         let model = if a.endpoint.model.is_empty() { "no model set".to_string() } else { a.endpoint.model.clone() };
         let place = if local {
             format!("{} · {model} · stays on this machine", a.endpoint.host())
@@ -333,11 +333,11 @@ impl Ui {
             e + self.pf(14.0),
             r.y as f32 + self.pf(28.0),
             &place,
-            if local { ADD } else { MOD },
+            if local { ADD() } else { MOD() },
             w,
         );
         let body = Rect::new(r.x, r.y + self.px(44.0), r.w, r.h - self.px(44.0) - self.px(58.0));
-        cv.fill(Rect::new(r.x, body.y - 1, r.w, 1), BORDER_SOFT);
+        cv.fill(Rect::new(r.x, body.y - 1, r.w, 1), BORDER_SOFT());
         // Body: the request (preview) or the reply.
         let intro: Option<String> = match &a.stage {
             Stage::Building => Some("Preparing the request from the staged changes…".into()),
@@ -393,7 +393,7 @@ impl Ui {
         let lh = self.px(19.0);
         let mut y = body.y as f32 + self.pf(22.0);
         if let Some(t) = intro {
-            let c = if matches!(a.stage, Stage::Failed(_)) { DEL } else { TEXT_3 };
+            let c = if matches!(a.stage, Stage::Failed(_)) { DEL() } else { TEXT_3() };
             let size = self.pf(12.5);
             for l in wrap(&mut self.te, ui, size, &t, w) {
                 self.te.draw(cv, ui, size, x0, y, &l, c, w);
@@ -406,23 +406,23 @@ impl Ui {
             let yy = y + (k - a.top) as f32 * lh as f32;
             let (font, size) = self.ai_font(*kind);
             let color = match kind {
-                Kind::Head => ACCENT_FG,
-                Kind::Add => ADD,
-                Kind::Del => DEL,
-                Kind::Mono => TEXT_2,
-                Kind::Note => TEXT_3,
-                Kind::Subject | Kind::Reply => TEXT,
+                Kind::Head => ACCENT_FG(),
+                Kind::Add => ADD(),
+                Kind::Del => DEL(),
+                Kind::Mono => TEXT_2(),
+                Kind::Note => TEXT_3(),
+                Kind::Subject | Kind::Reply => TEXT(),
             };
             self.te.draw(cv, font, size, x0, yy, l, color, w + 4.0);
         }
         let lines = &a.view;
         if a.stage == Stage::Streaming && lines.is_empty() {
-            self.te.draw(cv, ui, self.pf(12.5), x0, y, "Waiting for the first words…", TEXT_3, w);
+            self.te.draw(cv, ui, self.pf(12.5), x0, y, "Waiting for the first words…", TEXT_3(), w);
         }
         cv.set_clip(old);
         // Footer: notes and buttons.
         let fy = r.bottom() - self.px(46.0);
-        cv.fill(Rect::new(r.x, fy - self.px(10.0), r.w, 1), BORDER_SOFT);
+        cv.fill(Rect::new(r.x, fy - self.px(10.0), r.w, 1), BORDER_SOFT());
         let buttons: Vec<(String, AiHit, bool)> = match &a.stage {
             Stage::Building => vec![("Cancel".into(), AiHit::Close, false)],
             Stage::Preview => vec![
@@ -443,7 +443,7 @@ impl Ui {
             let b = Rect::new(bx - bw, fy, bw, self.px(30.0));
             let hot = self.is_hot(Hot::Change(hits.len()));
             if *primary {
-                cv.fill_round(b, self.pf(7.0), if hot { ACCENT_FG } else { ACCENT });
+                cv.fill_round(b, self.pf(7.0), if hot { ACCENT_FG() } else { ACCENT() });
                 self.te.draw(
                     cv,
                     semi,
@@ -451,11 +451,11 @@ impl Ui {
                     b.x as f32 + self.pf(14.0),
                     (b.y as f32 + self.pf(20.0)).round(),
                     label,
-                    ACCENT_TEXT,
+                    ACCENT_TEXT(),
                     bw as f32,
                 );
             } else {
-                let (bg, border) = if hot { (CONTROL_HOVER, BORDER_HOVER) } else { (BG_BAR, BORDER) };
+                let (bg, border) = if hot { (CONTROL_HOVER(), BORDER_HOVER()) } else { (BG_BAR(), BORDER()) };
                 cv.round_border(b, self.pf(7.0), border, bg);
                 self.te.draw(
                     cv,
@@ -464,7 +464,7 @@ impl Ui {
                     b.x as f32 + self.pf(14.0),
                     (b.y as f32 + self.pf(20.0)).round(),
                     label,
-                    TEXT,
+                    TEXT(),
                     bw as f32,
                 );
             }
@@ -493,7 +493,7 @@ impl Ui {
             x0,
             (fy as f32 + self.pf(20.0)).round(),
             &nt,
-            TEXT_3,
+            TEXT_3(),
             (bx - r.x) as f32 - self.pf(30.0),
         );
         self.r.changes.ai = Some(a);
