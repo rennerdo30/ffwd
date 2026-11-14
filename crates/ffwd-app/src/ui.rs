@@ -1087,6 +1087,9 @@ impl Ui {
         if let Msg::Activity(e) = m {
             return self.on_activity(*e);
         }
+        if let Msg::AgentNotice(r) = m {
+            return self.on_agent_notice(r);
+        }
         if let Msg::AutoFetchTick = m {
             return self.auto_fetch_due();
         }
@@ -1544,7 +1547,7 @@ impl Ui {
                 }
             }
             // Handled in on_tab_msg; repeated here so a stray one is harmless.
-            Msg::Repos(_) | Msg::WslDistros(_) | Msg::Tools(..) | Msg::AutoFetchTick => {}
+            Msg::Repos(_) | Msg::WslDistros(_) | Msg::Tools(..) | Msg::AgentNotice(_) | Msg::AutoFetchTick => {}
             Msg::Agent(e) => self.on_agent_event(e),
             Msg::RepoSettings(p, s) => self.on_repo_settings(p, s),
             Msg::Changes(r) => self.on_changes(r),
@@ -8780,6 +8783,39 @@ mod tests {
         assert_partial_paint_is_full(&mut ui, &mut screen, "merge tool chosen");
         ui.set_choice(settings_view::Row::MergeTool, 0);
         assert_eq!(ui.settings.get("tools.merge_tool").unwrap_or(""), "");
+    }
+
+    /// Terminal sessions (FF-23) and the worktree menu (FF-45): the agents
+    /// panel offers the tool's CLI in a new worktree or here, sandboxed or
+    /// not; a worktree's menu opens it, a terminal or the CLI there, and
+    /// removes it after asking (never the main one).
+    #[test]
+    fn terminal_sessions_and_worktree_menu() {
+        let mut te = TextEngine::new();
+        let Some(f) = load_fonts(&mut te) else { return };
+        let s =
+            crate::settings::Settings::parse("[agents]\nenabled = \"true\"\npreset = \"claude\"\nsandbox = \"wsl\"\n");
+        let empty = crate::settings::Settings::parse("");
+        let sinks: SinkFactory = Arc::new(|_| Arc::new(|_| {}));
+        let mut ui = Ui::new(te, f, s, empty, None, sinks, 1280, 800, 1.0);
+        let labels = |v: Vec<menu::MenuItem>| v.into_iter().map(|i| i.label).collect::<Vec<_>>();
+        assert_eq!(
+            labels(ui.agent_terminal_menu(None, true)),
+            [
+                "Open Claude Code in a new worktree (WSL + bubblewrap)",
+                "Open Claude Code in this repository (WSL + bubblewrap)",
+                "Open Claude Code in a new worktree (WSL, no sandbox)",
+                "Open Claude Code in this repository (WSL, no sandbox)",
+            ]
+        );
+        ui.r.refs.worktrees = vec!["E:/r/main".into(), "E:/r/.ffwd-agents/r/fix".into()];
+        let main = labels(ui.ref_menu("w:E:/r/main"));
+        assert!(main.iter().any(|l| l == "Open in a new tab") && main.iter().any(|l| l == "Open terminal here"));
+        assert!(main.iter().any(|l| l == "Open Claude Code in this worktree (WSL + bubblewrap)"), "{main:?}");
+        assert!(!main.iter().any(|l| l.starts_with("Remove")), "never the main worktree");
+        let items = ui.ref_menu("w:E:/r/.ffwd-agents/r/fix");
+        let rm = items.iter().find(|i| i.label == "Remove worktree…").expect("a linked worktree can go");
+        assert!(rm.danger && matches!(rm.act, Some(menu::MenuAct::Ask(_))), "it asks first");
     }
 
     /// Find in the diff (FF-34): `Ctrl+F` with the diff focused searches

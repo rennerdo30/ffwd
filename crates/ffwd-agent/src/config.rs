@@ -98,6 +98,10 @@ pub struct Config {
     /// The agent's command line. Placeholders: `{prompt}`, `{prompt_file}`,
     /// `{worktree}`, `{branch}`, `{base}`, `{repo}`, `{run_id}`.
     pub command: String,
+    /// The tool's interactive command, for a session in a terminal window
+    /// (`agents.interactive_command`; default the preset's program, else
+    /// the first word of `command`).
+    pub interactive_command: String,
     /// Also write the prompt to the agent's standard input.
     pub prompt_stdin: bool,
     /// Wraps the user's prompt; `{prompt}` is the text typed in ffwd.
@@ -294,6 +298,12 @@ impl Config {
             preset,
             preset_grants,
             command: text("command", preset.map_or("", |p| p.command)),
+            interactive_command: text(
+                "interactive_command",
+                &preset.map(|p| p.program.to_string()).unwrap_or_else(|| {
+                    split_command(&text("command", "")).ok().and_then(|v| v.into_iter().next()).unwrap_or_default()
+                }),
+            ),
             prompt_stdin: flag(get("prompt_stdin"), false, "prompt_stdin", &mut errors),
             prompt_template: text("prompt_template", "{prompt}"),
             prompt_template_file: get("prompt_template_file").filter(|s| !s.trim().is_empty()).map(PathBuf::from),
@@ -338,6 +348,22 @@ impl Config {
     }
 
     /// Why a run cannot start with this config, in one sentence.
+    /// Why an interactive session cannot open (FF-23). Without the
+    /// sandbox only the basics count: the user drives the tool, as in any
+    /// terminal of theirs.
+    pub fn refusal_interactive(&self, sandboxed: bool) -> Option<String> {
+        if sandboxed {
+            return self.refusal();
+        }
+        if !self.enabled {
+            return Some("Agents are off. Turn them on in Settings → Agents (experimental).".into());
+        }
+        match split_command(&self.interactive_command) {
+            Ok(v) if !v.is_empty() => None,
+            _ => Some("No interactive command. Set agents.interactive_command (for example the tool's name).".into()),
+        }
+    }
+
     pub fn refusal(&self) -> Option<String> {
         if !self.enabled {
             return Some("Agents are off. Turn them on in Settings → Agents (experimental).".into());
@@ -513,6 +539,25 @@ pub fn parse_preset_access(s: &str) -> Vec<(String, String)> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn interactive_command_and_refusal() {
+        let (c, _) = Config::from_lookup(|k| match k {
+            "enabled" => Some("true".into()),
+            "preset" => Some("claude".into()),
+            "sandbox" => Some("none".into()),
+            _ => None,
+        });
+        assert_eq!(c.interactive_command, "claude", "the preset's program");
+        assert!(c.refusal().is_some(), "an unsandboxed run needs allow_unsandboxed");
+        assert!(c.refusal_interactive(false).is_none(), "the user drives a terminal session");
+        let (c, _) = Config::from_lookup(|k| match k {
+            "enabled" => Some("true".into()),
+            "command" => Some("mytool --batch {prompt}".into()),
+            _ => None,
+        });
+        assert_eq!(c.interactive_command, "mytool", "else the command's first word");
+    }
 
     #[test]
     fn preset_paths_follow_preset_access() {

@@ -209,6 +209,13 @@ pub fn delete_remote_branch(git: &Git, remote: &str, branch: &str) -> R {
     })
 }
 
+/// Removes the linked worktree at `path` (FF-45). Git refuses one with
+/// changes or untracked files, so no work is lost; its branch stays.
+pub fn remove_worktree(git: &Git, path: &str) -> R {
+    run(git, &["worktree", "remove", path])?;
+    Ok(format!("Removed the worktree {path}; its branch stays"))
+}
+
 /// "2 branches and 3 tags".
 pub fn count_refs(branches: usize, tags: usize) -> String {
     let n = |k: usize, one: &str, many: &str| format!("{k} {}", if k == 1 { one } else { many });
@@ -597,6 +604,23 @@ mod tests {
         delete_remote_tag(&g, "origin", "v1").unwrap();
         assert!(!on_hub("refs/tags/v1"));
         let _ = std::fs::remove_dir_all(&hub);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn remove_a_worktree_but_never_its_changes() {
+        let (dir, g) = repo("wt-remove");
+        commit(&dir, &g, "a.txt", "a", "first");
+        let wt = dir.with_extension("wt");
+        let _ = std::fs::remove_dir_all(&wt);
+        let w = wt.to_string_lossy().replace('\\', "/");
+        g.output(&["worktree", "add", "-q", "-b", "side", &w]).unwrap();
+        std::fs::write(wt.join("new.txt"), "x").unwrap();
+        assert!(remove_worktree(&g, &w).is_err(), "untracked files: Git refuses");
+        std::fs::remove_file(wt.join("new.txt")).unwrap();
+        assert!(remove_worktree(&g, &w).unwrap().contains("its branch stays"));
+        assert!(!wt.exists());
+        assert!(g.output(&["rev-parse", "--verify", "--quiet", "refs/heads/side"]).is_ok());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

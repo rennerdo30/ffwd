@@ -20,6 +20,15 @@ The design is in [decisions/0002-agent-workspaces.md](decisions/0002-agent-works
 
 Runs survive a restart. Their worktrees and branches stay where they are, and the panel lists them again. A run that was active when ffwd closed comes back as *interrupted*. Whatever it changed is still in its worktree, uncommitted. Commit it there by hand, or discard the run.
 
+## Terminal sessions
+
+**Open in terminal** (beside the task field) starts the tool's own interactive CLI in a terminal window instead of sending a prompt. Its menu picks where and how:
+
+- **In a new worktree**, with the sandbox or without: like a run (its own branch and worktree, listed in the panel, setup script first), but you drive the tool. When the window closes, the after script runs and ffwd commits what is left, as for any run. No time limit.
+- **In this repository** (or, from a worktree's menu in the sidebar, in that worktree), with the sandbox or without: the window opens in that working tree; nothing is created or committed.
+
+"Without the sandbox" runs where the sandbox would (inside WSL for the WSL sandbox), with your own permissions, like any terminal of yours. The command is `agents.interactive_command`, by default the preset's program (for example `claude`). Windows opens a console window; Linux uses `$TERMINAL` or `x-terminal-emulator`; macOS is not supported yet.
+
 ## What a run does
 
 1. It creates `git worktree add -b <branch_prefix><id> <worktree_root>/<id> <base>`. Your checkout is never touched.
@@ -115,6 +124,7 @@ All settings live under `[agents]` in `settings.toml`. The most important ones a
 |---|---|---|
 | `enabled` | `false` | Turns the feature on. |
 | `preset` | `custom` | `claude`, `codex`, `antigravity` (or `agy`), `opencode`, `muse` or `custom`. See "Agents (presets)". |
+| `interactive_command` | the preset's program | The tool's interactive command for terminal sessions. |
 | `preset_grants` | `true` | Adds the preset's config folders and key variable names. |
 | `preset_access` | — | The access each of the preset's own paths gets, `path=off|read|write` with `;` between: for example `~/.claude=read; ~/.claude.json=off`. A path not named stays writable. |
 | `command` | the preset's | The agent's command line. See "Command templates" below. |

@@ -42,6 +42,8 @@ pub enum Msg {
     WslDistros(Vec<String>),
     /// The merge and diff tools Git can start here (FF-42).
     Tools(Vec<String>, Vec<String>),
+    /// A terminal session opened, or why not (FF-23).
+    AgentNotice(Result<String, String>),
     /// The automatic fetch is due (FF-39).
     AutoFetchTick,
     OpProgress(String),
@@ -215,6 +217,8 @@ pub enum RefOp {
     DeleteRemoteMany(String, Vec<String>, Vec<String>),
     /// Stash names (FF-38).
     StashDropMany(Vec<String>),
+    /// A linked worktree's path (FF-45).
+    WorktreeRemove(String),
     /// Apply a patch to the working tree; 3-way leaves conflict markers.
     ApplyPatch(String, bool),
     /// Check out a GitHub pull request (remote, number) as `pr/<n>`.
@@ -271,6 +275,7 @@ impl RefOp {
                 format!("Delete {} on {r}", ffwd_core::refops::count_refs(b.len(), t.len()))
             }
             RefOp::StashDropMany(v) => format!("Drop {} stashes", v.len()),
+            RefOp::WorktreeRemove(p) => format!("Remove the worktree {p}"),
             RefOp::DeleteRemoteTag(r, t) => format!("Delete tag {t} on {r}"),
             RefOp::PushBranch(r, b) => format!("Push {b} to {r}"),
             RefOp::DeleteRemoteBranch(r, b) => format!("Delete {b} on {r}"),
@@ -319,6 +324,7 @@ impl RefOp {
             RefOp::DeleteMany(..) => "Deleting",
             RefOp::DeleteRemoteMany(..) => "Deleting on the remote",
             RefOp::StashDropMany(_) => "Dropping the stashes",
+            RefOp::WorktreeRemove(_) => "Removing the worktree",
             RefOp::DeleteRemoteTag(..) | RefOp::DeleteRemoteBranch(..) => "Deleting on the remote",
             RefOp::ApplyPatch(..) => "Applying the patch",
             RefOp::PrCheckout(..) => "Checking out the pull request",
@@ -376,6 +382,7 @@ pub fn refop(git: Git, op: RefOp, sink: &Sink) {
                 RefOp::DeleteMany(b, t, f) => r::delete_many(&git, b, t, *f),
                 RefOp::DeleteRemoteMany(rm, b, t) => r::delete_remote_many(&git, rm, b, t),
                 RefOp::StashDropMany(v) => ffwd_core::stash::drop_many(&git, v),
+                RefOp::WorktreeRemove(p) => r::remove_worktree(&git, p),
                 RefOp::DeleteRemoteTag(rm, t) => r::delete_remote_tag(&git, rm, t),
                 RefOp::PushBranch(rm, b) => r::push_branch(&git, rm, b),
                 RefOp::DeleteRemoteBranch(rm, b) => r::delete_remote_branch(&git, rm, b),

@@ -53,6 +53,16 @@ pub enum MenuAct {
     /// stashes show in it (FF-33).
     Scope(bool),
     ShowStashes(bool),
+    /// The agent's interactive CLI in a terminal window (FF-23): in a new
+    /// worktree (`worktree`) or in `path` (None: the current tab), in the
+    /// sandbox or not.
+    AgentTerminal {
+        path: Option<PathBuf>,
+        worktree: bool,
+        sandboxed: bool,
+    },
+    /// Open a folder (a worktree) in a new tab.
+    OpenTab(PathBuf),
     /// Pick a sidebar item for a batch, or take it out (FF-36).
     SidePick(String),
     /// Pick every item under a sidebar header (`t:`, `b:`, `s:` prefix).
@@ -590,6 +600,28 @@ impl Ui {
             v.push(item("Add submodule…", MenuAct::Name(NameAct::AddSubmoduleUrl)));
             v.push(item("Copy path", MenuAct::Copy(path)));
             v.push(item("Copy URL", MenuAct::Copy(s.url.to_string())));
+        } else if let Some(path) = key.strip_prefix("w:") {
+            // A worktree (FF-45): open it, a terminal or the agent's CLI
+            // there, remove it (Git refuses one with changes).
+            let p = PathBuf::from(path);
+            let main = self.r.refs.worktrees.first().is_some_and(|w| **w == *path);
+            v.push(item("Open in a new tab", MenuAct::OpenTab(p.clone())));
+            v.push(item("Open terminal here", MenuAct::OpenTerminal(p.clone())));
+            v.push(item(open_folder_label(), MenuAct::OpenFolder(p.clone())));
+            v.push(sep());
+            v.extend(self.agent_terminal_menu(Some(p), false));
+            v.push(sep());
+            v.push(item("Copy path", MenuAct::Copy(path.to_string())));
+            if !main {
+                v.push(danger(
+                    "Remove worktree…",
+                    MenuAct::Ask(Box::new(Ask {
+                        title: format!("Remove the worktree {path}?"),
+                        text: "The folder is deleted; its branch and commits stay. Git refuses when it has changes or untracked files, so nothing unsaved is lost.".into(),
+                        choices: vec![("Remove worktree".into(), RefOp::WorktreeRemove(path.to_string()), true)],
+                    })),
+                ));
+            }
         } else if key == "h:submodules" {
             v.push(item("Update all submodules", MenuAct::Run(RefOp::SubUpdate(None))));
             v.push(item("Make all URLs relative", MenuAct::Run(RefOp::SubRelative(None))));
@@ -822,6 +854,10 @@ impl Ui {
                     self.select(row as usize);
                 }
             }
+            Some(MenuAct::AgentTerminal { path, worktree, sandboxed }) => {
+                self.agent_terminal(path, worktree, sandboxed)
+            }
+            Some(MenuAct::OpenTab(p)) => self.open_tab(p),
             Some(MenuAct::SidePick(key)) => {
                 if let Some(i) = self.r.side.iter().position(|it| it.key == key) {
                     self.side_pick(i, false);

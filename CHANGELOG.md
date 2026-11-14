@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Agents (experimental): terminal sessions.** **Open in terminal** in the agents panel opens the tool's own interactive CLI in a terminal window: in a new worktree (listed, committed when the window closes) or in this repository, with the sandbox or without.
+- **Worktrees** in the sidebar have a menu: open in a new tab, open a terminal or the agent's CLI there, show the folder, copy the path, remove (asks first; Git refuses one with changes).
 - **Checkout progress:** a long checkout shows Git's progress ("Updating files: 45%") in the status bar.
 - **Merge and diff tools:** Settings → General lists the merge and diff tools Git can start on your PC (including your own); pick one, or keep using your Git config.
 - **Local Changes:** the diff can show side by side (the **Side by side** button in its bar); staging hunks and picking lines work there too.

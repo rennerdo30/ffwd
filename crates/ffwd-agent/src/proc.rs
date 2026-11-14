@@ -165,6 +165,87 @@ pub fn find_program(program: &str) -> Option<PathBuf> {
     None
 }
 
+/// The command line `start` gets on Windows: every piece quoted. Refuses
+/// quotes and `%` (cmd.exe would read them).
+pub fn console_line(title: &str, l: &Launch, program: &str) -> Result<String, String> {
+    let mut v = vec![format!("/c start \"{}\" /wait", title.replace(['"', '%'], ""))];
+    for a in std::iter::once(program).chain(l.args.iter().map(String::as_str)) {
+        if a.contains(['"', '%', '\n', '\r']) {
+            return Err(format!("cannot pass {a:?} to a terminal window"));
+        }
+        v.push(format!("\"{a}\""));
+    }
+    Ok(v.join(" "))
+}
+
+/// Runs `l` in a terminal window of its own and waits until the window
+/// closes or a cancel (FF-23). No time limit: the user drives it.
+/// Windows: a new console (`start /wait`); Linux: `$TERMINAL` or
+/// `x-terminal-emulator` with `-e`.
+pub fn run_console(l: &Launch, title: &str, cancel: &AtomicBool) -> Exit {
+    let path_var = l.env.iter().find(|(k, _)| k.eq_ignore_ascii_case("PATH")).map(|(_, v)| v.as_str());
+    let program = resolve_program(&l.program, if l.clear_env { path_var } else { None });
+    #[cfg(windows)]
+    let mut cmd = {
+        use std::os::windows::process::CommandExt;
+        let line = match console_line(title, l, &program) {
+            Ok(s) => s,
+            Err(e) => return Exit::SpawnFailed(e),
+        };
+        let mut c = Command::new("cmd.exe");
+        c.raw_arg(line);
+        hidden(&mut c);
+        c
+    };
+    #[cfg(target_os = "macos")]
+    {
+        let _ = (title, cancel, &program);
+        return Exit::SpawnFailed("a terminal window for agents is not available on macOS yet".into());
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut cmd = {
+        let _ = title;
+        let term =
+            std::env::var("TERMINAL").ok().filter(|t| !t.is_empty()).unwrap_or_else(|| "x-terminal-emulator".into());
+        let mut c = Command::new(term);
+        c.arg("-e").arg(&program).args(&l.args);
+        c
+    };
+    #[cfg(not(target_os = "macos"))]
+    {
+        cmd.current_dir(&l.cwd).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        if l.clear_env {
+            cmd.env_clear();
+        }
+        cmd.envs(l.env.iter().map(|(k, v)| (k, v)));
+        let mut child = match cmd.spawn() {
+            Ok(c) => c,
+            Err(e) => return Exit::SpawnFailed(format!("{}: {e}", l.program)),
+        };
+        let pid = child.id();
+        if let Ok(mut v) = RUNNING.lock() {
+            v.push(pid);
+        }
+        let exit = loop {
+            match child.try_wait() {
+                Ok(Some(st)) => break st.code().map_or(Exit::Signal, Exit::Code),
+                Ok(None) => {}
+                Err(e) => break Exit::SpawnFailed(e.to_string()),
+            }
+            if cancel.load(Ordering::Relaxed) {
+                kill_tree(pid, true);
+                let _ = child.wait();
+                break Exit::Cancelled;
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        };
+        if let Ok(mut v) = RUNNING.lock() {
+            v.retain(|p| *p != pid);
+        }
+        exit
+    }
+}
+
 const MAX_LINE: usize = 4000;
 
 fn reader(mut r: impl Read + Send + 'static, tx: mpsc::Sender<String>) {
@@ -307,6 +388,19 @@ pub fn run(l: &Launch, timeout: Duration, cancel: &AtomicBool, mut on_lines: imp
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn console_line_quotes_every_piece() {
+        let l =
+            Launch { program: "wsl.exe".into(), args: vec!["--cd".into(), "/mnt/e/a b".into()], ..Launch::default() };
+        assert_eq!(
+            console_line("ffwd · x", &l, "wsl.exe").unwrap(),
+            r#"/c start "ffwd · x" /wait "wsl.exe" "--cd" "/mnt/e/a b""#
+        );
+        let bad = Launch { args: vec!["50%".into()], ..l.clone() };
+        assert!(console_line("t", &bad, "wsl.exe").is_err(), "cmd.exe would expand %");
+    }
+
     use super::*;
 
     fn shell(script: &str) -> Launch {
