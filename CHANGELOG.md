@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.2.0-beta.10
+
+A calmer window, and changes made outside ffwd now show up without a reload.
+
 - **Outside changes show up:** a commit, checkout, branch or fetch made outside ffwd now reloads the history when the window gets focus or you switch back to the tab. On Windows it also shows while ffwd is in the background, through a watcher on the `.git` folder that sleeps until refs change. Before, only the changed-file count was refreshed.
 - **A calmer window:** toolbar buttons lose their boxes until the pointer is on them; ref chips are outlines with a coloured icon; commit prefixes are semibold instead of amber; the sidebar has neutral icons, sentence-case sections and no count clutter; history and sidebar rows are denser (25 px); the graph lines are finer.
 - **Diff bar:** the context presets moved into its **…** menu (and `c`); a context other than 3 lines shows in the bar until you click it back.
