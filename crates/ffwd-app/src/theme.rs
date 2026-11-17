@@ -131,13 +131,11 @@ colours! {
     SYN_NUMBER = 0xe9b870, 0x9c5a06;
     SYN_COMMENT = 0x9a978f, 0x77736b;
     REN = 0x92b2e2, 0x2c5ba3;
-    LOCAL_BG = 0x243127, 0xddefe1;
     LOCAL_FG = 0xa9d6b3, 0x1f5c36;
     REMOTE_BG = 0x252d3a, 0xdde6f3;
     REMOTE_FG = 0xb0c6e8, 0x284b81;
     TAG_BG = 0x37301f, 0xf5e9cf;
     TAG_FG = 0xe6c986, 0x74540e;
-    STASH_BG = 0x2f2838, 0xeae1f4;
     STASH_FG = 0xcfb8e5, 0x5a3b7c;
     /// The conflict resolver's two sides: rows and their edge stripe.
     OURS_BG = 0x1f3046, 0xdbe6f6;

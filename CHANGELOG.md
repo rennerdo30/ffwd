@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **A calmer window:** toolbar buttons lose their boxes until the pointer is on them; ref chips are outlines with a coloured icon; commit prefixes are semibold instead of amber; the sidebar has neutral icons, sentence-case sections and no count clutter; history and sidebar rows are denser (25 px); the graph lines are finer.
+- **Status bar:** it is empty when there is nothing to say. Timings, the session type and the last paint show only with `FFWD_TRACE=1`.
+- **Commit header:** a commit without a description no longer leaves an empty gap above the author, a two-line subject no longer runs into the author row, and hand-wrapped descriptions flow as paragraphs.
+
 ## 0.2.0-beta.9
 
 Local Changes catches up with the History diff: a switch to hide whitespace changes, and a scrollbar you can drag.

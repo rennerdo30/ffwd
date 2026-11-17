@@ -218,11 +218,16 @@ fn parse_args() -> Result<Args, String> {
 static TRACE: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 static TRACE_ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 
+/// Is FFWD_TRACE set? The status bar then shows timings too.
+pub fn trace_on() -> bool {
+    *TRACE_ON.get_or_init(|| std::env::var_os("FFWD_TRACE").is_some())
+}
+
 /// Records a startup or frame mark. Marks are buffered and printed at exit:
 /// writing each one to a redirected stderr cost ~17 ms per line on Windows
 /// and distorted the very timings it reported.
 pub fn trace(t0: Instant, what: &str) {
-    if *TRACE_ON.get_or_init(|| std::env::var_os("FFWD_TRACE").is_some()) {
+    if trace_on() {
         let line = format!("{:>8.2} ms  {what}", t0.elapsed().as_secs_f64() * 1000.0);
         if let Ok(mut v) = TRACE.lock() {
             v.push(line);

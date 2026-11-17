@@ -18,7 +18,7 @@ The capture above is the real PoC UI. `ffwd --snapshot` rendered it offscreen fr
 │ TAGS      │                                        │ diff of the file     │
 │ STASHES   │                                        │                      │
 ├───────────┴────────────────────────────────────────┴──────────────────────┤
-│ ● state · measured timings                     session · renderer · paint │
+│ ● news only: loading, notices, errors (timings with FFWD_TRACE=1)         │
 └───────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -29,12 +29,14 @@ The capture above is the real PoC UI. `ffwd --snapshot` rendered it offscreen fr
   - Remotes, tags, stashes and worktrees are grouped, and long sections end in "N more".
 - **The history list shows:**
   - the graph;
-  - ref chips: the current branch in accent, local in green, remote in blue, tags in amber;
+  - ref chips, outlined: the name in neutral text, the icon in the kind's colour (local green, remote blue, tag amber); HEAD's outline is the accent;
   - the subject, with a "…" marker when the commit has a body;
-  - the author, a relative date and a short SHA.
-  The selected row has a 3 px accent bar, and the scroll track marks where the selection is.
+  - the author, a relative date and a short SHA, all in muted text.
+  The selected row has a calm fill, and the scroll track marks where the selection is.
 - **The details pane has three layers that arrive at different times.** The header (subject, author, date, SHA, parents) paints in the same frame as the selection, from the history row. The body, the files and the diff fill in behind it. Placeholders are solid, still bars, never spinners.
-- **The status bar tells the truth:** what is loading, real measured timings, the session type (local or remote) and the renderer.
+  - A commit without a description has no room for one: the author follows the subject.
+  - Hand-wrapped description lines are joined into paragraphs and wrapped to the pane; short lines, list items and indented code keep their lines.
+- **The status bar speaks only when there is news:** history still loading, a notice with its action button, an error. Idle, it is empty. With `FFWD_TRACE=1` it also shows the measured timings, the session type and the last paint.
 
 ## Themes and pane borders (FF-57)
 
@@ -45,8 +47,8 @@ The capture above is the real PoC UI. `ffwd --snapshot` rendered it offscreen fr
   - **Rail:** labelled icons along the sidebar's left edge, counts as badges; the sidebar grows by the rail's width.
   - **Tabs:** the views as tabs over the content, right of the sidebar; counts as badges.
   - **List:** one row per view under the card, its figure at the right.
-- **Branch rows** wear their lane's colour from the history graph; ahead and behind are chips; ages fade with time and branches untouched for a month step back; the current branch has an amber tint. Section counts are pills.
-- **The sidebar's "here" card** (top): the branch (or the detached commit), its sync as chips (↑ ahead, ↓ behind, in sync, no upstream, upstream gone), the upstream, and changed files or a stopped merge or rebase with its conflicts; a click opens Local Changes. Branches show their age, worktrees their branch; empty Stashes is hidden and Remotes without a remote offers Add remote….
+- **The sidebar is calm** (FF-59): neutral icons, section titles in sentence case, the current branch in semibold with a check. Ahead, behind and a gone upstream are chips; branches untouched for a month step back. A section's count shows only while it is closed; remotes and folders show no counts.
+- **The sidebar's "here" card** (top): the branch (or the detached commit), its sync as chips (↑ ahead, ↓ behind, in sync, no upstream, upstream gone), the upstream, and changed files or a stopped merge or rebase with its conflicts; a click opens Local Changes. Worktrees show their branch; empty Stashes is hidden and Remotes without a remote offers Add remote….
 
 ## Window frame
 
@@ -182,7 +184,7 @@ The capture above is the real PoC UI. `ffwd --snapshot` rendered it offscreen fr
 - **To push and to pull:** an amber ↑ before commits your branch has and its upstream lacks, a blue ↓ before commits the upstream has and your branch lacks.
 - **Current branch only:** click the list title ("All commits · n") to show only HEAD's history ("Current branch · n", amber), and click again for all. The palette has the same toggle; each tab remembers its own.
 - **Web link:** the commit menu has "Open on <host>" and "Copy web link" when the remote is on GitHub, GitLab, Bitbucket, Azure DevOps or a Gitea-style host.
-- **Prefixes:** a conventional-commit prefix (`feat:`, `fix(ui)!:`; a short lowercase type, an optional scope without spaces) shows in the accent colour.
+- **Prefixes:** a conventional-commit prefix (`feat:`, `fix(ui)!:`; a short lowercase type, an optional scope without spaces) shows in semibold.
 
 ## Patches (FF-46)
 
@@ -402,7 +404,7 @@ Planned M1 keys follow common Git-client conventions (for example `Ctrl+Shift+G`
 - **Graphite and amber** (FF-30, `crates/ffwd-app/src/theme.rs`).
   - Neutral, slightly warm greys carry everything: sidebar `#17181B`, list `#1C1D21`, bars `#202125`, panels `#222327`, inputs `#292A2F`.
   - Depth comes from value steps, never from shadows, blur or gradients. That keeps remote sessions cheap and the screen calm.
-- **One accent:** amber `#E8A33E`. It marks only what is active: the current tab, focus, the selection bar, HEAD, the primary button and the logo.
+- **One accent:** amber `#E8A33E`. It marks only what is active: the current tab, focus, HEAD and the logo. Toolbar buttons have no box at rest; the pointer brings a soft fill.
   - Graph lanes use ten hues at one muted saturation.
   - The graph column is as wide as the lanes of the rows on screen (at most ten), so a long-lived branch further down does not push every message to the right; when scrolling changes that width, the list repaints instead of copying pixels.
   - Ref chips and diff colours are tinted, never neon.
@@ -423,7 +425,7 @@ Planned M1 keys follow common Git-client conventions (for example `Ctrl+Shift+G`
   Only the element that changed is repainted.
 - **Modal panels** (Settings, Agents) dim what is behind them. In remote sessions they don't, because dimming would be translucency.
 - **One logo:** the same mark everywhere: the top bar, the window icon, the installer icon (`--icon-png`) and the README. It is a commit, its branch line and two fast-forward triangles, dark on a flat amber tile, drawn by `icon.rs` and `assets/logo/*.svg`.
-- **Density:** 30 px rows at 100 %, scaled by the OS DPI factor.
+- **Density:** 25 px history and sidebar rows at 100 %, scaled by the OS DPI factor.
 - **No motion.** There are no animations. In local sessions, smooth scrolling may come later as an option, driven only while a scroll is running.
 
 ## Next design steps
