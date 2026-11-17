@@ -427,15 +427,16 @@ impl Ui {
             x = r.x - self.px(2.0);
         }
         // The text options come in groups, and a group shows whole or not
-        // at all: on a narrow pane the context presets go first, then the
-        // whitespace switch; Unified / Side by side stays longest.
+        // at all: on a narrow pane the whitespace switch goes first;
+        // Unified / Side by side stays longest. The context presets live in
+        // the `…` menu (and `c` cycles them): a calm bar (FF-59). A context
+        // other than the default shows as a chosen segment that resets it.
         let ws = self.diff_opts.ignore_whitespace;
         let ws_label = if ws { "Whitespace ignored" } else { "Whitespace shown" };
         let segw =
             |ui_: &mut Ui, label: &str| (ui_.te.measure(semi, ui_.pf(11.5), label) + ui_.pf(16.0)) as i32 + ui_.px(2.0);
         let sep = self.px(11.0);
         let w_ws = segw(self, ws_label) + sep;
-        let w_ctx = CONTEXTS.iter().map(|&(_, l)| segw(self, l)).sum::<i32>() + sep;
         let w_split = segw(self, "Side by side") + segw(self, "Unified") + sep;
         // Room for the controls, keeping some for the file name on the left.
         let mut room = x - bar.x - self.px(60.0);
@@ -446,7 +447,9 @@ impl Ui {
             }
             ok
         };
-        let (show_split, show_ws, show_ctx) = (fits(w_split), fits(w_ws), fits(w_ctx));
+        let ctx = CONTEXTS.iter().find(|c| c.0 == self.diff_opts.context && c.0 != 3).map(|c| c.1);
+        let w_ctx = ctx.map_or(0, |l| segw(self, l) + sep);
+        let (show_split, show_ws, show_ctx) = (fits(w_split), fits(w_ws), ctx.is_some() && fits(w_ctx));
         let divider = |ui_: &Ui, cv: &mut Canvas, x: &mut i32| {
             *x -= ui_.px(5.0);
             cv.fill(Rect::new(*x, y + ui_.px(4.0), 1, h - ui_.px(8.0)), BORDER());
@@ -456,12 +459,9 @@ impl Ui {
             divider(self, cv, &mut x);
             seg(self, cv, &mut x, ws_label, ws, DiffBar::Whitespace, &mut hits);
         }
-        if show_ctx {
+        if let Some(label) = ctx.filter(|_| show_ctx) {
             divider(self, cv, &mut x);
-            for &(n, label) in CONTEXTS.iter().rev() {
-                let on = self.diff_opts.context == n;
-                seg(self, cv, &mut x, label, on, DiffBar::Context(n), &mut hits);
-            }
+            seg(self, cv, &mut x, label, true, DiffBar::Context(3), &mut hits);
         }
         if show_split {
             divider(self, cv, &mut x);
