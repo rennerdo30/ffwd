@@ -51,6 +51,10 @@ pub enum Msg {
     AgentNotice(Result<String, String>),
     /// The automatic fetch is due (FF-39).
     AutoFetchTick,
+    /// Something wrote in this `.git` folder (the watcher; app-wide).
+    GitDirTouched(PathBuf),
+    /// The refs or HEAD moved since the history loaded: reload it.
+    RepoMoved,
     /// A line for the status bar from a worker (Settings → About).
     Notice(String),
     OpProgress(String),
@@ -638,7 +642,17 @@ pub fn start_scoped(path: PathBuf, head_only: bool, stashes: bool, sink: &Sink) 
         sink(Msg::Repo(Ok((git, tz))));
     });
     let g = git.clone();
-    spawn("refs", sink, move |sink| sink(Msg::Refs(refs::load(&g).map_err(|e| e.to_string()))));
+    spawn("refs", sink, move |sink| {
+        // The key first: a change during the load then shows as a
+        // difference at the next check, never as a missed one.
+        let key = refs::state_key(&g).ok();
+        let r = refs::load(&g).map(|mut r| {
+            r.key = key;
+            r.common_dir = refs::common_dir(&g);
+            r
+        });
+        sink(Msg::Refs(r.map_err(|e| e.to_string())))
+    });
     let g = git.clone();
     spawn("status", sink, move |sink| {
         if let Ok(s) = refs::status(&g) {

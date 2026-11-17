@@ -431,6 +431,142 @@ pub fn show_file(p: std::path::PathBuf) {
     });
 }
 
+/// A folder being watched (`watch_dir`); dropping it stops the watcher.
+pub struct DirWatch {
+    #[cfg(windows)]
+    stop: std::sync::Arc<win_watch::Event>,
+}
+
+#[cfg(windows)]
+impl Drop for DirWatch {
+    fn drop(&mut self) {
+        self.stop.set();
+    }
+}
+
+/// Calls `on_change` (on the watcher's own thread) after something in
+/// `dir` or below it was created, renamed or deleted, once things are
+/// quiet for 300 ms: Git writes several files per command. The thread
+/// sleeps in the OS between changes, so an idle window gets no wakeups.
+/// `None` where watching isn't available; the window's focus still
+/// catches changes there.
+#[cfg(windows)]
+pub fn watch_dir(dir: &std::path::Path, on_change: Box<dyn Fn() + Send>) -> Option<DirWatch> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::{INVALID_HANDLE_VALUE, WAIT_OBJECT_0, WAIT_TIMEOUT};
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_NOTIFY_CHANGE_DIR_NAME, FILE_NOTIFY_CHANGE_FILE_NAME, FindCloseChangeNotification,
+        FindFirstChangeNotificationW, FindNextChangeNotification,
+    };
+    use windows_sys::Win32::System::Threading::{INFINITE, WaitForMultipleObjects};
+    let wide: Vec<u16> = dir.as_os_str().encode_wide().chain([0]).collect();
+    // SAFETY: a NUL-terminated path; the handle is checked below.
+    let change = unsafe {
+        FindFirstChangeNotificationW(wide.as_ptr(), 1, FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME)
+    };
+    if change.is_null() || change == INVALID_HANDLE_VALUE {
+        return None;
+    }
+    let change = change as usize;
+    let close = move || {
+        // SAFETY: closed once, by whoever gives up on the handle.
+        unsafe { FindCloseChangeNotification(change as _) };
+    };
+    let Some(stop) = win_watch::Event::new() else {
+        close();
+        return None;
+    };
+    let stop = std::sync::Arc::new(stop);
+    let s = stop.clone();
+    let spawned = std::thread::Builder::new().name("git-watch".into()).spawn(move || {
+        let handles = [change as _, s.raw()];
+        // SAFETY (all calls below): both handles stay open until this
+        // thread ends; `s` keeps the event alive.
+        let wait = |ms| unsafe { WaitForMultipleObjects(2, handles.as_ptr(), 0, ms) };
+        'watch: while wait(INFINITE) == WAIT_OBJECT_0 {
+            // Wait for quiet: every further change restarts the 300 ms.
+            loop {
+                if unsafe { FindNextChangeNotification(change as _) } == 0 {
+                    break 'watch;
+                }
+                match wait(300) {
+                    WAIT_OBJECT_0 => continue,
+                    WAIT_TIMEOUT => break,
+                    _ => break 'watch,
+                }
+            }
+            on_change();
+        }
+        close();
+    });
+    if spawned.is_err() {
+        close();
+        return None;
+    }
+    Some(DirWatch { stop })
+}
+
+#[cfg(not(windows))]
+pub fn watch_dir(_dir: &std::path::Path, _on_change: Box<dyn Fn() + Send>) -> Option<DirWatch> {
+    None
+}
+
+#[cfg(windows)]
+mod win_watch {
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::System::Threading::{CreateEventW, SetEvent};
+
+    /// A manual-reset event, closed when the last owner drops it.
+    pub struct Event(usize);
+
+    impl Event {
+        pub fn new() -> Option<Event> {
+            // SAFETY: no attributes, no name; the handle is checked.
+            let h = unsafe { CreateEventW(std::ptr::null(), 1, 0, std::ptr::null()) };
+            (!h.is_null()).then(|| Event(h as usize))
+        }
+        pub fn raw(&self) -> HANDLE {
+            self.0 as HANDLE
+        }
+        pub fn set(&self) {
+            // SAFETY: the handle is open while `self` lives.
+            unsafe { SetEvent(self.raw()) };
+        }
+    }
+
+    impl Drop for Event {
+        fn drop(&mut self) {
+            // SAFETY: the only close of this handle.
+            unsafe { CloseHandle(self.raw()) };
+        }
+    }
+}
+
+#[cfg(all(test, windows))]
+mod watch_tests {
+    #[test]
+    fn a_new_file_wakes_the_watcher_and_dropping_stops_it() {
+        let dir = std::env::temp_dir().join(format!("ffwd-watch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("refs")).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let w = super::watch_dir(
+            &dir,
+            Box::new(move || {
+                let _ = tx.send(());
+            }),
+        )
+        .expect("a watcher");
+        std::fs::write(dir.join("refs").join("main"), "x").unwrap();
+        rx.recv_timeout(std::time::Duration::from_secs(10)).expect("the change is reported");
+        drop(w);
+        // The thread ends and drops its sender: the channel closes.
+        let end = rx.recv_timeout(std::time::Duration::from_secs(10));
+        assert!(matches!(end, Err(std::sync::mpsc::RecvTimeoutError::Disconnected)), "{end:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
 #[cfg(test)]
 mod wsl_tests {
     #[test]

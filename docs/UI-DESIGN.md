@@ -106,6 +106,9 @@ The capture above is the real PoC UI. `ffwd --snapshot` rendered it offscreen fr
 
 ## Remotes and sync (FF-39)
 
+- **Changes made outside ffwd** (a commit in a terminal, a checkout, an agent's work) show without a manual reload:
+  - **On focus**, and when you switch back to a tab, a worker compares a fingerprint of all refs and HEAD (`refs::state_key`, two read-only Git calls) with the one read when the history loaded. If they differ, history, refs and status reload, and the selected commit stays selected. The working-tree status is read again on every focus.
+  - **In the background** (Windows), the repository's `.git` folder is watched. The watcher thread sleeps in the OS until something is written, then waits for 300 ms of quiet. It wakes the window only if HEAD, packed-refs or a folder under `refs/` changed, by file metadata alone, so another tool refreshing the index costs no Git process. Other systems rely on the focus check for now.
 - **Automatic fetch:** every 10 minutes the open repository fetches all remotes (Settings → General → **Fetch automatically**: Off, 5, 10 or 30 min; `remotes.auto_fetch` in minutes). The Fetch button shows "Fetching…" meanwhile; nothing else shows unless refs changed (then the status bar says so and the history reloads) or it failed (said once until a fetch works again). It never asks for credentials. Clicking Fetch while it runs takes it over. The clock thread sleeps the whole interval: an idle window gets no wakeups in between.
 
 - **Remote menu** (right click on a remote in the sidebar): Fetch, Test connection, Edit URL…, Rename…, Remove…, Add remote…, Copy URL.
