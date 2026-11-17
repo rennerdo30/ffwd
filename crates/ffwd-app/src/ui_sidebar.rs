@@ -8,7 +8,7 @@
 use super::*;
 use std::collections::{BTreeMap, HashSet};
 
-pub(super) const SIDE_ROW: f32 = 28.0;
+pub(super) const SIDE_ROW: f32 = 25.0;
 pub(super) const FILTER_H: f32 = 40.0;
 
 #[derive(Clone, Debug)]
@@ -1212,56 +1212,42 @@ impl Ui {
                 self.chevron(cv, cx, cy, open, TEXT_3());
             }
             if it.kind == SideKind::Header {
-                self.te.draw(
+                // Sentence case, quiet; the count only when the section is
+                // closed, to say what it hides (calm sidebar, FF-59).
+                let e = self.te.draw(
                     cv,
                     semi,
-                    self.pf(11.0),
+                    self.pf(12.0),
                     cx + self.pf(10.0),
                     base - self.pf(0.5),
-                    &it.label.to_uppercase(),
+                    &it.label,
                     TEXT_3(),
                     row.w as f32,
                 );
-                if !it.badge.is_empty() {
-                    let bw = self.te.measure(semi, self.pf(10.5), &it.badge);
-                    let pw = bw + self.pf(14.0);
-                    let px = row.right() as f32 - pw - self.pf(6.0);
-                    let pr = Rect::new(px as i32, (cy - self.pf(8.5)) as i32, pw as i32, self.px(17.0));
-                    cv.fill_round(pr, self.pf(8.5), BG_HOVER());
+                if !it.badge.is_empty() && it.expander == Some(false) {
                     self.te.draw(
                         cv,
-                        semi,
-                        self.pf(10.5),
-                        px + self.pf(7.0),
-                        base - self.pf(1.0),
+                        ui,
+                        self.pf(11.5),
+                        e + self.pf(7.0),
+                        base - self.pf(0.5),
                         &it.badge,
-                        TEXT_3(),
-                        bw + 2.0,
+                        TEXT_4(),
+                        row.w as f32,
                     );
                 }
                 continue;
             }
             let ix = cx + if it.expander.is_some() { self.pf(16.0) } else { self.pf(4.0) };
+            // Neutral icons: the sidebar is a calm index, colour is kept for
+            // state (sync chips, the current branch's check) (FF-59).
             let (icon, text) = match it.kind {
-                SideKind::Branch if it.current => (ACCENT(), TEXT()),
-                SideKind::Branch => (LOCAL_FG(), TEXT_2()),
-                SideKind::Folder => (TEXT_3(), TEXT_2()),
-                SideKind::Remote => (REMOTE_FG(), TEXT_2()),
-                SideKind::RemoteBranch => (REMOTE_FG(), TEXT_3()),
-                SideKind::Tag => (TAG_FG(), TEXT_2()),
-                SideKind::Stash => (STASH_FG(), TEXT_2()),
-                SideKind::Worktree | SideKind::Submodule | SideKind::PullRequest => (TEXT_3(), TEXT_2()),
+                SideKind::Branch if it.current => (TEXT(), TEXT()),
+                SideKind::RemoteBranch => (TEXT_4(), TEXT_2()),
                 SideKind::Header => (TEXT_3(), TEXT_3()),
-                SideKind::AddRemote => (ACCENT(), TEXT_3()),
+                SideKind::AddRemote => (TEXT_3(), TEXT_3()),
+                _ => (TEXT_3(), TEXT_2()),
             };
-            // A branch wears its lane's colour from the history graph.
-            let lane = it
-                .target
-                .filter(|_| matches!(it.kind, SideKind::Branch | SideKind::RemoteBranch))
-                .and_then(|t| self.r.by_id.get(&t))
-                .and_then(|&row| self.r.graph.rows.get(row as usize))
-                .map(|g| crate::theme::lane(g.color));
-            let icon = lane.filter(|_| !it.current).unwrap_or(icon);
             // A branch untouched for a month steps back.
             let stale = it.kind == SideKind::Branch && !it.current && it.age_secs > 30 * 86_400;
             let text = if selected {
@@ -1271,9 +1257,6 @@ impl Ui {
             } else {
                 text
             };
-            if it.current && !selected && it.kind == SideKind::Branch {
-                cv.fill_round(row, self.pf(6.0), ACCENT_SOFT());
-            }
             match it.kind {
                 SideKind::Branch if it.current => self.check(cv, ix, cy, icon),
                 SideKind::Branch | SideKind::RemoteBranch => self.branch_icon(cv, ix, cy, icon),
@@ -1320,7 +1303,7 @@ impl Ui {
                         icon,
                     );
                 }
-                SideKind::Worktree if it.current => self.check(cv, ix, cy, ACCENT()),
+                SideKind::Worktree if it.current => self.check(cv, ix, cy, TEXT()),
                 SideKind::Worktree if it.key.contains(".ffwd-agents") => {
                     self.glyph(cv, super::Glyph::Terminal, ix, cy, self.pf(5.5), icon)
                 }
@@ -1330,14 +1313,18 @@ impl Ui {
             }
             let font = if it.current || selected { semi } else { ui };
             let lx = ix + self.pf(14.0);
-            let note = if it.badge.is_empty() { it.age.clone() } else { String::new() };
+            // Folder and remote counts and branch ages stay out of the way:
+            // the names are what the sidebar is for.
+            let quiet = matches!(it.kind, SideKind::Folder | SideKind::Remote);
+            let note =
+                if it.badge.is_empty() && it.kind == SideKind::Worktree { it.age.clone() } else { String::new() };
             let note_font = if it.kind == SideKind::Worktree { self.f.mono } else { ui };
             let note_w = if note.is_empty() {
                 0.0
             } else {
                 (self.te.measure(note_font, self.pf(11.0), &note) + self.pf(12.0)).min(row.w as f32 * 0.45)
             };
-            let badge_w = if it.badge.is_empty() {
+            let badge_w = if it.badge.is_empty() || quiet {
                 note_w
             } else if it.kind == SideKind::Branch {
                 let parts = it.badge.split_whitespace().count() as f32;
@@ -1386,7 +1373,7 @@ impl Ui {
                     self.te.draw(cv, semi, self.pf(10.5), x + self.pf(6.0), base - self.pf(1.0), part, fg, w);
                     x -= self.pf(4.0);
                 }
-            } else if !it.badge.is_empty() {
+            } else if !it.badge.is_empty() && !quiet {
                 let bw = badge_w - self.pf(14.0);
                 let bx = row.right() as f32 - bw - self.pf(10.0);
                 let color = match it.kind {

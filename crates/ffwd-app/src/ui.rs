@@ -70,6 +70,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// See `load_fonts`.
 pub const TYPE_SCALE: f32 = 1.08;
 
+/// History row height (design px).
+const ROW_H: f32 = 25.0;
+
 pub struct Fonts {
     pub ui: FontId,
     pub semi: FontId,
@@ -714,6 +717,51 @@ fn fmt_bytes(n: usize) -> String {
 /// Splits a conventional-commit prefix off a subject: `("feat(ui): ",
 /// "add x")`. Only short lowercase types count, so ordinary subjects with
 /// a colon stay whole.
+/// A commit's description as paragraphs: Git messages are wrapped by hand
+/// at ~72 columns, so a line that follows a long one (wrapped, not broken
+/// on purpose) joins it and the pane wraps the paragraph to its width.
+/// Short lines, blank lines, list items and indented lines (code) keep
+/// their own lines.
+fn body_paragraphs(message: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut open = false;
+    let mut last_len = 0;
+    for line in message.lines().skip(1).skip_while(|l| l.trim().is_empty()) {
+        let t = line.trim_end();
+        if t.is_empty() {
+            out.push(String::new());
+            open = false;
+            last_len = 0;
+            continue;
+        }
+        let item = {
+            let l = t.trim_start();
+            l.starts_with("- ")
+                || l.starts_with("* ")
+                || l.starts_with("+ ")
+                || l.split_once(". ").is_some_and(|(n, _)| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+        };
+        let code = t.starts_with("    ") || t.starts_with('\t');
+        let wrapped = last_len >= 50;
+        last_len = t.chars().count();
+        match out.last_mut() {
+            Some(last) if open && wrapped && !item && !code => {
+                last.push(' ');
+                last.push_str(t.trim_start());
+            }
+            _ => {
+                out.push(t.to_string());
+                // A list item continues on its indented next lines.
+                open = !code;
+            }
+        }
+    }
+    while out.last().is_some_and(|l| l.is_empty()) {
+        out.pop();
+    }
+    out
+}
+
 fn split_prefix(subject: &str) -> (&str, &str) {
     let Some(colon) = subject.find(": ") else { return ("", subject) };
     let head = &subject[..colon];
@@ -1412,7 +1460,8 @@ impl Ui {
             }
         };
         let head_h = self.px(30.0);
-        let row_h = self.px(30.0).max(12);
+        // Dense rows, like a list you scan (calm pass, FF-59).
+        let row_h = self.px(ROW_H).max(12);
         let sb_w = self.px(12.0);
         let list = Rect::new(list_x, top_h, list_w, list_h);
         self.lay = Layout {
@@ -3231,8 +3280,10 @@ impl Ui {
         // Gear: settings.
         let gs = self.px(30.0);
         let gear = Rect::new((right as f32 - self.pf(10.0)) as i32 - gs, (cy - self.pf(15.0)) as i32, gs, gs);
-        let (gbg, gborder) = self.control_colors(Hot::Top(TopAction::Settings), BG_BAR(), BORDER());
-        cv.round_border(gear, self.pf(8.0), gborder, gbg);
+        if self.is_hot(Hot::Top(TopAction::Settings)) {
+            let (gbg, _) = self.control_colors(Hot::Top(TopAction::Settings), BG_BAR(), BORDER());
+            cv.fill_round(gear, self.pf(8.0), gbg);
+        }
         let gc = if self.is_hot(Hot::Top(TopAction::Settings)) { TEXT() } else { TEXT_2() };
         self.gear_icon(cv, gear.x as f32 + gs as f32 / 2.0, cy, gc);
         buttons.push((gear, TopAction::Settings));
@@ -3599,27 +3650,24 @@ impl Ui {
         let w = tw + bw_badge + icon + self.pf(24.0);
         let r = Rect::new((right - w) as i32, (cy - self.pf(14.0)) as i32, w as i32, self.px(28.0));
         let h = Hot::Top(action);
+        // Quiet at rest: no box, just the icon and the label; the pointer
+        // brings a soft fill (calm toolbar, FF-59).
+        let hot = self.is_hot(h);
+        if hot {
+            let (bg, _) = self.control_colors(h, BG_BAR(), BORDER());
+            cv.fill_round(r, self.pf(8.0), bg);
+        }
+        let fg = if hot { TEXT() } else { TEXT_2() };
         if accent {
-            let bg = if self.is_pressed(h) {
-                ACCENT_SOFT()
-            } else if self.is_hot(h) {
-                ACCENT_SOFT_HOVER()
-            } else {
-                ACCENT_SOFT()
-            };
-            let border = if self.is_hot(h) { ACCENT() } else { ACCENT_BORDER() };
-            cv.round_border(r, self.pf(8.0), border, bg);
-            self.sparkle(cv, r.x as f32 + self.pf(16.0), cy, self.pf(5.5), ACCENT());
-        } else {
-            let (bg, border) = self.control_colors(h, BG_BAR(), BORDER());
-            cv.round_border(r, self.pf(8.0), border, bg);
+            // The AI button's sparkle.
+            self.sparkle(cv, r.x as f32 + self.pf(16.0), cy, self.pf(5.5), fg);
         }
         if let Some(g) = glyph {
-            self.glyph(cv, g, r.x as f32 + self.pf(18.0), cy, self.pf(7.0), TEXT());
+            self.glyph(cv, g, r.x as f32 + self.pf(18.0), cy, self.pf(7.0), fg);
         }
         let base = (cy + self.pf(4.5)).round();
         let tx = r.x as f32 + self.pf(12.0) + icon;
-        let end = self.te.draw(cv, semi, size, tx, base, label, if accent { ACCENT_FG() } else { TEXT() }, w);
+        let end = self.te.draw(cv, semi, size, tx, base, label, fg, w);
         if let Some(b) = badge {
             self.te.draw(cv, semi, self.pf(11.5), end + self.pf(6.0), base, &b, ACCENT(), w);
         }
@@ -3656,7 +3704,7 @@ impl Ui {
     }
 
     fn lane_w(&self) -> f32 {
-        self.pf(14.0)
+        self.pf(12.0)
     }
 
     /// The graph column holds the lanes of the rows on screen, not of the
@@ -3726,7 +3774,7 @@ impl Ui {
             self.te.draw(cv, semi, self.pf(11.5), fr.x as f32 + self.pf(23.0), base, fl, TEXT_2(), fw);
             self.head_find_rect = fr;
             for (x, t) in [(author_x, "Author"), (date_x, "Date"), (sha_x, "Commit")] {
-                self.te.draw(cv, semi, self.pf(11.5), x, base, t, TEXT_3(), self.pf(100.0));
+                self.te.draw(cv, semi, self.pf(11.5), x, base, t, TEXT_4(), self.pf(100.0));
             }
         }
         let body = Rect::new(l.x, self.lay.list_body.y, l.w - self.lay.scrollbar.w, self.lay.list_body.h);
@@ -3800,9 +3848,6 @@ impl Ui {
             }
             return;
         }
-        if selected {
-            cv.fill(Rect::new(r.x, r.y, self.px(3.0), r.h), ACCENT());
-        }
         self.paint_graph(cv, row, r, bg);
         let c = &self.r.commits[row];
         let base = (r.y as f32 + r.h as f32 / 2.0 + self.pf(4.5)).round();
@@ -3817,12 +3862,14 @@ impl Ui {
                 break;
             }
             let rf = &self.r.refs.refs[ri as usize];
-            let (cbg, cfg) = match rf.kind {
-                _ if rf.is_head => (ACCENT_SOFT_HOVER(), ACCENT_FG()),
-                RefKind::Local => (LOCAL_BG(), LOCAL_FG()),
-                RefKind::Remote => (REMOTE_BG(), REMOTE_FG()),
-                RefKind::Tag => (TAG_BG(), TAG_FG()),
-                _ => (STASH_BG(), STASH_FG()),
+            // Outlined chips: the icon carries the kind's colour, the name
+            // stays neutral (calm pass, FF-59); HEAD's outline is the accent.
+            let (cborder, ccolor, cfg) = match rf.kind {
+                _ if rf.is_head => (ACCENT_BORDER(), ACCENT(), TEXT()),
+                RefKind::Local => (BORDER(), LOCAL_FG(), TEXT_2()),
+                RefKind::Remote => (BORDER(), REMOTE_FG(), TEXT_2()),
+                RefKind::Tag => (BORDER(), TAG_FG(), TEXT_2()),
+                _ => (BORDER(), STASH_FG(), TEXT_2()),
             };
             let name = rf.name.to_string();
             let glyph = match rf.kind {
@@ -3839,10 +3886,10 @@ impl Ui {
                 break;
             }
             let chip =
-                Rect::new(x as i32, (r.y as f32 + r.h as f32 / 2.0 - self.pf(9.5)) as i32, cw as i32, self.px(19.0));
-            cv.fill_round(chip, self.pf(5.0), cbg);
+                Rect::new(x as i32, (r.y as f32 + r.h as f32 / 2.0 - self.pf(9.0)) as i32, cw as i32, self.px(18.0));
+            cv.round_border(chip, self.pf(4.0), cborder, bg);
             let cy = r.y as f32 + r.h as f32 / 2.0;
-            self.glyph(cv, glyph, x + self.pf(13.0), cy, self.pf(5.5), cfg);
+            self.glyph(cv, glyph, x + self.pf(13.0), cy, self.pf(5.5), ccolor);
             self.te.draw(cv, semi, self.pf(11.0), x + self.pf(7.0) + iw, base - self.pf(0.5), &name, cfg, tw + 1.0);
             x += cw + self.pf(6.0);
         }
@@ -3859,13 +3906,13 @@ impl Ui {
         }
         let merge = c.parents.len() > 1;
         let subj_color = if merge { TEXT_2() } else { TEXT() };
-        // A conventional-commit prefix ("feat:", "fix(ui)!:") in the accent
-        // colour, the rest as usual (FF-33).
+        // A conventional-commit prefix ("feat:", "fix(ui)!:") in semibold,
+        // the rest as usual (FF-33; no colour since the calm pass, FF-59).
         let (prefix, rest) = split_prefix(&c.subject);
         let x = if prefix.is_empty() {
             x
         } else {
-            self.te.draw(cv, ui, self.pf(13.0), x, base, prefix, ACCENT_FG(), max_x - x)
+            self.te.draw(cv, semi, self.pf(13.0), x, base, prefix, subj_color, max_x - x)
         };
         let end = self.te.draw(cv, ui, self.pf(13.0), x, base, rest, subj_color, max_x - x);
         if c.has_body && end + self.pf(16.0) < max_x {
@@ -3876,7 +3923,7 @@ impl Ui {
             }
         }
         let dim = if selected { TEXT_2() } else { TEXT_3() };
-        self.te.draw(cv, ui, self.pf(12.5), author_x, base, &c.author, TEXT_2(), date_x - author_x - self.pf(12.0));
+        self.te.draw(cv, ui, self.pf(12.5), author_x, base, &c.author, dim, date_x - author_x - self.pf(12.0));
         let when = fmt::relative(c.time, self.now, self.r.tz);
         self.te.draw(cv, ui, self.pf(12.5), date_x, base, &when, dim, sha_x - date_x - self.pf(10.0));
         self.te.draw(cv, self.f.mono, self.pf(12.0), sha_x, base, &c.id.short(8), dim, self.pf(80.0));
@@ -3900,7 +3947,7 @@ impl Ui {
         let old = cv.set_clip(cv.clip().intersect(gclip));
         let x = |lane: u16| gx + lane as f32 * lw + lw / 2.0;
         let (top, mid, bot) = (r.y as f32, r.y as f32 + r.h as f32 / 2.0, r.bottom() as f32);
-        let width = self.pf(2.0);
+        let width = self.pf(1.6);
         for s in &g.segs {
             let color = lane(s.color);
             let (y0, y1) = if s.top { (top, mid) } else { (mid, bot) };
@@ -3915,14 +3962,14 @@ impl Ui {
         let cx = x(g.node);
         let color = lane(g.color);
         let is_head = self.r.refs.head.is_some_and(|h| h == self.r.commits[row].id);
-        cv.fill_circle(cx, mid, self.pf(6.5), bg);
+        cv.fill_circle(cx, mid, self.pf(5.5), bg);
         if is_head {
-            cv.fill_circle(cx, mid, self.pf(5.5), ACCENT());
-            cv.fill_circle(cx, mid, self.pf(2.2), bg);
+            cv.fill_circle(cx, mid, self.pf(4.8), ACCENT());
+            cv.fill_circle(cx, mid, self.pf(1.9), bg);
         } else if g.is_merge {
-            cv.ring(cx, mid, self.pf(4.6), self.pf(2.0), color);
+            cv.ring(cx, mid, self.pf(3.8), self.pf(1.6), color);
         } else {
-            cv.fill_circle(cx, mid, self.pf(4.6), color);
+            cv.fill_circle(cx, mid, self.pf(3.8), color);
         }
         cv.set_clip(old);
     }
@@ -3933,6 +3980,8 @@ impl Ui {
 
     /// Body lines shown at most, and the default room (two lines).
     const BODY_LINES: usize = 5;
+    /// From the end of the description to the author row's centre.
+    const BODY_GAP: f32 = 26.0;
 
     /// Recomputes the details header's extra height for the selected
     /// commit's message (on new details and on resize, never mid-paint).
@@ -3944,26 +3993,46 @@ impl Ui {
         }
     }
 
+    /// The header's height change for the selected commit: positive for a
+    /// long message, negative for one without a description, which closes
+    /// the room the description would take (no empty gap above the author).
+    /// It reads the list data first (subject, has-a-body), so the header
+    /// is right in the same frame; the details only refine a long body.
     fn details_extra_for(&mut self) -> i32 {
-        let Some(det) = self.r.details.clone() else { return 0 };
+        let Some(c) = self.r.commits.get(self.r.sel) else { return 0 };
         let (ui, semi) = (self.f.ui, self.f.semi);
-        let maxw = self.lay.details.w as f32 - 2.0 * self.pf(22.0);
+        // The header wraps in the info pane (narrower than the details when
+        // the diff sits beside it), as paint_details does.
+        let maxw = self.lay.info.w as f32 - 2.0 * self.pf(22.0);
         if maxw <= 0.0 {
             return 0;
         }
-        let subject = det.message.lines().next().unwrap_or("").to_string();
+        let compare = self.r.compare;
+        let subject = match compare {
+            Some((a, b)) => format!("Changes from {} to {}", a.short(8), b.short(8)),
+            None => c.subject.to_string(),
+        };
+        let has_body = c.has_body;
         let s16 = self.pf(16.0);
         let subj = wrap(&mut self.te, semi, s16, &subject, maxw).len().clamp(1, 2);
-        let body: Vec<String> =
-            det.message.lines().skip(1).skip_while(|l| l.trim().is_empty()).map(|s| s.to_string()).collect();
+        // The same arithmetic as paint_details: the rows that fit by default.
+        let y = self.pf(34.0) + subj as f32 * self.pf(22.0);
+        let body: Vec<String> = match &self.r.details {
+            Some(det) if compare.is_none() => body_paragraphs(&det.message),
+            _ => Vec::new(),
+        };
+        let loaded = self.r.details.as_ref().is_some_and(|d| d.id == c.id);
+        let no_body = compare.is_some() || if loaded { body.is_empty() } else { !has_body };
+        if no_body {
+            // The author row follows the subject at once.
+            return (y + self.pf(22.0) - self.pf(140.0)).round().min(0.0) as i32;
+        }
         let s13 = self.pf(13.0);
         let lines: usize = body.iter().map(|p| wrap(&mut self.te, ui, s13, p, maxw).len().max(1)).sum();
-        // The same arithmetic as paint_details: the rows that fit by default.
-        let lh = self.pf(19.0);
-        let y = self.pf(34.0) + subj as f32 * self.pf(22.0);
-        let fit = ((self.pf(140.0) - self.pf(30.0) - y) / lh).floor().max(0.0) as usize;
-        let more = lines.min(Self::BODY_LINES).saturating_sub(fit);
-        (more as f32 * lh).round() as i32
+        // Until the details arrive, two lines are kept for the description.
+        let shown = if loaded { lines.clamp(1, Self::BODY_LINES) } else { 2 };
+        let meta = y + shown as f32 * self.pf(19.0) + self.pf(Self::BODY_GAP);
+        (meta - self.pf(140.0)).round() as i32
     }
 
     fn file_rows_visible(&self) -> usize {
@@ -4060,17 +4129,22 @@ impl Ui {
         }
         let body: Vec<String> = match &self.r.details {
             Some(_) if compare.is_some() => Vec::new(),
-            Some(det) => {
-                det.message.lines().skip(1).skip_while(|l| l.trim().is_empty()).map(|s| s.to_string()).collect()
-            }
+            Some(det) => body_paragraphs(&det.message),
             None => Vec::new(),
         };
         // The body gets the lines that fit above the author row; the last
         // visible line ends in an ellipsis when more text follows.
         let meta_y = d.y as f32 + self.pf(140.0) + self.details_extra as f32;
         let lh = self.pf(19.0);
-        let fit = ((meta_y - self.pf(30.0) - y) / lh).floor().max(0.0) as usize;
-        let lines: Vec<String> = body.iter().flat_map(|p| wrap(&mut self.te, ui, s13, p, maxw)).collect();
+        let fit = ((meta_y - self.pf(Self::BODY_GAP) - y) / lh).round().max(0.0) as usize;
+        // A blank line between paragraphs stays (details_extra_for counts it).
+        let lines: Vec<String> = body
+            .iter()
+            .flat_map(|p| {
+                let w = wrap(&mut self.te, ui, s13, p, maxw);
+                if w.is_empty() { vec![String::new()] } else { w }
+            })
+            .collect();
         for (k, line) in lines.iter().take(fit).enumerate() {
             let more = k + 1 == fit && lines.len() > fit;
             let text = if more { format!("{line} …") } else { line.clone() };
@@ -4625,18 +4699,22 @@ impl Ui {
         let base = (r.y as f32 + r.h as f32 / 2.0 + self.pf(4.0)).round();
         let cy = r.y as f32 + r.h as f32 / 2.0;
         let mut x = self.pf(14.0);
-        let (dot, msg) = if let Some(e) = &self.r.error {
-            (DEL(), e.clone())
+        // Idle says nothing: the bar only speaks when there is news (an
+        // error, a notice, history still streaming in).
+        let said = if let Some(e) = &self.r.error {
+            Some((DEL(), e.clone()))
         } else if let Some(n) = &self.notice {
-            (MOD(), n.clone())
+            Some((MOD(), n.clone()))
         } else if !self.r.log_done {
-            (MOD(), format!("Reading history · {} commits", fmt::num(self.r.commits.len())))
+            Some((TEXT_4(), format!("Reading history · {} commits", fmt::num(self.r.commits.len()))))
         } else {
-            (ADD(), "Ready".to_string())
+            None
         };
-        cv.fill_circle(x + self.pf(3.0), cy, self.pf(3.5), dot);
-        x += self.pf(14.0);
-        x = self.te.draw(cv, ui, self.pf(12.0), x, base, &msg, TEXT_2(), self.pf(520.0));
+        if let Some((dot, msg)) = said {
+            cv.fill_circle(x + self.pf(3.0), cy, self.pf(3.5), dot);
+            x += self.pf(14.0);
+            x = self.te.draw(cv, ui, self.pf(12.0), x, base, &msg, TEXT_2(), self.pf(520.0));
+        }
         self.notice_btn = Rect::default();
         if let Some(a) = self.notice_act.filter(|_| self.r.error.is_none() && self.notice.is_some()) {
             let (label, g) = a.label();
@@ -4653,7 +4731,10 @@ impl Ui {
             self.glyph(cv, g, b.x as f32 + self.pf(11.0), cy, self.pf(4.5), ACCENT_FG());
             self.te.draw(cv, semi, self.pf(11.5), b.x as f32 + self.pf(20.0), base, label, ACCENT_FG(), w);
             self.notice_btn = b;
-            x = b.right() as f32;
+        }
+        // Timings are for measuring (FFWD_TRACE=1), not for every day.
+        if !crate::trace_on() {
+            return;
         }
         if self.r.log_done && self.r.error.is_none() {
             let mut facts = format!("{} commits in {:.0} ms", fmt::num(self.r.commits.len()), self.r.log_ms);
@@ -4663,10 +4744,20 @@ impl Ui {
             if let Some(ff) = self.stats.first_frame_ms {
                 facts.push_str(&format!(" · first frame {ff:.0} ms"));
             }
-            self.te.draw(cv, ui, self.pf(12.0), x + self.pf(16.0), base, &facts, TEXT_3(), self.pf(560.0));
+            let fw = self.te.measure(ui, self.pf(12.0), &facts);
+            self.te.draw(
+                cv,
+                ui,
+                self.pf(12.0),
+                r.right() as f32 - fw - self.pf(14.0) - self.pf(300.0),
+                base,
+                &facts,
+                TEXT_4(),
+                fw + 2.0,
+            );
         }
         let right = format!(
-            "{}  ·  CPU renderer, damage-only  ·  last paint {:.1} ms",
+            "{}  ·  last paint {:.1} ms",
             if self.remote { "Remote session" } else { "Local session" },
             self.stats.last_paint_ms
         );
@@ -8190,6 +8281,26 @@ mod tests {
         assert_eq!(fit_middle(&mut te, f.ui, 13.0, name, 1.0), "…");
     }
 
+    #[test]
+    fn descriptions_reflow_into_paragraphs() {
+        let m = "Subject\n\nOne paragraph that git wrapped by hand at about seventy-two\ncolumns.\nA short line\nbreaks on purpose.\n\n- an item that is long enough to have been wrapped by hand\n  and goes on\n- another\n\n    code stays\n    as is\n";
+        assert_eq!(
+            body_paragraphs(m),
+            [
+                "One paragraph that git wrapped by hand at about seventy-two columns.",
+                "A short line",
+                "breaks on purpose.",
+                "",
+                "- an item that is long enough to have been wrapped by hand and goes on",
+                "- another",
+                "",
+                "    code stays",
+                "    as is",
+            ]
+        );
+        assert!(body_paragraphs("Only a subject\n\n").is_empty());
+    }
+
     /// The commit message in the details (FF-57): a long body shows up to
     /// five lines and moves the file list down; a short one keeps the
     /// default height; repaints match full paints.
@@ -8249,7 +8360,7 @@ mod tests {
         assert!(ui.details_extra <= (3.0 * ui.pf(19.0)).round() as i32 + 1, "at most five lines: {}", ui.details_extra);
         ui.key(Key::Down);
         pump(&mut ui, "the short commit", &shown("Short"));
-        assert_eq!(ui.details_extra, 0);
+        assert!(ui.details_extra < 0, "no description: the author row moves up");
         assert!(ui.files_rect().y < long_files, "the file list moves back up");
         assert_partial_paint_is_full(&mut ui, &mut screen, "short commit");
         ui.key(Key::Up);
