@@ -635,6 +635,8 @@ pub struct Ui {
     pub(super) auto_fetch_minutes: Arc<std::sync::atomic::AtomicU64>,
     /// The last automatic fetch failed (its notice shows once).
     auto_fetch_failed: bool,
+    /// The watched `.git` folder of the current tab (`watch_git_dir`).
+    git_watch: Option<(PathBuf, crate::platform::DirWatch)>,
     pub diff_tab: usize,
     /// Code text size in points (diffs, file viewer; FF-41).
     pub code_pt: u8,
@@ -857,6 +859,7 @@ impl Ui {
             diff_tools: Vec::new(),
             auto_fetch_minutes: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             auto_fetch_failed: false,
+            git_watch: None,
             diff_tab: diff_view::view_from(&settings).1 as usize,
             code_pt: diff_view::code_size_from(&settings),
             diff_opts: diff_view::opts_from(&settings).1,
@@ -1007,6 +1010,10 @@ impl Ui {
         if start {
             let head_only = self.tabs.get(self.cur_tab).is_some_and(|t| t.head_only);
             crate::work::start_scoped(path.clone(), head_only, self.show_stashes(), &sink);
+        } else {
+            // Back on a tab: it may have moved on meanwhile.
+            self.watch_git_dir();
+            self.check_repo_moved();
         }
         if self.r.worker.is_none() {
             // Git finds the repository from any folder inside it.
@@ -1180,6 +1187,19 @@ impl Ui {
         }
         if let Msg::AutoFetchTick = m {
             return self.auto_fetch_due();
+        }
+        if let Msg::GitDirTouched(dir) = m {
+            if self.r.refs.common_dir.as_ref() == Some(&dir) {
+                self.check_repo_moved();
+            }
+            return;
+        }
+        if let Msg::RepoMoved = m {
+            // Only the tab that asked: a tab switched to runs its own check.
+            if self.tabs.get(self.cur_tab).is_some_and(|t| t.id == id) {
+                self.on_repo_moved();
+            }
+            return;
         }
         if let Msg::Notice(n) = m {
             return self.set_notice(n);
@@ -1531,6 +1551,7 @@ impl Ui {
             }
             Msg::Refs(Ok(r)) => {
                 self.r.refs = r;
+                self.watch_git_dir();
                 self.index_chips();
                 self.rebuild_side();
                 self.damage.rects.extend([self.lay.side, self.lay.top]);
@@ -1701,6 +1722,8 @@ impl Ui {
             | Msg::Picked(..)
             | Msg::AgentNotice(_)
             | Msg::Notice(_)
+            | Msg::GitDirTouched(_)
+            | Msg::RepoMoved
             | Msg::AutoFetchTick => {}
             Msg::Agent(e) => self.on_agent_event(e),
             Msg::RepoSettings(p, s) => self.on_repo_settings(p, s),
@@ -3564,6 +3587,8 @@ impl Ui {
         if self.r.files_view {
             self.load_files_tree();
         }
+        // Commits, checkouts, fetches made outside ffwd: reload the history.
+        self.check_repo_moved();
         if self.r.changes_view {
             self.reload_changes();
         } else if let (Some(g), Some(t)) = (self.git_for_tab(), self.tabs.get(self.cur_tab)) {
@@ -3574,6 +3599,70 @@ impl Ui {
                 }
             });
         }
+    }
+
+    /// Asks a worker whether the refs or HEAD moved since the history
+    /// loaded (`refs::state_key`); if so, `RepoMoved` reloads it. Nothing
+    /// is asked while the history loads or an operation of ffwd's runs:
+    /// those reload by themselves.
+    pub(super) fn check_repo_moved(&mut self) {
+        let Some(key) = self.r.refs.key else { return };
+        if self.r.op.is_some() || !self.r.log_done {
+            return;
+        }
+        let (Some(g), Some(t)) = (self.git_for_tab(), self.tabs.get(self.cur_tab)) else { return };
+        let sink = (self.sinks)(t.id);
+        crate::work::spawn("repo-moved", &sink, move |sink| {
+            if ffwd_core::refs::state_key(&g).is_ok_and(|k| k != key) {
+                sink(Msg::RepoMoved);
+            }
+        });
+    }
+
+    /// The repository moved on outside ffwd: the history, refs and status
+    /// load again and the selected commit stays selected.
+    fn on_repo_moved(&mut self) {
+        if self.r.refs.key.is_none() || self.r.op.is_some() {
+            return;
+        }
+        let search = self.r.search.take();
+        self.reload_current();
+        if let Some(s) = search {
+            let run = !s.input.text().trim().is_empty();
+            self.r.search = Some(s);
+            if run {
+                self.restart_search();
+            }
+        }
+    }
+
+    /// Watches the current repository's `.git` folder, so a commit made in
+    /// a terminal shows while ffwd is in the background. The watcher thread
+    /// sleeps in the OS until something is written (no polling, rule 5).
+    pub(super) fn watch_git_dir(&mut self) {
+        let Some(dir) = self.r.refs.common_dir.clone() else { return };
+        if cfg!(test) || self.git_watch.as_ref().is_some_and(|(d, _)| *d == dir) {
+            return;
+        }
+        let sink = (self.sinks)(0);
+        let d = dir.clone();
+        // Only ref changes wake the window: an editor refreshing the index
+        // every few seconds costs a few stat calls here, no Git process.
+        // The first stamp is read on a worker (file I/O, rule 1); until it
+        // is there, any change counts.
+        let last = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let (l, d0) = (last.clone(), dir.clone());
+        crate::work::spawn("ref-stamp", &sink, move |_| {
+            l.store(ffwd_core::refs::ref_files_stamp(&d0), std::sync::atomic::Ordering::Relaxed);
+        });
+        let on_change = move || {
+            let now = ffwd_core::refs::ref_files_stamp(&d);
+            if last.swap(now, std::sync::atomic::Ordering::Relaxed) != now {
+                sink(Msg::GitDirTouched(d.clone()));
+            }
+        };
+        // The old watcher stops when it is dropped here.
+        self.git_watch = crate::platform::watch_dir(&dir, Box::new(on_change)).map(|w| (dir, w));
     }
 
     pub fn pointer_left(&mut self) {
@@ -8304,6 +8393,75 @@ mod tests {
     /// The commit message in the details (FF-57): a long body shows up to
     /// five lines and moves the file list down; a short one keeps the
     /// default height; repaints match full paints.
+    #[test]
+    fn outside_commits_show_after_focus() {
+        use std::sync::mpsc;
+        let mut te = TextEngine::new();
+        let Some(f) = load_fonts(&mut te) else { return };
+        let dir = std::env::temp_dir().join(format!("ffwd-ui-moved-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = Git { root: dir.clone() };
+        for a in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.name", "ffwd test"],
+            &["config", "user.email", "test@example.invalid"],
+            &["config", "commit.gpgsign", "false"],
+        ] {
+            g.output(a).unwrap();
+        }
+        std::fs::write(dir.join("a.txt"), "a\n").unwrap();
+        g.output(&["add", "."]).unwrap();
+        g.output(&["commit", "-q", "-m", "First"]).unwrap();
+        let (tx, rx) = mpsc::channel::<(u64, Msg)>();
+        let tx = Arc::new(std::sync::Mutex::new(tx));
+        let sinks: SinkFactory = Arc::new(move |id| {
+            let tx = tx.clone();
+            Arc::new(move |m| {
+                if let Ok(t) = tx.lock() {
+                    let _ = t.send((id, m));
+                }
+            })
+        });
+        crate::work::start(dir.clone(), &sinks(1));
+        let empty = crate::settings::Settings::parse("");
+        let mut ui = Ui::new(te, f, empty.clone(), empty, Some((1, dir.clone())), sinks, 1280, 800, 1.0);
+        let pump = |ui: &mut Ui, what: &str, done: &dyn Fn(&Ui) -> bool| {
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while !done(ui) {
+                let left = until.saturating_duration_since(std::time::Instant::now());
+                assert!(!left.is_zero(), "timed out waiting for {what}");
+                if let Ok((id, m)) = rx.recv_timeout(left) {
+                    ui.on_tab_msg(id, m);
+                }
+            }
+        };
+        let loaded = |n: usize| move |u: &Ui| u.r.log_done && u.r.commits.len() == n && u.r.refs.key.is_some();
+        pump(&mut ui, "the history", &loaded(1));
+        assert!(ui.r.refs.common_dir.as_ref().is_some_and(|d| d.join("HEAD").exists()));
+        // Committed in a terminal while ffwd was in the background.
+        std::fs::write(dir.join("a.txt"), "b\n").unwrap();
+        g.output(&["commit", "-q", "-am", "Second"]).unwrap();
+        ui.on_window_focus();
+        pump(&mut ui, "the reloaded history", &loaded(2));
+        assert_eq!(&*ui.r.commits[0].subject, "Second");
+        // A new branch on the same commit moves the key too.
+        g.output(&["branch", "side"]).unwrap();
+        ui.on_window_focus();
+        pump(&mut ui, "the new branch", &|u: &Ui| u.r.refs.refs.iter().any(|r| &*r.name == "side"));
+        // The watcher's message (window in the background): another
+        // repository's folder is ignored, this one's reloads.
+        pump(&mut ui, "the reload to settle", &loaded(2));
+        std::fs::write(dir.join("a.txt"), "c\n").unwrap();
+        g.output(&["commit", "-q", "-am", "Third"]).unwrap();
+        ui.on_tab_msg(0, Msg::GitDirTouched(dir.join("elsewhere")));
+        assert!(ui.r.refs.key.is_some(), "another folder doesn't reload");
+        let gd = ui.r.refs.common_dir.clone().unwrap();
+        ui.on_tab_msg(0, Msg::GitDirTouched(gd));
+        pump(&mut ui, "the third commit", &loaded(3));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn details_show_more_of_the_message() {
         use std::sync::mpsc;

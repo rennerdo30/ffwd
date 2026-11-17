@@ -41,6 +41,11 @@ pub struct Refs {
     pub remotes: Vec<crate::remotes::Remote>,
     /// The submodules (only read when `.gitmodules` exists).
     pub submodules: Vec<crate::submodules::Submodule>,
+    /// `state_key` read just before these refs: a different key later means
+    /// the repository moved on outside ffwd. Set by the loader.
+    pub key: Option<u64>,
+    /// Git's common directory (`.git`, shared by all worktrees), to watch.
+    pub common_dir: Option<std::path::PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -149,6 +154,69 @@ pub fn load(git: &Git) -> Result<Refs, GitError> {
         }
     }
     Ok(refs)
+}
+
+/// A fingerprint of what the history shows: every branch, remote branch
+/// and tag, the stash's tip, which branch is checked out and HEAD. Two
+/// read-only Git calls, so it is cheap enough to run whenever the window
+/// gets focus or the `.git` folder changes; a different key means the
+/// history needs to reload. Working-tree edits don't change it.
+pub fn state_key(git: &Git) -> Result<u64, GitError> {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    let fmt = "--format=%(objectname) %(HEAD) %(refname)";
+    git.output_limited(&["for-each-ref", fmt, "refs/heads", "refs/remotes", "refs/tags", "refs/stash"], 64 << 20)?
+        .hash(&mut h);
+    // Detached HEAD has no `*` above; an empty repository has no HEAD yet.
+    git.output_limited(&["rev-parse", "--verify", "-q", "HEAD"], 4096).unwrap_or_default().hash(&mut h);
+    Ok(h.finish())
+}
+
+/// A stamp of the files where refs live, from file metadata only (no Git
+/// call): HEAD, packed-refs, each worktree's HEAD and every folder under
+/// `refs/` (a folder's modified time moves when a ref in it is written,
+/// renamed or deleted). A watcher compares stamps to ignore what isn't a
+/// ref change, such as the index being refreshed by `git status`.
+pub fn ref_files_stamp(common_dir: &std::path::Path) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    let mut stamp = |p: &std::path::Path| {
+        if let Ok(m) = std::fs::metadata(p) {
+            (m.modified().ok(), m.len()).hash(&mut h);
+        }
+    };
+    stamp(&common_dir.join("HEAD"));
+    stamp(&common_dir.join("packed-refs"));
+    if let Ok(rd) = std::fs::read_dir(common_dir.join("worktrees")) {
+        for e in rd.flatten() {
+            stamp(&e.path().join("HEAD"));
+        }
+    }
+    // Folders only, bounded: ref folders are few even with many refs.
+    let mut dirs = vec![common_dir.join("refs")];
+    let mut seen = 0;
+    while let Some(d) = dirs.pop() {
+        stamp(&d);
+        seen += 1;
+        if seen > 10_000 {
+            break;
+        }
+        if let Ok(rd) = std::fs::read_dir(&d) {
+            dirs.extend(rd.flatten().filter(|e| e.file_type().is_ok_and(|t| t.is_dir())).map(|e| e.path()));
+        }
+    }
+    h.finish()
+}
+
+/// Git's common directory (where the refs live), absolute.
+pub fn common_dir(git: &Git) -> Option<std::path::PathBuf> {
+    let out = git.output_limited(&["rev-parse", "--git-common-dir"], 4096).ok()?;
+    let p = std::path::PathBuf::from(String::from_utf8_lossy(out.trim_ascii()).into_owned());
+    if p.as_os_str().is_empty() {
+        return None;
+    }
+    // Relative to the folder git ran in.
+    Some(if p.is_absolute() { p } else { git.root.join(p) })
 }
 
 fn parse_track(s: &str) -> (u32, u32) {
@@ -267,6 +335,57 @@ mod tests {
             assert!(check_ref_name(bad).is_err(), "{bad:?} should be refused");
         }
         assert_eq!(check_ref_name("my branch").unwrap_err(), "A name can't contain a space.");
+    }
+
+    #[test]
+    fn state_key_follows_refs_not_files() {
+        use crate::git::Git;
+        let dir = std::env::temp_dir().join(format!("ffwd-refs-key-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = Git { root: dir.clone() };
+        for a in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.name", "ffwd test"],
+            &["config", "user.email", "test@example.invalid"],
+            &["config", "commit.gpgsign", "false"],
+        ] {
+            g.output(a).unwrap();
+        }
+        let empty = super::state_key(&g).unwrap();
+        std::fs::write(dir.join("a.txt"), "a\n").unwrap();
+        g.output(&["add", "."]).unwrap();
+        g.output(&["commit", "-q", "-m", "one"]).unwrap();
+        let one = super::state_key(&g).unwrap();
+        assert_ne!(empty, one, "a commit moves the key");
+        let cd = super::common_dir(&g).unwrap();
+        let st = super::ref_files_stamp(&cd);
+        std::fs::write(dir.join("a.txt"), "b").unwrap();
+        g.output(&["status", "--porcelain"]).unwrap();
+        g.output(&["add", "."]).unwrap();
+        assert_eq!(st, super::ref_files_stamp(&cd), "index writes leave the ref stamp alone");
+        g.output(&["commit", "-q", "-m", "two"]).unwrap();
+        let st2 = super::ref_files_stamp(&cd);
+        assert_ne!(st, st2, "a commit moves the ref stamp");
+        g.output(&["update-ref", "refs/heads/main", "HEAD~1"]).unwrap();
+        assert_ne!(st2, super::ref_files_stamp(&cd), "rewriting an existing ref moves it");
+        g.output(&["update-ref", "refs/heads/main", "HEAD@{1}"]).unwrap();
+        let one = super::state_key(&g).unwrap();
+        assert_eq!(one, super::state_key(&g).unwrap(), "stable while nothing changes");
+        std::fs::write(dir.join("a.txt"), "edited\n").unwrap();
+        g.output(&["add", "."]).unwrap();
+        assert_eq!(one, super::state_key(&g).unwrap(), "working-tree and index changes don't");
+        g.output(&["switch", "-q", "-c", "side"]).unwrap();
+        let side = super::state_key(&g).unwrap();
+        assert_ne!(one, side, "a new branch and a switch move it");
+        g.output(&["switch", "-q", "main"]).unwrap();
+        assert_ne!(side, super::state_key(&g).unwrap(), "switching back on the same commit moves it");
+        g.output(&["tag", "v1"]).unwrap();
+        g.output(&["stash", "-q"]).unwrap();
+        let tagged = super::state_key(&g).unwrap();
+        assert_ne!(one, tagged, "tags and stashes move it");
+        assert!(cd.is_absolute() && cd.join("HEAD").exists(), "{}", cd.display());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
