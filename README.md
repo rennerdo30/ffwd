@@ -41,6 +41,7 @@ Download the newest release from [ffwd.renner.dev](https://ffwd.renner.dev) or t
 
 - **Windows:** `ffwd-<version>-setup.exe`, a per-user setup (no admin rights) that updates itself, or the portable zip.
 - **macOS** (Apple silicon) and **Linux** (x86_64): `.tar.gz` archives.
+- **From [crates.io](https://crates.io/crates/ffwd)**, with Rust 1.100 or newer: `cargo install --locked ffwd@<version>`. Betas need the version; from the first stable release on, `cargo install --locked ffwd` is enough.
 
 Details and checksums: [Installing ffwd](docs/INSTALL.md).
 
