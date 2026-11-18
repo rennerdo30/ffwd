@@ -2129,7 +2129,7 @@ impl Ui {
 /// commented template first). Runs on a worker: file and process work stay
 /// off the UI thread.
 /// ffwd's own licence, for builds without LICENSE.txt beside them.
-const LICENSE: &str = include_str!("../../../LICENSE");
+const LICENSE: &str = include_str!("../LICENSE");
 
 /// Where ffwd's source lives.
 const SOURCE_URL: &str = "https://github.com/rennerdo30/ffwd";

@@ -1,14 +1,17 @@
 [package]
 name = "ffwd-agent"
-description = "Experimental agent workspaces for ffwd: runs a coding agent in its own worktree and sandbox. No UI dependencies."
+description = "Experimental agent workspaces for ffwd: runs a coding agent in its own worktree and sandbox. No UI dependencies. Internal to ffwd: no stable API."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 publish.workspace = true
+include = ["src/**/*.rs", "LICENSE"]
 
 [dependencies]
-ffwd-core = { path = "../ffwd-core" }
+ffwd-core.workspace = true
 
 # The terminal window of a terminal session (FF-23): CreateProcessW with a
 # new console and no inherited handles.

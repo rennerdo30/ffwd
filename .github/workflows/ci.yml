@@ -56,6 +56,24 @@ jobs:
           $null = $toml -match '(?m)^\[workspace\.package\][\s\S]*?^version\s*=\s*"([^"]+)"'
           $v = $Matches[1]
           ./scripts/test-installer.ps1 -Setup (Resolve-Path "artifacts/installer/ffwd-$v-setup.exe") -Version $v
+  crates:
+    name: crates.io packages (check only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: "true"
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+      - name: Every crate carries the root LICENSE unchanged
+        run: for c in crates/*/; do cmp LICENSE "${c}LICENSE"; done
+      # Packs all six crates and builds them from the packed sources alone,
+      # as crates.io would. Publishes nothing and needs no token.
+      - run: cargo package --workspace --locked
   deny:
     name: cargo-deny (licenses)
     runs-on: ubuntu-latest

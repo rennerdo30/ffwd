@@ -1,0 +1,105 @@
+name: publish-crate
+
+# Publishes to crates.io. Manual only, for a tag on main
+# (docs/RELEASING.md, "crates.io"):
+# - `vX.Y.Z[-pre.N]`, an ffwd release whose GitHub release the owner has
+#   already published: the app and its four internal crates, plus
+#   ffwd-render if its version is not on crates.io yet;
+# - `ffwd-render-vX.Y.Z`: ffwd-render alone, at that version.
+# The token exists only in the last step of the `publish` job, behind the
+# `crates-io` environment; everything before it runs without one.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to publish: vX.Y.Z[-pre.N] (ffwd) or ffwd-render-vX.Y.Z'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-crate
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: ${{ inputs.tag }}
+
+jobs:
+  verify:
+    name: Check the tag and package (no token)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      sha: ${{ steps.tag.outputs.sha }}
+      packages: ${{ steps.tag.outputs.packages }}
+    env:
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: "true"
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: The tag is on main and matches the crate versions
+        id: tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          semver='[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?'
+          # `version = "…"` of a [package] or [workspace.package] table.
+          version_in() { sed -n "/^\[$2\]/,/^\[/s/^version = \"\(.*\)\"$/\1/p" "$1"; }
+          render=$(version_in crates/ffwd-render/Cargo.toml package)
+          if [[ "$RELEASE_TAG" =~ ^v$semver$ ]]; then
+            version=$(version_in Cargo.toml 'workspace\.package')
+            [ "$RELEASE_TAG" = "v$version" ] || { echo "Tag $RELEASE_TAG does not match the workspace version $version"; exit 1; }
+            draft=$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)
+            [ "$draft" = "false" ] || { echo "The GitHub release $RELEASE_TAG is not published yet"; exit 1; }
+            packages="-p ffwd-core -p ffwd-ai -p ffwd-update -p ffwd-agent -p ffwd"
+            # The sparse index lists every published version of ffwd-render.
+            if ! curl -fsS https://index.crates.io/ff/wd/ffwd-render 2>/dev/null | grep -qF "\"vers\":\"$render\""; then
+              packages="-p ffwd-render $packages"
+            fi
+          elif [[ "$RELEASE_TAG" =~ ^ffwd-render-v$semver$ ]]; then
+            [ "$RELEASE_TAG" = "ffwd-render-v$render" ] || { echo "Tag $RELEASE_TAG does not match ffwd-render $render"; exit 1; }
+            packages="-p ffwd-render"
+          else
+            echo "Not a publish tag: $RELEASE_TAG"; exit 1
+          fi
+          sha=$(git rev-parse --verify "refs/tags/$RELEASE_TAG^{commit}")
+          git merge-base --is-ancestor "$sha" origin/main || { echo "$RELEASE_TAG ($sha) is not on main"; exit 1; }
+          echo "Publishing: $packages at $sha"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "packages=$packages" >> "$GITHUB_OUTPUT"
+      - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+      - name: Every crate carries the root LICENSE unchanged
+        run: for c in crates/*/; do cmp LICENSE "${c}LICENSE"; done
+      - name: Package and build from the packed sources
+        env:
+          PACKAGES: ${{ steps.tag.outputs.packages }}
+        # Word splitting of $PACKAGES is intended: "-p a -p b".
+        run: cargo package --locked $PACKAGES
+
+  publish:
+    name: Publish to crates.io
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: crates-io
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.verify.outputs.sha }}
+          persist-credentials: false
+      # The same commit and crates `verify` packaged and built; cargo
+      # publishes them in dependency order and waits for each to reach the
+      # index.
+      - name: cargo publish
+        env:
+          PACKAGES: ${{ needs.verify.outputs.packages }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish --locked --no-verify $PACKAGES

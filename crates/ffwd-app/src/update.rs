@@ -5,7 +5,7 @@
 
 use ffwd_update::{Candidate, Channel, Version};
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 /// Per-user data folder (not the roaming settings folder).
@@ -35,6 +35,37 @@ pub fn installed() -> bool {
     }
     #[cfg(not(windows))]
     false
+}
+
+/// Whether this copy was built by `cargo install`: it sits in Cargo's `bin`
+/// folder and updates the same way, not through the setup.
+pub fn from_cargo() -> bool {
+    let Ok(exe) = std::env::current_exe() else { return false };
+    let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from);
+    in_cargo_bin(&exe, std::env::var_os("CARGO_HOME").map(PathBuf::from), home)
+}
+
+fn in_cargo_bin(exe: &Path, cargo_home: Option<PathBuf>, home: Option<PathBuf>) -> bool {
+    let Some(bin) = cargo_home.or_else(|| home.map(|h| h.join(".cargo"))).map(|c| c.join("bin")) else {
+        return false;
+    };
+    exe.parent().is_some_and(|dir| {
+        if cfg!(windows) { dir.to_string_lossy().eq_ignore_ascii_case(&bin.to_string_lossy()) } else { dir == bin }
+    })
+}
+
+/// The command that updates a `cargo install` copy to `version`.
+fn cargo_command(version: &Version) -> String {
+    format!("cargo install --locked ffwd@{version}")
+}
+
+/// Where to get `version` for a copy that cannot install it itself.
+fn manual_update(version: &Version) -> String {
+    if from_cargo() {
+        format!("run {}", cargo_command(version))
+    } else {
+        format!("get ffwd {version} from {}", ffwd_update::RELEASE_PAGE)
+    }
 }
 
 /// Settings `[update] check = true|false` and `channel = "stable"|"beta"`.
@@ -99,17 +130,12 @@ pub fn spawn_check(policy: Policy, done: impl FnOnce(Result<Outcome, String>) + 
 fn install(c: &Candidate) -> Result<(), String> {
     #[cfg(not(windows))]
     {
-        let _ = c;
-        Err(format!("Download ffwd {} from {}", c.version, ffwd_update::RELEASE_PAGE))
+        Err(format!("To update, {}", manual_update(&c.version)))
     }
     #[cfg(windows)]
     {
         if !installed() {
-            return Err(format!(
-                "This copy was not installed by the setup; get ffwd {} from {}",
-                c.version,
-                ffwd_update::RELEASE_PAGE
-            ));
+            return Err(format!("This copy was not installed by the setup; {}", manual_update(&c.version)));
         }
         let setup = ffwd_update::download_verified(c).map_err(|e| e.to_string())?;
         // A fresh folder per attempt: never runs a file someone else placed.
@@ -146,7 +172,31 @@ pub fn spawn_install(c: Candidate, done: impl FnOnce(Result<(), String>) + Send 
 pub fn notice(version: &Version) -> String {
     if installed() {
         format!("ffwd {version} is available · Ctrl+Shift+U to install")
+    } else if from_cargo() {
+        format!("ffwd {version} is available · {}", cargo_command(version))
     } else {
         format!("ffwd {version} is available · {}", ffwd_update::RELEASE_PAGE)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_copy_in_cargos_bin_folder_updates_with_cargo() {
+        let home = PathBuf::from("home").join("me");
+        let bin = home.join(".cargo").join("bin");
+        let exe = bin.join("ffwd");
+        assert!(in_cargo_bin(&exe, None, Some(home.clone())));
+        // CARGO_HOME wins over the home folder.
+        let elsewhere = PathBuf::from("tools").join("cargo");
+        assert!(!in_cargo_bin(&exe, Some(elsewhere.clone()), Some(home.clone())));
+        assert!(in_cargo_bin(&elsewhere.join("bin").join("ffwd"), Some(elsewhere), Some(home.clone())));
+        // A copy unpacked anywhere else is not Cargo's.
+        assert!(!in_cargo_bin(&home.join("apps").join("ffwd"), None, Some(home)));
+        assert!(!in_cargo_bin(&exe, None, None));
+        let v = Version::parse("0.2.0-beta.11").unwrap();
+        assert_eq!(cargo_command(&v), "cargo install --locked ffwd@0.2.0-beta.11");
     }
 }

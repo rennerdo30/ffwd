@@ -1,9 +1,9 @@
-# Writes assets/logo/ffwd.ico (16, 24, 32, 48, 64 and 256 px, PNG entries)
+# Writes crates/ffwd-app/assets/ffwd.ico (16, 24, 32, 48, 64 and 256 px, PNG entries)
 # from the icon ffwd draws itself (`ffwd --icon-png <file> <size>`), so the
 # installer icon always matches the window icon and the SVG logo.
 #   scripts\make-icon.ps1
 [CmdletBinding()]
-param([string]$Output = (Join-Path (Split-Path -Parent $PSScriptRoot) 'assets/logo/ffwd.ico'))
+param([string]$Output = (Join-Path (Split-Path -Parent $PSScriptRoot) 'crates/ffwd-app/assets/ffwd.ico'))
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $sizes = 16, 24, 32, 48, 64, 256

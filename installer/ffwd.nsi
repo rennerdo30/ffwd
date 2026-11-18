@@ -42,8 +42,8 @@ VIAddVersionKey "FileVersion" "${VERSION}"
 VIAddVersionKey "FileDescription" "ffwd ${VERSION} setup"
 VIAddVersionKey "LegalCopyright" "MIT License"
 
-!define MUI_ICON "..\assets\logo\ffwd.ico"
-!define MUI_UNICON "..\assets\logo\ffwd.ico"
+!define MUI_ICON "..\crates\ffwd-app\assets\ffwd.ico"
+!define MUI_UNICON "..\crates\ffwd-app\assets\ffwd.ico"
 !define MUI_ABORTWARNING
 !define MUI_FINISHPAGE_RUN "$INSTDIR\ffwd.exe"
 !define MUI_FINISHPAGE_RUN_TEXT "Start ffwd"
