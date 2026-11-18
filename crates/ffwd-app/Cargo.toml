@@ -5,23 +5,29 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 publish.workspace = true
+readme = "../../README.md"
+keywords = ["git", "gui", "desktop", "vcs"]
+categories = ["development-tools"]
+include = ["src/**/*.rs", "build.rs", "assets/ffwd.ico", "LICENSE"]
 
 [[bin]]
 name = "ffwd"
 path = "src/main.rs"
 
 [dependencies]
-ffwd-core = { path = "../ffwd-core" }
-ffwd-agent = { path = "../ffwd-agent" }
-ffwd-render = { path = "../ffwd-render" }
+ffwd-core.workspace = true
+ffwd-agent.workspace = true
+ffwd-render.workspace = true
 winit = "0.30.13"
 softbuffer = "0.4.8"
 raw-window-handle = "0.6.2"
 png = "0.18.1"
 jpeg-decoder = { version = "0.3.2", default-features = false }
-ffwd-update = { path = "../ffwd-update" }
-ffwd-ai = { path = "../ffwd-ai" }
+ffwd-update.workspace = true
+ffwd-ai.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = [

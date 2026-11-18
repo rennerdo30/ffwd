@@ -4,14 +4,14 @@ Every release needs the owner's yes. CI builds and tests the packages and prepar
 
 ## Versions
 
-There is one version for the whole workspace: `version` under `[workspace.package]` in `Cargo.toml`, following SemVer.
+There is one version for the whole workspace: `version` under `[workspace.package]` in `Cargo.toml`, following SemVer. The five internal crates under `[workspace.dependencies]` pin that same version exactly (`version = "=X.Y.Z"`); a bump changes all six lines, and cargo refuses to build if one is missed.
 - Prereleases look like `0.2.0-beta.1`. Their tags have a `-` and become GitHub prereleases.
 - A stable `0.2.0` ranks above every `0.2.0-…`.
 
 ## Cutting a release
 
 1. **Prepare the commit on `main`:**
-   - set the workspace version;
+   - set the workspace version and the five `[workspace.dependencies]` pins;
    - move the `## Unreleased` notes in [`CHANGELOG.md`](../CHANGELOG.md) into a `## X.Y.Z` section;
    - commit, and let CI run.
 2. **Tag that commit and push the tag:**
@@ -29,8 +29,32 @@ There is one version for the whole workspace: `version` under `[workspace.packag
    - It writes one `SHA256SUMS.txt` over all packages and creates a **draft** release with the changelog section as notes.
    - Rerunning it (Actions → release → Run workflow, with the tag) refreshes a draft and never touches a published release.
 4. **The owner reviews the draft and publishes it.** Only then do installed copies see the update.
+5. **crates.io** (optional, with the owner's yes; below).
 
 The setup's file name `ffwd-<version>-setup.exe` and `SHA256SUMS.txt` are the contract with the in-app updater; keep both names.
+
+## crates.io
+
+`cargo install ffwd` builds ffwd from crates.io. The app needs its five internal crates there too: `ffwd-render`, `ffwd-core`, `ffwd-ai`, `ffwd-update` and `ffwd-agent`, marked "Internal to ffwd: no stable API".
+
+- **Every change is packaged in CI.** The `crates.io packages` job runs `cargo package --workspace`. It packs all six crates, builds them from the packed sources alone and checks that each crate's `LICENSE` copy matches the root one. Nothing is uploaded.
+- **Publishing is manual,** through Actions → publish-crate → Run workflow, with a tag:
+  1. `verify` (no token) checks the tag:
+     - it is a version tag on `main`;
+     - it matches the workspace version;
+     - its GitHub release is already published.
+     It then packages everything again.
+  2. `publish` runs in the `crates-io` environment. It checks out the exact commit `verify` checked and runs `cargo publish --workspace --no-verify`. That is the only step that sees the token.
+- **One-time setup by the owner:**
+  - a crates.io API token with the `publish-new` and `publish-update` scopes, limited to the crate pattern `ffwd*`;
+  - stored as the `CARGO_REGISTRY_TOKEN` secret of a `crates-io` environment, with the owner as required reviewer.
+- **Prereleases:** `cargo install ffwd` skips prereleases. Until a stable version is out, users name one: `cargo install --locked ffwd@0.2.0-beta.10`.
+- **A version is permanent.** crates.io can yank a version but never delete it or reuse its number; a fix is a new version.
+- **Package contents:**
+  - each crate's `include` list: its sources and `LICENSE`;
+  - for the app, also `build.rs`, `assets/ffwd.ico` (the Windows icon) and the root `README.md`.
+  Paths outside a crate's folder do not exist in its package.
+- **Updates:** a copy built by `cargo install` (one in Cargo's `bin` folder) names the `cargo install` command for a new version instead of the release page.
 
 ## Updates in the app
 

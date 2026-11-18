@@ -7,7 +7,21 @@ version = "0.2.0-beta.10"
 edition = "2024"
 rust-version = "1.100"
 license = "MIT"
-publish = false
+repository = "https://github.com/rennerdo30/ffwd"
+homepage = "https://ffwd.renner.dev"
+# crates.io only. CI packs and builds every crate on each change (`cargo
+# package --workspace`); publishing is the manual publish-crate workflow,
+# after the owner has published the GitHub release (docs/RELEASING.md).
+publish = ["crates-io"]
+
+# The workspace crates depend on each other at exactly the workspace
+# version; a release bumps these together with `version` above.
+[workspace.dependencies]
+ffwd-core = { path = "crates/ffwd-core", version = "=0.2.0-beta.10" }
+ffwd-render = { path = "crates/ffwd-render", version = "=0.2.0-beta.10" }
+ffwd-ai = { path = "crates/ffwd-ai", version = "=0.2.0-beta.10" }
+ffwd-update = { path = "crates/ffwd-update", version = "=0.2.0-beta.10" }
+ffwd-agent = { path = "crates/ffwd-agent", version = "=0.2.0-beta.10" }
 
 # Fastest iteration (docs/BUILD.md):
 # - workspace crates: incremental, small debug info, fast to relink;
