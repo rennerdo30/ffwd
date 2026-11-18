@@ -1,14 +1,19 @@
 [package]
 name = "ffwd-render"
-description = "CPU canvas, vector primitives and text for the ffwd UI. No windowing. Internal to ffwd: no stable API."
-version.workspace = true
+description = "A small CPU canvas: solid fills, anti-aliased vector shapes and cached text, drawn into a 0x00RRGGBB pixel buffer. No windowing, no GPU."
+# Versioned on its own (not the workspace version): other projects depend on
+# it, so it follows SemVer for its public API (docs/RELEASING.md).
+version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 publish.workspace = true
-include = ["src/**/*.rs", "LICENSE"]
+readme = "README.md"
+keywords = ["canvas", "software-rendering", "2d", "text", "graphics"]
+categories = ["graphics", "rendering"]
+include = ["src/**/*.rs", "LICENSE", "README.md"]
 
 [dependencies]
 fontdue = "0.9.5"

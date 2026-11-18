@@ -4,14 +4,20 @@ Every release needs the owner's yes. CI builds and tests the packages and prepar
 
 ## Versions
 
-There is one version for the whole workspace: `version` under `[workspace.package]` in `Cargo.toml`, following SemVer. The five internal crates under `[workspace.dependencies]` pin that same version exactly (`version = "=X.Y.Z"`); a bump changes all six lines, and cargo refuses to build if one is missed.
+There is one version for the whole workspace: `version` under `[workspace.package]` in `Cargo.toml`, following SemVer. The four internal crates under `[workspace.dependencies]` (`ffwd-core`, `ffwd-ai`, `ffwd-update` and `ffwd-agent`) pin that same version exactly (`version = "=X.Y.Z"`). A bump changes all five lines, and cargo refuses to build if one is missed.
+
+**ffwd-render has its own version** (in `crates/ffwd-render/Cargo.toml`), because other projects depend on it from crates.io:
+- it follows SemVer for its public API: a breaking change bumps the minor version while it is `0.x`;
+- the workspace pin for it is an ordinary requirement (`version = "0.1.0"`);
+- its releases are tagged `ffwd-render-vX.Y.Z`.
 - Prereleases look like `0.2.0-beta.1`. Their tags have a `-` and become GitHub prereleases.
 - A stable `0.2.0` ranks above every `0.2.0-…`.
 
 ## Cutting a release
 
 1. **Prepare the commit on `main`:**
-   - set the workspace version and the five `[workspace.dependencies]` pins;
+   - set the workspace version and the four internal `[workspace.dependencies]` pins;
+   - if ffwd-render changed since its last release, bump its own version too;
    - move the `## Unreleased` notes in [`CHANGELOG.md`](../CHANGELOG.md) into a `## X.Y.Z` section;
    - commit, and let CI run.
 2. **Tag that commit and push the tag:**
@@ -35,16 +41,17 @@ The setup's file name `ffwd-<version>-setup.exe` and `SHA256SUMS.txt` are the co
 
 ## crates.io
 
-`cargo install ffwd` builds ffwd from crates.io. The app needs its five internal crates there too: `ffwd-render`, `ffwd-core`, `ffwd-ai`, `ffwd-update` and `ffwd-agent`, marked "Internal to ffwd: no stable API".
+`cargo install ffwd` builds ffwd from crates.io, so the app's crates have to be there too:
+- `ffwd-render` is a library for other projects as well, with its own version;
+- `ffwd-core`, `ffwd-ai`, `ffwd-update` and `ffwd-agent` are marked "Internal to ffwd: no stable API".
 
 - **Every change is packaged in CI.** The `crates.io packages` job runs `cargo package --workspace`. It packs all six crates, builds them from the packed sources alone and checks that each crate's `LICENSE` copy matches the root one. Nothing is uploaded.
-- **Publishing is manual,** through Actions → publish-crate → Run workflow, with a tag:
-  1. `verify` (no token) checks the tag:
-     - it is a version tag on `main`;
-     - it matches the workspace version;
-     - its GitHub release is already published.
-     It then packages everything again.
-  2. `publish` runs in the `crates-io` environment. It checks out the exact commit `verify` checked and runs `cargo publish --workspace --no-verify`. That is the only step that sees the token.
+- **Publishing is manual,** through Actions → publish-crate → Run workflow, with a tag on `main`:
+  - `vX.Y.Z`: a released ffwd version. Its GitHub release must already be published. This publishes the app and the four internal crates, and ffwd-render if its version is not on crates.io yet.
+  - `ffwd-render-vX.Y.Z`: publishes ffwd-render alone. The tag must match its version.
+- **The two jobs:**
+  1. `verify` runs without a token. It checks the tag, then packages and builds the chosen crates from their packed sources.
+  2. `publish` runs in the `crates-io` environment. It checks out the exact commit `verify` checked and runs `cargo publish --no-verify` for the same crates. That is the only step that sees the token.
 - **One-time setup by the owner:**
   - a crates.io API token with the `publish-new` and `publish-update` scopes, limited to the crate pattern `ffwd*`;
   - stored as the `CARGO_REGISTRY_TOKEN` secret of a `crates-io` environment, with the owner as required reviewer.
