@@ -22,6 +22,17 @@ Unpack `ffwd-<version>-macos-aarch64.tar.gz` or `ffwd-<version>-linux-x86_64.tar
 
 ffwd needs Git (`git` on PATH).
 
+## From crates.io
+
+With Rust 1.100 or newer, on any of the three systems:
+
+```sh
+cargo install --locked ffwd@<version>   # e.g. ffwd@0.2.0-beta.11
+```
+
+- While ffwd is in beta, name the version (the newest is on [crates.io](https://crates.io/crates/ffwd)); `cargo install` skips prereleases otherwise.
+- A copy installed this way names the `cargo install` command when a new version is out.
+
 ## Verifying a download
 
 `SHA256SUMS.txt` in each release lists every package:

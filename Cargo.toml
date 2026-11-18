@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.2.0-beta.10"
+version = "0.2.0-beta.11"
 edition = "2024"
 rust-version = "1.100"
 license = "MIT"
@@ -18,11 +18,11 @@ publish = ["crates-io"]
 # a release bumps these four pins together with `version` above.
 # ffwd-render has its own SemVer version, since other projects use it.
 [workspace.dependencies]
-ffwd-core = { path = "crates/ffwd-core", version = "=0.2.0-beta.10" }
+ffwd-core = { path = "crates/ffwd-core", version = "=0.2.0-beta.11" }
 ffwd-render = { path = "crates/ffwd-render", version = "0.1.0" }
-ffwd-ai = { path = "crates/ffwd-ai", version = "=0.2.0-beta.10" }
-ffwd-update = { path = "crates/ffwd-update", version = "=0.2.0-beta.10" }
-ffwd-agent = { path = "crates/ffwd-agent", version = "=0.2.0-beta.10" }
+ffwd-ai = { path = "crates/ffwd-ai", version = "=0.2.0-beta.11" }
+ffwd-update = { path = "crates/ffwd-update", version = "=0.2.0-beta.11" }
+ffwd-agent = { path = "crates/ffwd-agent", version = "=0.2.0-beta.11" }
 
 # Fastest iteration (docs/BUILD.md):
 # - workspace crates: incremental, small debug info, fast to relink;

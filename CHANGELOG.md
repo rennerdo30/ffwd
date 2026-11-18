@@ -2,7 +2,12 @@
 
 ## Unreleased
 
-- **Ready for crates.io:** all six crates now package and build from their packed sources, checked in CI on every change. A copy built with `cargo install` names the `cargo install` command for a new version. `ffwd-render` gets its own SemVer version (0.1.0) so other projects can depend on it. Nothing is on crates.io yet.
+## 0.2.0-beta.11
+
+ffwd is on crates.io: `cargo install --locked ffwd@0.2.0-beta.11` builds it from source.
+
+- **crates.io:** ffwd and its crates are published there. All six crates package and build from their packed sources, checked in CI on every change. `ffwd-render` has its own SemVer version (0.1.0), so other projects can depend on it.
+- **Updates for cargo installs:** a copy built with `cargo install` names the `cargo install` command for a new version instead of the release page.
 
 ## 0.2.0-beta.10
 
