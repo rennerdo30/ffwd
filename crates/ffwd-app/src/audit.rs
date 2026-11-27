@@ -189,14 +189,23 @@ pub fn run(ui: &mut Ui, screen: &str, px: &[u32], paint_ms: f64, check_partial: 
         let mut partial_buf = px.to_vec();
         let mut full_buf = vec![0u32; px.len()];
         let prev_sel = ui.r.sel;
+        let prev_top = ui.r.top;
+        let prev_sel_file = ui.r.sel_file;
+        let prev_details = ui.r.details.clone();
+        let prev_diff = ui.r.diff.clone();
         ui.key(Key::Down);
         let mut cv_part = Canvas::new(&mut partial_buf, ui.w, ui.h);
         ui.paint(&mut cv_part, false);
         let mut cv_full = Canvas::new(&mut full_buf, ui.w, ui.h);
         ui.paint(&mut cv_full, true);
         let mismatch = partial_buf.iter().zip(full_buf.iter()).filter(|(a, b)| a != b).count();
-        // Restore original selection so subsequent operations see the same state.
+        // Restore original selection and cached details/diff so subsequent
+        // screens in the same run see the exact populated demo state.
         ui.select(prev_sel);
+        ui.r.top = prev_top;
+        ui.r.sel_file = prev_sel_file;
+        ui.r.details = prev_details;
+        ui.r.diff = prev_diff;
         (Some(mismatch == 0), mismatch)
     } else {
         (None, 0)

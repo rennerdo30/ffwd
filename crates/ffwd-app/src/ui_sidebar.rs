@@ -8,8 +8,6 @@
 use super::*;
 use std::collections::{BTreeMap, HashSet};
 
-pub(super) const FILTER_H: f32 = 40.0;
-
 #[derive(Clone, Debug)]
 pub(super) struct SideItem {
     pub depth: u8,
@@ -62,12 +60,12 @@ impl SideStyle {
     pub const KEYS: [&'static str; 4] = ["rail", "tabs", "list", "bar"];
 
     pub fn from_setting(s: Option<&str>) -> SideStyle {
-        // The icon bar is the default (owner, 2026-11-14).
+        // Calm flat workspace list is the default (FF-65).
         match s {
             Some("rail") => SideStyle::Rail,
             Some("tabs") => SideStyle::Tabs,
-            Some("list") => SideStyle::List,
-            _ => SideStyle::Bar,
+            Some("bar") => SideStyle::Bar,
+            _ => SideStyle::List,
         }
     }
 }
@@ -209,11 +207,11 @@ impl Ui {
         Rect::new(s.x + rw, s.y, (s.w - rw - 1).max(0), s.h)
     }
 
-    /// Where you are, at the top of the sidebar (FF-57): the branch, its
-    /// sync with the upstream, the changes and a stopped operation.
+    /// Where you are, at the top of the sidebar (FF-57, calmed in FF-65):
+    /// one quiet borderless line with the current branch and its sync state.
     pub(super) fn side_here_rect(&self) -> Rect {
         let p = self.side_panel();
-        Rect::new(p.x + self.px(10.0), p.y + self.px(10.0), p.w - self.px(20.0), self.px(62.0))
+        Rect::new(p.x + self.px(8.0), p.y + self.px(6.0), p.w - self.px(16.0), self.px(30.0))
     }
 
     /// The views, with their live figures (FF-57).
@@ -239,14 +237,14 @@ impl Ui {
         let changes = match self.r.status {
             Some(s) if s.conflicted > 0 => {
                 let n = s.conflicted as usize;
-                loud("changes", "Changes", Glyph::Changes, format!("{} conflicts", fmt::num(n)), n, DEL())
+                loud("changes", "Local Changes", Glyph::Changes, format!("{} conflicts", fmt::num(n)), n, DEL())
             }
             Some(s) if s.total() > 0 => {
                 let n = s.total() as usize;
-                loud("changes", "Changes", Glyph::Changes, format!("{} changed", fmt::num(n)), n, MOD())
+                loud("changes", "Local Changes", Glyph::Changes, format!("{} changed", fmt::num(n)), n, MOD())
             }
-            Some(_) => calm("changes", "Changes", Glyph::Changes, "clean"),
-            None => calm("changes", "Changes", Glyph::Changes, "…"),
+            Some(_) => calm("changes", "Local Changes", Glyph::Changes, "clean"),
+            None => calm("changes", "Local Changes", Glyph::Changes, "…"),
         };
         let n = self.r.commits.len();
         let history = if self.r.log_done { format!("{} commits", fmt::num(n)) } else { format!("{}…", fmt::num(n)) };
@@ -254,75 +252,76 @@ impl Ui {
             0 => calm("activity", "Activity", Glyph::Text, "all fine"),
             f => loud("activity", "Activity", Glyph::Text, format!("{f} failed"), f as usize, DEL()),
         };
-        let agents = if !self.agent_config().0.enabled {
-            calm("agents", "Agents", Glyph::Terminal, "off")
-        } else {
-            match self.agent_counts() {
-                (0, 0) => calm("agents", "Agents", Glyph::Terminal, "idle"),
-                (0, r) => loud("agents", "Agents", Glyph::Terminal, format!("{r} to review"), r, ADD()),
-                (n, _) => loud("agents", "Agents", Glyph::Terminal, format!("{n} running"), n, ACCENT_FG()),
-            }
-        };
-        vec![
+        let mut list = vec![
             changes,
-            calm("all", "History", Glyph::Commit, &history),
+            calm("all", "All Commits", Glyph::Commit, &history),
             calm("files", "Files", Glyph::Folder, "browse the tree"),
             activity,
             calm("reflog", "Reflog", Glyph::Clock, "undo trail"),
-            agents,
-        ]
+        ];
+        // Hide Agents when disabled and closed (one-second rule: nothing unused takes space).
+        if self.agent_config().0.enabled || self.agent_view.is_some() {
+            let agents = match self.agent_counts() {
+                (0, 0) => calm("agents", "Agents", Glyph::Terminal, "idle"),
+                (0, r) => loud("agents", "Agents", Glyph::Terminal, format!("{r} to review"), r, ADD()),
+                (n, _) => loud("agents", "Agents", Glyph::Terminal, format!("{n} running"), n, ACCENT_FG()),
+            };
+            list.push(agents);
+        }
+        list
     }
 
-    /// The view on screen.
+    /// The view actually on screen (single source of truth; FF-64).
     pub(super) fn current_view(&self) -> &'static str {
         if self.agent_view.is_some() {
-            return "agents";
-        }
-        match self.r.side_sel.as_str() {
-            "changes" => "changes",
-            "files" => "files",
-            "activity" => "activity",
-            "reflog" => "reflog",
-            _ => "all",
+            "agents"
+        } else if self.r.changes_view {
+            "changes"
+        } else if self.r.files_view {
+            "files"
+        } else if self.r.activity_view {
+            "activity"
+        } else if self.r.reflog_view {
+            "reflog"
+        } else {
+            "all"
         }
     }
 
     /// The rail's buttons (Rail style).
     fn rail_rects(&self) -> Vec<Rect> {
         let s = self.lay.side;
-        let (h, gap) = (self.px(50.0), self.px(4.0));
-        (0..6)
+        let (h, gap) = (self.px(46.0), self.px(4.0));
+        let n = self.views().len() as i32;
+        (0..n)
             .map(|k| {
-                Rect::new(s.x + self.px(6.0), s.y + self.px(10.0) + k * (h + gap), self.rail_w() - self.px(12.0), h)
+                Rect::new(s.x + self.px(6.0), s.y + self.px(8.0) + k * (h + gap), self.rail_w() - self.px(12.0), h)
             })
             .collect()
     }
 
-    /// The rows under the card (List style).
+    /// The rows under the header (List style: compact 24 px flat rows).
     fn view_list_rects(&self) -> Vec<Rect> {
         let p = self.side_panel();
-        let top = self.side_here_rect().bottom() + self.px(8.0);
-        let h = self.px(28.0);
-        (0..6).map(|k| Rect::new(p.x + self.px(6.0), top + k * h, p.w - self.px(12.0), h)).collect()
+        let top = self.side_here_rect().bottom() + self.px(4.0);
+        let h = self.px(24.0);
+        let n = self.views().len() as i32;
+        (0..n).map(|k| Rect::new(p.x + self.px(6.0), top + k * h, p.w - self.px(12.0), h)).collect()
     }
 
-    /// The icon bar under the card (Bar style), and its segments.
+    /// The icon bar under the header (Bar style), and its segments.
     fn view_bar_rect(&self) -> Rect {
         let p = self.side_panel();
-        Rect::new(
-            p.x + self.px(10.0),
-            self.side_here_rect().bottom() + self.px(8.0),
-            p.w - self.px(20.0),
-            self.px(36.0),
-        )
+        Rect::new(p.x + self.px(8.0), self.side_here_rect().bottom() + self.px(6.0), p.w - self.px(16.0), self.px(32.0))
     }
 
     fn view_bar_rects(&self) -> Vec<Rect> {
-        let b = self.view_bar_rect().inset(self.px(3.0), self.px(3.0));
-        (0..6)
+        let b = self.view_bar_rect().inset(self.px(2.0), self.px(2.0));
+        let n = self.views().len().max(1) as i32;
+        (0..n)
             .map(|k| {
-                let x0 = b.x + b.w * k / 6;
-                let x1 = b.x + b.w * (k + 1) / 6;
+                let x0 = b.x + b.w * k / n;
+                let x1 = b.x + b.w * (k + 1) / n;
                 Rect::new(x0, b.y, x1 - x0, b.h)
             })
             .collect()
@@ -332,8 +331,9 @@ impl Ui {
     /// put while their figures change.
     fn view_tab_rects(&self) -> Vec<Rect> {
         let v = self.lay.views;
-        let w = self.px(124.0).min((v.w - self.px(16.0)) / 6).max(1);
-        (0..6).map(|k| Rect::new(v.x + self.px(8.0) + k * w, v.y, w, v.h)).collect()
+        let n = self.views().len().max(1) as i32;
+        let w = self.px(124.0).min((v.w - self.px(16.0)) / n).max(1);
+        (0..n).map(|k| Rect::new(v.x + self.px(8.0) + k * w, v.y, w, v.h)).collect()
     }
 
     /// The view buttons of the current style, in the order of `views`.
@@ -451,7 +451,7 @@ impl Ui {
         }
     }
 
-    /// List: one row per view, its figure at the right.
+    /// List: one calm flat row per view, showing only meaningful live counts.
     fn paint_view_list(&mut self, cv: &mut Canvas) {
         let (ui, semi) = (self.f.ui, self.f.semi);
         let cur = self.current_view();
@@ -459,93 +459,104 @@ impl Ui {
             let on = v.key == cur;
             let hot = self.side_view_hot == Some(k);
             if on {
-                cv.fill_round(r, self.pf(6.0), BG_SELECT_DIM());
+                cv.fill_round(r, self.pf(5.0), BG_SELECT());
                 cv.fill_round(
-                    Rect::new(r.x, r.y + self.px(6.0), self.px(3.0), r.h - self.px(12.0)),
-                    self.pf(1.5),
+                    Rect::new(r.x, r.y + self.px(5.0), self.px(2.0).max(2), r.h - self.px(10.0)),
+                    self.pf(1.0),
                     ACCENT(),
                 );
             } else if hot {
-                cv.fill_round(r, self.pf(6.0), BG_HOVER());
+                cv.fill_round(r, self.pf(5.0), BG_HOVER());
             }
             let cy = r.y as f32 + r.h as f32 / 2.0;
-            let base = (cy + self.pf(4.5)).round();
-            let gx = r.x as f32 + self.pf(16.0);
-            self.glyph(cv, v.glyph, gx, cy, self.pf(5.5), if on { ACCENT() } else { TEXT_3() });
+            let base = (cy + self.pf(4.2)).round();
+            let gx = r.x as f32 + self.pf(15.0);
+            self.glyph(cv, v.glyph, gx, cy, self.pf(5.2), if on { TEXT() } else { TEXT_3() });
             let font = if on { semi } else { ui };
             self.te.draw(
                 cv,
                 font,
-                self.pf(13.0),
-                gx + self.pf(14.0),
+                self.pf(12.5),
+                gx + self.pf(13.0),
                 base,
                 v.name,
                 if on { TEXT() } else { TEXT_2() },
-                r.w as f32,
+                r.w as f32 - self.pf(56.0),
             );
-            let fs = self.pf(11.5);
-            let f2 = if v.alert { semi } else { ui };
-            let tw = self.te.measure(f2, fs, &v.stat);
-            let mut sx = r.right() as f32 - tw - self.pf(10.0);
-            self.te.draw(cv, f2, fs, sx, base - self.pf(0.5), &v.stat, v.color, tw + 2.0);
-            if v.alert {
-                sx -= self.pf(9.0);
-                cv.fill_circle(sx, cy, self.pf(3.0), v.color);
+            // Only draw real numbers on the right (quiet count, no filler sentences).
+            let right_text = if v.alert {
+                Some((v.count.clone(), v.color, semi))
+            } else if v.key == "all" && !self.r.commits.is_empty() {
+                Some((fmt::num(self.r.commits.len()), TEXT_4(), ui))
+            } else {
+                None
+            };
+            if let Some((txt, col, f2)) = right_text {
+                let fs = self.pf(11.0);
+                let tw = self.te.measure(f2, fs, &txt);
+                let sx = r.right() as f32 - tw - self.pf(10.0);
+                self.te.draw(cv, f2, fs, sx, base - self.pf(0.5), &txt, col, tw + 2.0);
             }
         }
-        // A quiet rule between the views and the refs.
+        // A quiet hairline between the workspace views and the filter/refs.
         let rs = self.view_list_rects();
         if let Some(last) = rs.last() {
             let p = self.side_panel();
             cv.fill(
-                Rect::new(p.x + self.px(14.0), last.bottom() + self.px(5.0), p.w - self.px(28.0), 1),
+                Rect::new(p.x + self.px(10.0), last.bottom() + self.px(6.0), p.w - self.px(20.0), 1),
                 BORDER_SOFT(),
             );
         }
     }
 
-    /// Bar: a segmented row of icons, the open view (or the hovered one)
-    /// named with its figure beneath.
+    /// Bar: a borderless quiet icon strip, active view lit subtly.
     fn paint_view_bar(&mut self, cv: &mut Canvas) {
         let (ui, semi) = (self.f.ui, self.f.semi);
         let bar = self.view_bar_rect();
-        cv.round_border(bar, self.pf(9.0), BORDER_SOFT(), BG_PANEL());
+        cv.fill_round(bar, self.pf(6.0), BG_INPUT());
         let cur = self.current_view();
         let views = self.views();
         for (k, (v, r)) in views.iter().zip(self.view_bar_rects()).enumerate() {
             let on = v.key == cur;
             let hot = self.side_view_hot == Some(k);
             if on {
-                cv.fill_round(r, self.pf(7.0), ACCENT_SOFT());
+                cv.fill_round(r, self.pf(5.0), BG_SELECT());
             } else if hot {
-                cv.fill_round(r, self.pf(7.0), BG_HOVER());
+                cv.fill_round(r, self.pf(5.0), BG_HOVER());
             }
             let cy = r.y as f32 + r.h as f32 / 2.0;
-            // With a count, the icon steps left so the badge reads beside it.
-            let cx = r.x as f32 + r.w as f32 / 2.0 - if v.alert { self.pf(7.5) } else { 0.0 };
+            let cx = r.x as f32 + r.w as f32 / 2.0 - if v.alert { self.pf(5.5) } else { 0.0 };
             let gc = if on {
-                ACCENT_FG()
-            } else if hot {
                 TEXT()
+            } else if hot {
+                TEXT_2()
             } else {
                 TEXT_3()
             };
-            self.glyph(cv, v.glyph, cx, cy, self.pf(6.5), gc);
+            self.glyph(cv, v.glyph, cx, cy, self.pf(6.0), gc);
             if v.alert {
-                let right = (cx + self.pf(9.5) + self.bar_badge_w(v)).min(r.right() as f32 - self.pf(1.0));
-                self.view_badge(cv, right, cy, v);
+                let fs = self.pf(10.0);
+                self.te.draw(
+                    cv,
+                    semi,
+                    fs,
+                    cx + self.pf(8.5),
+                    (cy + self.pf(3.5)).round(),
+                    &v.count,
+                    v.color,
+                    self.pf(22.0),
+                );
             }
         }
-        // The caption: what the hovered (else the open) view is and holds.
         let k = self.side_view_hot.unwrap_or_else(|| views.iter().position(|v| v.key == cur).unwrap_or(0));
         if let Some(v) = views.get(k) {
-            let base = bar.bottom() as f32 + self.pf(17.0);
-            let x = bar.x as f32 + self.pf(6.0);
-            let end = self.te.draw(cv, semi, self.pf(12.0), x, base, v.name, TEXT_2(), bar.w as f32);
+            let base = bar.bottom() as f32 + self.pf(15.0);
+            let x = bar.x as f32 + self.pf(4.0);
+            let end = self.te.draw(cv, semi, self.pf(11.5), x, base, v.name, TEXT_2(), bar.w as f32);
             self.te.draw(
                 cv,
                 if v.alert { semi } else { ui },
-                self.pf(12.0),
+                self.pf(11.5),
                 end + self.pf(8.0),
                 base,
                 &v.stat,
@@ -553,12 +564,6 @@ impl Ui {
                 bar.right() as f32 - end - self.pf(8.0),
             );
         }
-    }
-
-    /// A count badge's width (see `view_badge`).
-    fn bar_badge_w(&mut self, v: &View) -> f32 {
-        let fs = self.pf(10.0);
-        (self.te.measure(self.f.semi, fs, &v.count) + self.pf(9.0)).max(self.pf(15.0))
     }
 
     /// Tabs: the views over the content, right of the sidebar.
@@ -607,16 +612,15 @@ impl Ui {
         }
     }
 
-    /// The filter field under the card (and the views, when they live in
-    /// the sidebar).
+    /// The filter field under the header/views: compact 24 px recessed input.
     pub(super) fn side_filter_rect(&self) -> Rect {
         let p = self.side_panel();
         let top = match self.side_style() {
-            SideStyle::Rail | SideStyle::Tabs => self.side_here_rect().bottom() + self.px(10.0),
+            SideStyle::Rail | SideStyle::Tabs => self.side_here_rect().bottom() + self.px(8.0),
             SideStyle::List => self.view_list_rects().last().map_or(0, |r| r.bottom()) + self.px(12.0),
-            SideStyle::Bar => self.view_bar_rect().bottom() + self.px(28.0),
+            SideStyle::Bar => self.view_bar_rect().bottom() + self.px(24.0),
         };
-        Rect::new(p.x + self.px(10.0), top, p.w - self.px(20.0), self.px(FILTER_H - 14.0))
+        Rect::new(p.x + self.px(8.0), top, p.w - self.px(16.0), self.px(24.0))
     }
 
     pub(super) fn side_list_rect(&self) -> Rect {
@@ -625,90 +629,63 @@ impl Ui {
         Rect::new(p.x, top, p.w, (p.bottom() - top).max(0))
     }
 
-    /// The card: line one the branch (or the detached commit) and its sync
-    /// as chips, line two the upstream and what waits in the working tree.
+    /// Compact borderless repository/branch status line at the top of the sidebar.
+    /// Shows the current branch (or stopped merge/rebase alert) and quiet sync
+    /// counts without a heavy card border or duplicate working-tree text.
     fn paint_side_here(&mut self, cv: &mut Canvas) {
-        let (ui, semi, mono) = (self.f.ui, self.f.semi, self.f.mono);
+        let semi = self.f.semi;
         let r = self.side_here_rect();
-        let hot = self.side_here_hot;
-        cv.round_border(
-            r,
-            self.pf(9.0),
-            if hot { BORDER_HOVER() } else { BORDER_SOFT() },
-            if hot { BG_HOVER() } else { BG_PANEL() },
-        );
+        if self.side_here_hot {
+            cv.fill_round(r, self.pf(5.0), BG_HOVER());
+        }
         let head = self.r.refs.refs.iter().find(|x| x.kind == RefKind::Local && x.is_head).cloned();
-        let x0 = r.x as f32 + self.pf(12.0);
-        let b1 = r.y as f32 + self.pf(24.0);
-        let b2 = r.y as f32 + self.pf(46.0);
-        let right = r.right() as f32 - self.pf(10.0);
-        // Line one: branch, then the sync chips from the right.
-        let mut chips: Vec<(String, u32, u32)> = Vec::new();
-        match &head {
-            Some(h) if h.upstream_gone => chips.push(("upstream gone".into(), DEL_BG(), DEL_TEXT())),
-            Some(h) if h.upstream.is_none() => chips.push(("no upstream".into(), BG_HOVER(), TEXT_3())),
-            Some(h) if h.ahead == 0 && h.behind == 0 => chips.push(("in sync".into(), ADD_BG(), ADD_TEXT())),
-            Some(h) => {
+        let x0 = r.x as f32 + self.pf(8.0);
+        let cy = r.y as f32 + r.h as f32 / 2.0;
+        let base = (cy + self.pf(4.2)).round();
+        let right = r.right() as f32 - self.pf(8.0);
+
+        // Right-aligned quiet sync state (or stopped-op warning).
+        let mut cx = right;
+        if let Some(op) = self.r.changes.in_progress {
+            let conflicts = self.r.status.map_or(0, |s| s.conflicted as usize);
+            let tag = if conflicts > 0 { format!("{op} · {conflicts}") } else { format!("{op}…") };
+            let tw = self.te.measure(semi, self.pf(11.0), &tag);
+            cx -= tw + self.pf(4.0);
+            self.te.draw(cv, semi, self.pf(11.0), cx + self.pf(4.0), base - self.pf(0.5), &tag, DEL(), tw + 2.0);
+            cx -= self.pf(6.0);
+        } else if let Some(h) = &head {
+            let mut parts: Vec<(String, u32)> = Vec::new();
+            if h.upstream_gone {
+                parts.push(("gone".into(), DEL()));
+            } else {
                 if h.behind > 0 {
-                    chips.push((format!("↓{}", h.behind), REMOTE_BG(), REMOTE_FG()));
+                    parts.push((format!("↓{}", h.behind), REMOTE_FG()));
                 }
                 if h.ahead > 0 {
-                    chips.push((format!("↑{}", h.ahead), ACCENT_SOFT(), ACCENT_FG()));
+                    parts.push((format!("↑{}", h.ahead), ACCENT_FG()));
                 }
             }
-            None => {}
+            for (t, fg) in parts.iter().rev() {
+                let tw = self.te.measure(semi, self.pf(11.0), t);
+                cx -= tw;
+                self.te.draw(cv, semi, self.pf(11.0), cx, base - self.pf(0.5), t, *fg, tw + 2.0);
+                cx -= self.pf(6.0);
+            }
         }
-        let mut cx = right;
-        for (t, bg, fg) in chips.iter().rev() {
-            let w = self.te.measure(semi, self.pf(11.0), t) + self.pf(14.0);
-            cx -= w;
-            let cr = Rect::new(cx as i32, (b1 - self.pf(14.0)) as i32, w as i32, self.px(19.0));
-            cv.fill_round(cr, self.pf(9.5), *bg);
-            self.te.draw(cv, semi, self.pf(11.0), cx + self.pf(7.0), b1 - self.pf(0.5), t, *fg, w);
-            cx -= self.pf(6.0);
-        }
-        let name_w = cx - x0 - self.pf(20.0);
+        let name_w = (cx - x0 - self.pf(18.0)).max(20.0);
         match &head {
             Some(h) => {
-                self.branch_icon(cv, x0 + self.pf(5.0), b1 - self.pf(4.5), ACCENT());
-                let fs = self.pf(14.0);
+                self.branch_icon(cv, x0 + self.pf(4.0), cy, TEXT_3());
+                let fs = self.pf(13.0);
                 let name = super::fit_middle(&mut self.te, semi, fs, &h.name, name_w);
-                self.te.draw(cv, semi, self.pf(14.0), x0 + self.pf(18.0), b1, &name, TEXT(), name_w + 2.0);
+                self.te.draw(cv, semi, fs, x0 + self.pf(16.0), base, &name, TEXT(), name_w + 2.0);
             }
             None => {
                 let at = self.r.refs.head.map(|h| h.short(8)).unwrap_or_default();
-                let t = if at.is_empty() { "No commit yet".to_string() } else { format!("Detached at {at}") };
-                self.te.draw(cv, semi, self.pf(14.0), x0, b1, &t, MOD(), name_w + 20.0);
+                let t = if at.is_empty() { "No commits".to_string() } else { format!("Detached {at}") };
+                self.te.draw(cv, semi, self.pf(13.0), x0, base, &t, MOD(), name_w + 18.0);
             }
         }
-        // Line two: a stopped operation first; else upstream and changes.
-        let st = self.r.status;
-        let conflicts = st.map_or(0, |s| s.conflicted as usize);
-        let changed = st.map_or(0, |s| s.total() as usize);
-        let mut x = x0;
-        let w2 = right - x0;
-        if let Some(op) = self.r.changes.in_progress {
-            let t = if conflicts > 0 {
-                format!("{op} stopped · {conflicts} conflicts")
-            } else {
-                format!("{op} in progress")
-            };
-            cv.fill_circle(x + self.pf(3.5), b2 - self.pf(4.0), self.pf(3.5), DEL());
-            self.te.draw(cv, semi, self.pf(12.0), x + self.pf(12.0), b2, &t, DEL_TEXT(), w2);
-            return;
-        }
-        if let Some(up) = head.as_ref().and_then(|h| h.upstream.clone()) {
-            x = self.te.draw(cv, mono, self.pf(11.5), x, b2, &format!("→ {up}"), TEXT_3(), w2 * 0.6) + self.pf(10.0);
-        }
-        let (t, c) = match changed {
-            0 => ("clean".to_string(), TEXT_4()),
-            n => (format!("{n} changed"), MOD()),
-        };
-        if changed > 0 {
-            cv.fill_circle(x + self.pf(3.0), b2 - self.pf(4.0), self.pf(3.0), MOD());
-            x += self.pf(10.0);
-        }
-        self.te.draw(cv, if changed > 0 { semi } else { ui }, self.pf(12.0), x, b2, &t, c, right - x);
     }
 
     fn side_visible_rows(&self) -> usize {
@@ -954,6 +931,7 @@ impl Ui {
                     self.leave_changes();
                     self.leave_files();
                     self.leave_activity();
+                    self.leave_reflog();
                     self.select(row as usize)
                 }
                 None if it.target.is_some() => {
@@ -1136,31 +1114,22 @@ impl Ui {
         self.paint_side_here(cv);
         self.paint_views(cv);
         let (ui, semi) = (self.f.ui, self.f.semi);
-        // Filter field.
+        // Quiet recessed filter field.
         let fr = self.side_filter_rect();
         let typing = self.focus == Focus::SideFilter;
-        cv.round_border(fr, self.pf(6.0), if typing { ACCENT() } else { BORDER() }, BG_INPUT());
+        cv.round_border(fr, self.pf(5.0), if typing { ACCENT() } else { BORDER_SOFT() }, BG_INPUT());
         let fcy = fr.y as f32 + fr.h as f32 / 2.0;
-        let fx = fr.x as f32 + self.pf(12.0);
-        cv.ring(fx + self.pf(3.5), fcy - self.pf(1.0), self.pf(4.0), self.pf(1.4), TEXT_3());
+        let fx = fr.x as f32 + self.pf(10.0);
+        cv.ring(fx + self.pf(3.2), fcy - self.pf(1.0), self.pf(3.6), self.pf(1.3), TEXT_4());
         cv.stroke(
-            &[(fx + self.pf(6.5), fcy + self.pf(2.0)), (fx + self.pf(9.0), fcy + self.pf(4.5))],
-            self.pf(1.4),
-            TEXT_3(),
+            &[(fx + self.pf(6.0), fcy + self.pf(1.8)), (fx + self.pf(8.2), fcy + self.pf(4.0))],
+            self.pf(1.3),
+            TEXT_4(),
         );
-        let fb = (fcy + self.pf(4.5)).round();
-        let tx = fx + self.pf(16.0);
+        let fb = (fcy + self.pf(4.2)).round();
+        let tx = fx + self.pf(15.0);
         if self.side_filter.is_empty() && !typing {
-            self.te.draw(
-                cv,
-                ui,
-                self.pf(12.5),
-                tx,
-                fb,
-                "Filter branches and tags",
-                TEXT_4(),
-                fr.w as f32 - self.pf(40.0),
-            );
+            self.te.draw(cv, ui, self.pf(12.0), tx, fb, "Filter", TEXT_4(), fr.w as f32 - self.pf(34.0));
         } else {
             let filt = self.side_filter.clone();
             let end = self.te.draw(cv, ui, self.pf(12.5), tx, fb, &filt, TEXT(), fr.w as f32 - self.pf(40.0));
@@ -1356,21 +1325,18 @@ impl Ui {
                 );
             }
             if it.kind == SideKind::Branch && !it.badge.is_empty() {
-                // Sync as chips: ↑ ahead (accent), ↓ behind (remote blue),
-                // gone (red), from the right.
+                // Quiet inline sync counts (no loud filled pill boxes on every branch).
                 let mut x = row.right() as f32 - self.pf(8.0);
                 for part in it.badge.split_whitespace().collect::<Vec<_>>().into_iter().rev() {
-                    let (bg, fg) = match part {
-                        p if p.starts_with('↑') => (ACCENT_SOFT(), ACCENT_FG()),
-                        p if p.starts_with('↓') => (REMOTE_BG(), REMOTE_FG()),
-                        _ => (DEL_BG(), DEL_TEXT()),
+                    let fg = match part {
+                        p if p.starts_with('↑') => ACCENT_FG(),
+                        p if p.starts_with('↓') => REMOTE_FG(),
+                        _ => DEL(),
                     };
-                    let w = self.te.measure(semi, self.pf(10.5), part) + self.pf(12.0);
+                    let w = self.te.measure(semi, self.pf(10.5), part);
                     x -= w;
-                    let r = Rect::new(x as i32, (cy - self.pf(8.5)) as i32, w as i32, self.px(17.0));
-                    cv.fill_round(r, self.pf(8.5), bg);
-                    self.te.draw(cv, semi, self.pf(10.5), x + self.pf(6.0), base - self.pf(1.0), part, fg, w);
-                    x -= self.pf(4.0);
+                    self.te.draw(cv, semi, self.pf(10.5), x, base - self.pf(0.5), part, fg, w + 2.0);
+                    x -= self.pf(6.0);
                 }
             } else if !it.badge.is_empty() && !quiet {
                 let bw = badge_w - self.pf(14.0);
@@ -1565,5 +1531,34 @@ mod tests {
         let labels: Vec<&str> = out.iter().map(|i| i.label.as_str()).collect();
         // The t3 folder holds the newest branch; inside it, newest first.
         assert_eq!(labels, ["t3", "a", "b", "main", "old"]);
+    }
+
+    /// Regression for FF-64: switching tabs or reloading while in Changes/Files/Reflog
+    /// must keep `current_view()` synced to the actual active view, never reverting to History.
+    #[test]
+    fn tab_switch_and_reload_preserve_active_view() {
+        let mut te = TextEngine::new();
+        let Some(f) = load_fonts(&mut te) else { return };
+        let empty = crate::settings::Settings::parse("");
+        let sinks: SinkFactory = Arc::new(|_| Arc::new(|_| {}));
+        let mut ui =
+            Ui::new(te, f, empty.clone(), empty, Some((1, PathBuf::from("/demo/repo-a"))), sinks, 1280, 800, 1.0);
+        ui.r.changes_view = true;
+        // Even if side_sel points at a branch or resets to "all", current_view reflects changes_view.
+        ui.r.side_sel = "b:main".into();
+        assert_eq!(ui.current_view(), "changes");
+
+        ui.open_tab(PathBuf::from("/demo/repo-b"));
+        assert_eq!(ui.current_view(), "all");
+        ui.r.files_view = true;
+        ui.r.side_sel = "all".into();
+        assert_eq!(ui.current_view(), "files");
+
+        // Switch back to repo-a: must still report Changes, not History.
+        ui.switch_tab(0);
+        assert_eq!(ui.current_view(), "changes");
+        // Switch back to repo-b: must still report Files.
+        ui.switch_tab(1);
+        assert_eq!(ui.current_view(), "files");
     }
 }

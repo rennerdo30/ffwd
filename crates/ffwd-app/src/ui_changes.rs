@@ -1165,13 +1165,14 @@ impl Ui {
                 head.h - self.px(8.0),
             );
             if side == Side::Unstaged {
-                let ow = self.px(26.0);
-                let ob = Rect::new(b.x - self.px(6.0) - ow, b.y, ow, b.h);
-                let (bg, border) = self.control_colors(Hot::Change(hits.len()), BG_BAR(), BORDER());
-                cv.round_border(ob, self.pf(6.0), border, bg);
+                let ow = self.px(24.0);
+                let ob = Rect::new(b.x - self.px(4.0) - ow, b.y, ow, b.h);
+                if self.is_hot(Hot::Change(hits.len())) {
+                    cv.fill_round(ob, self.pf(5.0), CONTROL_HOVER());
+                }
                 let (cx, cy) = (ob.x as f32 + ob.w as f32 / 2.0, ob.y as f32 + ob.h as f32 / 2.0);
                 for k in [-1.0f32, 0.0, 1.0] {
-                    cv.fill_circle(cx + k * self.pf(4.5), cy, self.pf(1.4), TEXT_2());
+                    cv.fill_circle(cx + k * self.pf(4.0), cy, self.pf(1.3), TEXT_3());
                 }
                 hits.push((ob, CHit::ListOptions));
                 let hidden = self.r.changes.hidden_untracked;
@@ -1182,18 +1183,12 @@ impl Ui {
                 }
             }
             if n_side > 0 {
-                let (bg, border) = self.control_colors(Hot::Change(hits.len()), BG_BAR(), BORDER());
-                cv.round_border(b, self.pf(6.0), border, bg);
-                self.te.draw(
-                    cv,
-                    semi,
-                    self.pf(11.5),
-                    b.x as f32 + self.pf(10.0),
-                    base - self.pf(0.5),
-                    label,
-                    TEXT_2(),
-                    bw,
-                );
+                let hot = Hot::Change(hits.len());
+                if self.is_hot(hot) {
+                    cv.fill_round(b, self.pf(5.0), CONTROL_HOVER());
+                }
+                let fg = if self.is_hot(hot) { TEXT() } else { TEXT_3() };
+                self.te.draw(cv, semi, self.pf(11.5), b.x as f32 + self.pf(10.0), base - self.pf(0.5), label, fg, bw);
                 hits.push((b, hit));
             }
             // Rows.
@@ -1463,8 +1458,8 @@ impl Ui {
         let label = if ax as f32 + full + self.pf(8.0) <= commit_x { "AI draft" } else { "AI" };
         let aw = self.te.measure(semi, self.pf(12.0), label) + self.pf(20.0);
         let air = Rect::new(ax, by, aw as i32, self.px(30.0));
-        let (bg, border) = if hot { (CONTROL_HOVER(), ACCENT_BORDER()) } else { (BG_BAR(), BORDER()) };
-        cv.round_border(air, self.pf(7.0), border, bg);
+        let (bg, border) = if hot { (CONTROL_HOVER(), ACCENT_BORDER()) } else { (BG_PANEL(), BORDER_SOFT()) };
+        cv.round_border(air, self.pf(6.0), border, bg);
         self.te.draw(
             cv,
             semi,
@@ -1472,7 +1467,7 @@ impl Ui {
             air.x as f32 + self.pf(10.0),
             (air.y as f32 + self.pf(20.0)).round(),
             label,
-            ACCENT_FG(),
+            if hot { ACCENT_FG() } else { TEXT_2() },
             aw,
         );
         hits.push((air, CHit::Ai));
@@ -1593,22 +1588,25 @@ impl Ui {
         let sel = self.selected_entry();
         let title = sel.as_ref().map_or_else(String::new, |e| e.path.to_string());
         let focus = self.r.changes.focus == CFocus::Diff;
-        // Unified or side by side, clickable (FF-35).
-        let lt = if self.diff_split { "Unified" } else { "Side by side" };
-        let lw = self.te.measure(semi, self.pf(11.5), lt) + self.pf(16.0);
+        // Unified or split, clickable (FF-35) — calm borderless ghost toggle.
+        let lt = if self.diff_split { "Unified" } else { "Split" };
+        let lw = self.te.measure(semi, self.pf(11.5), lt) + self.pf(14.0);
         let layout_btn =
             Rect::new(r.right() - self.px(10.0) - lw as i32, bar.y + self.px(4.0), lw as i32, bar.h - self.px(8.0));
         let hot = Hot::Change(hits.len());
-        let (lbg, lborder) = self.control_colors(hot, BG_BAR(), BORDER());
-        cv.round_border(layout_btn, self.pf(5.0), lborder, lbg);
-        self.te.draw(cv, semi, self.pf(11.5), layout_btn.x as f32 + self.pf(8.0), base, lt, TEXT_2(), lw);
+        if self.diff_split {
+            cv.fill_round(layout_btn, self.pf(5.0), BG_CHOSEN());
+        } else if self.is_hot(hot) {
+            cv.fill_round(layout_btn, self.pf(5.0), CONTROL_HOVER());
+        }
+        let lc = if self.diff_split || self.is_hot(hot) { TEXT() } else { TEXT_3() };
+        self.te.draw(cv, semi, self.pf(11.5), layout_btn.x as f32 + self.pf(7.0), base, lt, lc, lw);
         hits.push((layout_btn, CHit::Layout));
-        // Whitespace shown or ignored: the history's switch, the same look.
-        // On a narrow pane it gives way to the file name.
+        // Whitespace toggle: quiet ghost at rest, highlighted when active.
         let ws = self.diff_opts.ignore_whitespace;
-        let wt = if ws { "Whitespace ignored" } else { "Whitespace shown" };
-        let ww = self.te.measure(semi, self.pf(11.5), wt) + self.pf(16.0);
-        let ws_btn = Rect::new(layout_btn.x - self.px(6.0) - ww as i32, layout_btn.y, ww as i32, layout_btn.h);
+        let wt = if ws { "WS ignored" } else { "Ignore WS" };
+        let ww = self.te.measure(semi, self.pf(11.5), wt) + self.pf(14.0);
+        let ws_btn = Rect::new(layout_btn.x - self.px(4.0) - ww as i32, layout_btn.y, ww as i32, layout_btn.h);
         let mut left = layout_btn.x as f32;
         if ws_btn.x > r.x + self.px(140.0) {
             let hot = Hot::Change(hits.len());
@@ -1617,21 +1615,19 @@ impl Ui {
             } else if self.is_hot(hot) {
                 cv.fill_round(ws_btn, self.pf(5.0), CONTROL_HOVER());
             }
-            let wc = if ws { TEXT() } else { TEXT_2() };
-            self.te.draw(cv, semi, self.pf(11.5), ws_btn.x as f32 + self.pf(8.0), base, wt, wc, ww);
+            let wc = if ws || self.is_hot(hot) { TEXT() } else { TEXT_3() };
+            self.te.draw(cv, semi, self.pf(11.5), ws_btn.x as f32 + self.pf(7.0), base, wt, wc, ww);
             hits.push((ws_btn, CHit::Whitespace));
             left = ws_btn.x as f32;
         }
-        let hint = match (ws, side) {
-            (true, _) => "show whitespace to stage hunks or lines",
-            (false, Side::Unstaged) => "unstaged · Space or click picks lines · S stages them",
-            (false, Side::Staged) => "staged · Space or click picks lines · S unstages them",
-        };
-        let hw = self.te.measure(ui, self.pf(11.0), hint);
-        let hint_right = left - self.pf(12.0);
-        if hint_right - hw > r.x as f32 + self.pf(260.0) {
-            self.te.draw(cv, ui, self.pf(11.0), hint_right - hw, base, hint, TEXT_4(), hw + 2.0);
-            left = hint_right - hw;
+        if ws {
+            let hint = "show whitespace to stage hunks or lines";
+            let hw = self.te.measure(ui, self.pf(11.0), hint);
+            let hint_right = left - self.pf(12.0);
+            if hint_right - hw > r.x as f32 + self.pf(220.0) {
+                self.te.draw(cv, ui, self.pf(11.0), hint_right - hw, base, hint, TEXT_4(), hw + 2.0);
+                left = hint_right - hw;
+            }
         }
         let title_w = (left - r.x as f32 - pad - self.pf(8.0)).max(0.0);
         self.te.draw(

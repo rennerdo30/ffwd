@@ -483,9 +483,7 @@ impl Ui {
             return;
         };
         let n = v.choices.len();
-        let title = format!("{} · {} of {n} resolved", v.path, v.resolved());
-        self.te.draw(cv, semi, self.pf(12.5), r.x as f32 + self.pf(16.0), base, &title, TEXT(), r.w as f32 * 0.45);
-        // File buttons, right to left.
+        // File buttons first, right to left, so the title fits cleanly into the remaining room.
         let mut x = r.right() - self.px(10.0);
         let all = v.resolved() == n;
         for (label, hit, primary, enabled) in [
@@ -503,12 +501,23 @@ impl Ui {
                 (true, false, true) => (CONTROL_HOVER(), BORDER_HOVER(), TEXT()),
                 (true, false, false) => (BG_BAR(), BORDER(), TEXT_2()),
             };
-            cv.round_border(b, self.pf(6.0), border, bg);
+            cv.round_border(b, self.pf(5.0), border, bg);
             self.te.draw(cv, semi, self.pf(11.5), b.x as f32 + self.pf(10.0), base - self.pf(0.5), label, fg, w as f32);
             if enabled {
                 hits.push((b, changes_view::CHit::Conflict(hit)));
             }
             x = b.x - self.px(6.0);
+        }
+        let tx = r.x as f32 + self.pf(14.0);
+        let room = (x as f32 - tx - self.pf(10.0)).max(0.0);
+        let count_s = format!(" · {}/{n}", v.resolved());
+        let cw = self.te.measure(ui, self.pf(12.0), &count_s);
+        let path_w = (room - cw).max(0.0);
+        let fs = self.pf(12.0);
+        let path_s = super::fit_middle(&mut self.te, semi, fs, &v.path, path_w);
+        let end = self.te.draw(cv, semi, fs, tx, base, &path_s, TEXT(), path_w + 2.0);
+        if room >= cw + self.pf(24.0) {
+            self.te.draw(cv, ui, self.pf(12.0), end, base, &count_s, TEXT_3(), cw + 2.0);
         }
         // Rows.
         let body = Rect::new(r.x, bar.bottom(), r.w, r.bottom() - bar.bottom());
