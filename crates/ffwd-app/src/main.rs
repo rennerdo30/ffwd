@@ -2,11 +2,18 @@
 //!
 //!   ffwd [repo]                       open a window
 //!   ffwd [repo] --snapshot out.png    render the real UI offscreen, no window
+//!       [--demo] [--tokens file.toml] [--audit [out.json]]
 //!       [--size 1600x1000] [--scale 1.25] [--select N] [--focus files|diff] [--palette "query"]
+//!   ffwd --snapshot-ui <dir>          render all demo screens (dark + light) in one process
+//!       [--only <filter>] [--themes dark|light|both] [--tokens file.toml] [--audit [out.json]]
+//!   ffwd --serve [port]               persistent headless TCP UI server for live iteration
+//!   ffwd --dump-tokens                print active design tokens TOML to stdout
 //!   ffwd [repo] --smoke               hidden, cloaked window; prints startup marks and exits
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod audit;
+mod demo;
 mod fmt;
 #[cfg(windows)]
 mod frame;
@@ -14,6 +21,7 @@ mod highlight;
 mod icon;
 mod image;
 mod platform;
+mod serve;
 mod settings;
 mod snapshot;
 mod text_area;
@@ -34,6 +42,20 @@ pub struct Args {
     /// Extra tabs for snapshots (`--tab <path>`, repeatable).
     pub tabs: Vec<PathBuf>,
     pub snapshot: Option<PathBuf>,
+    /// Single-process batch render of all synthetic demo screens into this folder.
+    pub snapshot_ui: Option<PathBuf>,
+    /// Render `--snapshot` from the in-memory synthetic demo repo (zero `git` spawns).
+    pub demo: bool,
+    /// Filter screen names for `--snapshot-ui` (or pick a demo screen for `--demo`).
+    pub only: Option<String>,
+    /// Which themes `--snapshot-ui` renders: `dark`, `light`, or `both` (default).
+    pub themes: Option<String>,
+    /// Optional design-token TOML override file (`[dark]`, `[light]`, `[metrics]`).
+    pub tokens: Option<PathBuf>,
+    /// Emit programmatic UI audit JSON (empty path prints to stdout).
+    pub audit: Option<PathBuf>,
+    /// Run persistent headless loopback TCP server on this port (0 = ephemeral).
+    pub serve_port: Option<u16>,
     pub smoke: bool,
     pub size: (usize, usize),
     pub scale: Option<f32>,
@@ -103,6 +125,13 @@ fn parse_args() -> Result<Args, String> {
         repo: None,
         tabs: Vec::new(),
         snapshot: None,
+        snapshot_ui: None,
+        demo: false,
+        only: None,
+        themes: None,
+        tokens: None,
+        audit: None,
+        serve_port: None,
         smoke: false,
         size: (1600, 1000),
         scale: None,
@@ -140,7 +169,7 @@ fn parse_args() -> Result<Args, String> {
         code_size: None,
         file: None,
     };
-    let mut it = std::env::args().skip(1);
+    let mut it = std::env::args().skip(1).peekable();
     while let Some(arg) = it.next() {
         let mut val = |name: &str| it.next().ok_or_else(|| format!("{name} needs a value"));
         match arg.as_str() {
@@ -148,7 +177,35 @@ fn parse_args() -> Result<Args, String> {
                 println!("ffwd {}", env!("CARGO_PKG_VERSION"));
                 std::process::exit(0);
             }
+            "--dump-tokens" => {
+                print!("{}", theme::dump_tokens_toml());
+                std::process::exit(0);
+            }
             "--snapshot" => a.snapshot = Some(PathBuf::from(val("--snapshot")?)),
+            "--snapshot-ui" => a.snapshot_ui = Some(PathBuf::from(val("--snapshot-ui")?)),
+            "--demo" => a.demo = true,
+            "--only" => a.only = Some(val("--only")?),
+            "--themes" => a.themes = Some(val("--themes")?),
+            "--tokens" => a.tokens = Some(PathBuf::from(val("--tokens")?)),
+            "--audit" => {
+                let next = it.peek().filter(|s| !s.starts_with('-')).cloned();
+                if let Some(p) = next {
+                    it.next();
+                    a.audit = Some(PathBuf::from(p));
+                } else {
+                    a.audit = Some(PathBuf::new());
+                }
+            }
+            "--serve" => {
+                let port = match it.peek().and_then(|s| s.parse::<u16>().ok()) {
+                    Some(p) => {
+                        it.next();
+                        p
+                    }
+                    None => 0,
+                };
+                a.serve_port = Some(port);
+            }
             // Writes the app icon as a PNG (for packaging), then exits.
             "--icon-png" => {
                 let path = PathBuf::from(val("--icon-png")?);
@@ -204,7 +261,7 @@ fn parse_args() -> Result<Args, String> {
             "--tab" => a.tabs.push(PathBuf::from(val("--tab")?)),
             "-h" | "--help" => {
                 println!(
-                    "usage: ffwd [repo] [--snapshot out.png [--size WxH] [--scale S] [--select N] [--focus files|diff] [--palette Q]] [--smoke]"
+                    "usage: ffwd [repo] [--snapshot out.png [--demo] [--tokens file.toml] [--audit [out.json]] [--size WxH] [--scale S]] [--snapshot-ui dir [--only F] [--themes dark|light|both]] [--serve [port]] [--dump-tokens] [--smoke]"
                 );
                 std::process::exit(0);
             }
@@ -252,7 +309,15 @@ fn main() {
             std::process::exit(2);
         }
     };
-    let code = if args.snapshot.is_some() { snapshot::run(&args, t0) } else { window::run(&args, t0) };
+    let code = if args.serve_port.is_some() {
+        serve::run(&args, t0)
+    } else if args.snapshot_ui.is_some() {
+        snapshot::run_batch(&args, t0)
+    } else if args.snapshot.is_some() {
+        snapshot::run(&args, t0)
+    } else {
+        window::run(&args, t0)
+    };
     // Agents ffwd started end with it (only the PIDs it recorded).
     ffwd_agent::proc::kill_all();
     flush_trace();

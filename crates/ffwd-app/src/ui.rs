@@ -48,7 +48,7 @@ pub use files_view::{Loaded as FileLoaded, TreeResult as FilesTreeResult};
 mod icons;
 #[path = "ui_menu.rs"]
 mod menu;
-use icons::Glyph;
+pub use icons::Glyph;
 #[path = "ui_search.rs"]
 mod search_view;
 use menu::{Dialog, DialogKind, Menu, NameAct, PatchSrc};
@@ -66,12 +66,6 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-
-/// See `load_fonts`.
-pub const TYPE_SCALE: f32 = 1.08;
-
-/// History row height (design px).
-const ROW_H: f32 = 25.0;
 
 pub struct Fonts {
     pub ui: FontId,
@@ -109,8 +103,8 @@ pub fn load_fonts(te: &mut TextEngine) -> Option<Fonts> {
     let semi = b.join().ok().flatten().map_or(ui, |f| te.add(f));
     let mono = c.join().ok().flatten().map_or(ui, |f| te.add(f));
     // The type scale: the sizes in the code are design sizes; on screen
-    // they are 8 % larger, so the smallest text is about 12 px (FF-30).
-    te.set_size_boost(TYPE_SCALE);
+    // they are scaled by `theme::metrics().type_scale` (default 1.08, FF-30).
+    te.set_size_boost(crate::theme::metrics().type_scale);
     Some(Fonts { ui, semi, mono })
 }
 
@@ -1424,12 +1418,13 @@ impl Ui {
         self.w = w;
         self.h = h;
         self.s = s;
+        let m = crate::theme::metrics();
         let (wi, hi) = (w as i32, h as i32);
-        let bar_h = self.px(46.0);
+        let bar_h = self.px(m.top_bar_h);
         // Repository tabs under the top bar.
-        let tabs_h = self.px(32.0);
+        let tabs_h = self.px(m.tab_bar_h);
         let top_h = bar_h + tabs_h;
-        let status_h = self.px(26.0);
+        let status_h = self.px(m.status_bar_h);
         // The rail (sidebar style Rail) comes on top of the panel's width.
         let rail = if self.side_style() == SideStyle::Rail { 64.0 } else { 0.0 };
         let side_w = match self.split_get(Split::Side) {
@@ -1481,7 +1476,7 @@ impl Ui {
         };
         let head_h = self.px(30.0);
         // Dense rows, like a list you scan (calm pass, FF-59).
-        let row_h = self.px(ROW_H).max(12);
+        let row_h = self.px(m.row_h).max(12);
         let sb_w = self.px(12.0);
         let list = Rect::new(list_x, top_h, list_w, list_h);
         self.lay = Layout {
@@ -1795,6 +1790,105 @@ impl Ui {
             self.theme_changed = true;
             self.damage.full = true;
         }
+    }
+
+    /// Snapshots and `--serve`: re-apply live design tokens (`theme::metrics`).
+    pub fn apply_tokens_now(&mut self) {
+        self.te.set_size_boost(crate::theme::metrics().type_scale);
+        self.resize(self.w, self.h, self.s);
+        self.damage.full = true;
+    }
+
+    /// Public wrapper around `glyph` for the component reference sheet.
+    pub fn draw_glyph(&self, cv: &mut Canvas, g: Glyph, cx: f32, cy: f32, s: f32, color: u32) {
+        self.glyph(cv, g, cx, cy, s, color);
+    }
+
+    /// Resets transient overlays and secondary views back to the History view
+    /// so `--snapshot-ui` and `--serve` can switch screens cleanly on one hot `Ui`.
+    pub fn reset_views(&mut self) {
+        self.settings_view = None;
+        self.agent_view = None;
+        self.palette = None;
+        self.menu = None;
+        self.dialog = None;
+        self.r.changes_view = false;
+        self.r.files_view = false;
+        self.r.activity_view = false;
+        self.r.reflog_view = false;
+        self.r.rebase = None;
+        self.r.search = None;
+        self.diff_find = None;
+        self.diff_split = false;
+        self.diff_max = false;
+        self.r.changes.conflict = None;
+        self.r.changes.in_progress = None;
+        self.hot = None;
+        self.pressed = None;
+        self.side_here_hot = false;
+        self.side_view_hot = None;
+        self.focus = Focus::List;
+        self.damage.full = true;
+    }
+
+    /// Demo / snapshot helper: populates a synthetic merge conflict in Local Changes
+    /// without touching disk or spawning `git`.
+    pub fn demo_open_conflict(
+        &mut self,
+        op_name: &'static str,
+        path: &str,
+        segs: Vec<ffwd_core::conflict::Seg>,
+        eol: &'static str,
+    ) {
+        self.r.changes_view = true;
+        self.r.changes.side = ffwd_core::changes::Side::Unstaged;
+        self.r.changes.sel = 0;
+        self.r.changes.in_progress = Some(op_name);
+        let n = segs.iter().filter(|s| matches!(s, ffwd_core::conflict::Seg::Conflict(_))).count();
+        self.r.changes.conflict = Some(conflict_view::ConflictView {
+            path: path.to_string(),
+            segs,
+            eol,
+            choices: vec![None; n],
+            manual: vec![None; n],
+            editing: None,
+            cur: 0,
+            top: 0,
+        });
+        self.damage.full = true;
+    }
+
+    /// Demo / snapshot helper: opens an in-memory interactive rebase plan.
+    pub fn demo_open_rebase(&mut self, base: Option<String>, steps: Vec<ffwd_core::rebase::Step>) {
+        self.r.rebase = Some(rebase_view::RebaseState::Loading);
+        self.on_rebase_plan(Ok((base, steps)));
+        self.snapshot_rebase_demo();
+    }
+
+    /// Demo / snapshot helper: returns active clickable hit rectangles for `--audit`.
+    pub fn audit_hit_rects(&self) -> Vec<(&'static str, Rect)> {
+        let mut out = Vec::new();
+        for &(r, _) in &self.top_buttons {
+            out.push(("top_button", r));
+        }
+        if !self.search_rect.is_empty() {
+            out.push(("top_search", self.search_rect));
+        }
+        if self.settings_view.is_none() && self.agent_view.is_none() {
+            if self.r.changes_view {
+                for &(r, _) in &self.r.changes.hits {
+                    out.push(("changes_hit", r));
+                }
+            } else if !self.r.files_view && !self.r.activity_view && !self.r.reflog_view && self.r.rebase.is_none() {
+                for &(r, _) in &self.diff_bar_hits {
+                    out.push(("diff_bar", r));
+                }
+                if !self.head_find_rect.is_empty() {
+                    out.push(("head_find", self.head_find_rect));
+                }
+            }
+        }
+        out
     }
 
     /// Snapshots: apply `ui.theme` after changing it.

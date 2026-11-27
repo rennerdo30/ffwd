@@ -39,6 +39,19 @@ debug = false
 [profile.dev.package.ffwd-render]
 opt-level = 2
 
+# Sub-second UI iteration profile: skips PDB / debuginfo emission while keeping
+# dependencies and `ffwd-render` optimised.
+[profile.dev-ui]
+inherits = "dev"
+debug = 0
+
+[profile.dev-ui.package."*"]
+opt-level = 2
+debug = false
+
+[profile.dev-ui.package.ffwd-render]
+opt-level = 2
+
 [profile.release]
 lto = "thin"
 codegen-units = 1

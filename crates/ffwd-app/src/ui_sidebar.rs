@@ -8,7 +8,6 @@
 use super::*;
 use std::collections::{BTreeMap, HashSet};
 
-pub(super) const SIDE_ROW: f32 = 25.0;
 pub(super) const FILTER_H: f32 = 40.0;
 
 #[derive(Clone, Debug)]
@@ -182,7 +181,7 @@ fn tree(
 
 impl Ui {
     pub(super) fn side_row_h(&self) -> i32 {
-        self.px(SIDE_ROW)
+        self.px(crate::theme::metrics().side_row_h).max(14)
     }
 
     /// How the sidebar offers the views (setting `ui.sidebar`).
