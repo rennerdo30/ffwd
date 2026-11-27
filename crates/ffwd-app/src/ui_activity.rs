@@ -267,7 +267,7 @@ impl Ui {
         let (ui, semi, mono) = (self.f.ui, self.f.semi, self.f.mono);
         let mut hits = Vec::new();
         cv.fill(l.list, BG_SIDEBAR());
-        cv.fill(Rect::new(l.list.right() - 1, l.area.y, 1, l.area.h), BORDER());
+        cv.fill(Rect::new(l.list.right() - 1, l.area.y, 1, l.area.h), BORDER_SOFT());
         if self.activity.entries.is_empty() {
             let t = "Nothing has run yet. Fetch, pull, push, branch, stash and commit actions appear here with the exact git commands.";
             let x = l.list.x as f32 + self.pf(18.0);
@@ -290,7 +290,7 @@ impl Ui {
             let y = l.list.y + k as i32 * rh;
             let row = Rect::new(l.list.x + self.px(6.0), y + self.px(3.0), l.list.w - self.px(12.0), rh - self.px(6.0));
             if i == self.activity.sel {
-                cv.fill_round(row, self.pf(7.0), BG_SELECT());
+                cv.fill_round(row, self.pf(7.0), BG_SELECT_DIM());
             } else if self.is_hot(Hot::Activity(hits.len())) {
                 cv.fill_round(row, self.pf(7.0), BG_HOVER());
             }
@@ -338,7 +338,7 @@ impl Ui {
             for (k, (kind, text)) in lines.into_iter().enumerate() {
                 let b = (l.detail.y as f32 + self.pf(16.0) + k as f32 * lh as f32).round() + self.pf(4.0);
                 let (font, color) = match kind {
-                    LineKind::Command => (mono, ACCENT()),
+                    LineKind::Command => (mono, ACCENT_FG()),
                     LineKind::Meta => (ui, TEXT_4()),
                     LineKind::Output => (mono, TEXT_2()),
                     LineKind::Error => (mono, DEL()),

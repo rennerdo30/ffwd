@@ -25,6 +25,8 @@ pub struct TextEngine {
     lut: [u8; 256],
     /// Every size is multiplied by this (the app's type scale).
     boost: f32,
+    /// Number of strings truncated with an ellipsis since the last reset (for UI audits).
+    ellipsis_count: usize,
 }
 
 impl Default for TextEngine {
@@ -39,7 +41,15 @@ impl TextEngine {
         for (i, v) in lut.iter_mut().enumerate() {
             *v = ((i as f32 / 255.0).powf(0.74) * 255.0).round() as u8;
         }
-        TextEngine { fonts: Vec::new(), cache: HashMap::new(), lut, boost: 1.0 }
+        TextEngine { fonts: Vec::new(), cache: HashMap::new(), lut, boost: 1.0, ellipsis_count: 0 }
+    }
+
+    pub fn ellipsis_count(&self) -> usize {
+        self.ellipsis_count
+    }
+
+    pub fn reset_ellipsis_count(&mut self) {
+        self.ellipsis_count = 0;
     }
 
     /// Scales every text size: the whole type scale in one place.
@@ -113,6 +123,7 @@ impl TextEngine {
         if full <= max_w {
             return self.draw_run(cv, f, size, x, y, text.chars(), color);
         }
+        self.ellipsis_count += 1;
         let ell = self.glyph(f, size, '…').advance;
         let budget = max_w - ell;
         if budget <= 0.0 {

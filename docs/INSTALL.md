@@ -27,7 +27,7 @@ ffwd needs Git (`git` on PATH).
 With Rust 1.100 or newer, on any of the three systems:
 
 ```sh
-cargo install --locked ffwd@<version>   # e.g. ffwd@0.2.0-beta.11
+cargo install --locked ffwd@<version>   # e.g. ffwd@0.2.0-beta.12
 ```
 
 - While ffwd is in beta, name the version (the newest is on [crates.io](https://crates.io/crates/ffwd)); `cargo install` skips prereleases otherwise.

@@ -634,19 +634,19 @@ impl Ui {
         let l = self.files_layout();
         let mut hits: Vec<(Rect, FHit)> = Vec::new();
         let (ui, semi) = (self.f.ui, self.f.semi);
-        // Filter field.
+        // Filter field: borderless recessed input at rest, hairline on hover, accent on focus.
         cv.fill(Rect::new(l.filter.x, l.filter.y, l.filter.w, l.filter.h + l.tree.h), BG_SIDEBAR());
-        cv.fill(Rect::new(l.tree.right() - 1, l.area.y, 1, l.area.h), BORDER());
+        cv.fill(Rect::new(l.tree.right() - 1, l.area.y, 1, l.area.h), BORDER_SOFT());
         let ff = l.filter.inset(self.px(10.0), self.px(6.0));
         let typing = self.r.files.focus == FFocus::Filter;
-        let border = if typing {
-            ACCENT()
-        } else if self.is_hot(Hot::Files(hits.len())) {
-            BORDER_HOVER()
+        let filter_hot = self.is_hot(Hot::Files(hits.len()));
+        if typing {
+            cv.round_border(ff, self.pf(6.0), ACCENT(), BG_INPUT());
+        } else if filter_hot {
+            cv.round_border(ff, self.pf(6.0), BORDER_SOFT(), BG_INPUT());
         } else {
-            BORDER()
-        };
-        cv.round_border(ff, self.pf(7.0), border, BG_INPUT());
+            cv.fill_round(ff, self.pf(6.0), BG_INPUT());
+        }
         let fb = (ff.y as f32 + ff.h as f32 / 2.0 + self.pf(4.5)).round();
         let ft = self.r.files.filter.clone();
         let tx = ff.x as f32 + self.pf(10.0);

@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.2.0-beta.11"
+version = "0.2.0-beta.12"
 edition = "2024"
 rust-version = "1.100"
 license = "MIT"
@@ -18,11 +18,11 @@ publish = ["crates-io"]
 # a release bumps these four pins together with `version` above.
 # ffwd-render has its own SemVer version, since other projects use it.
 [workspace.dependencies]
-ffwd-core = { path = "crates/ffwd-core", version = "=0.2.0-beta.11" }
-ffwd-render = { path = "crates/ffwd-render", version = "0.1.0" }
-ffwd-ai = { path = "crates/ffwd-ai", version = "=0.2.0-beta.11" }
-ffwd-update = { path = "crates/ffwd-update", version = "=0.2.0-beta.11" }
-ffwd-agent = { path = "crates/ffwd-agent", version = "=0.2.0-beta.11" }
+ffwd-core = { path = "crates/ffwd-core", version = "=0.2.0-beta.12" }
+ffwd-render = { path = "crates/ffwd-render", version = "0.1.1" }
+ffwd-ai = { path = "crates/ffwd-ai", version = "=0.2.0-beta.12" }
+ffwd-update = { path = "crates/ffwd-update", version = "=0.2.0-beta.12" }
+ffwd-agent = { path = "crates/ffwd-agent", version = "=0.2.0-beta.12" }
 
 # Fastest iteration (docs/BUILD.md):
 # - workspace crates: incremental, small debug info, fast to relink;
@@ -37,6 +37,19 @@ debug = false
 # The CPU renderer paints every pixel; unoptimised it would distort every
 # interactive check, so it is optimised even in dev builds.
 [profile.dev.package.ffwd-render]
+opt-level = 2
+
+# Sub-second UI iteration profile: skips PDB / debuginfo emission while keeping
+# dependencies and `ffwd-render` optimised.
+[profile.dev-ui]
+inherits = "dev"
+debug = 0
+
+[profile.dev-ui.package."*"]
+opt-level = 2
+debug = false
+
+[profile.dev-ui.package.ffwd-render]
 opt-level = 2
 
 [profile.release]

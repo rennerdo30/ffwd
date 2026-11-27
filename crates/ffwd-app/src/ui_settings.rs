@@ -1562,7 +1562,7 @@ impl Ui {
                 let label = "EXPERIMENTAL";
                 let pw = self.te.measure(semi, self.pf(9.0), label) + self.pf(10.0);
                 let pr = Rect::new((e + self.pf(8.0)) as i32, y + self.px(3.0), pw as i32, self.px(15.0));
-                cv.fill_round(pr, self.pf(7.0), TAG_BG());
+                cv.fill_round(pr, self.pf(7.0), BG_PANEL());
                 self.te.draw(
                     cv,
                     semi,
@@ -1570,7 +1570,7 @@ impl Ui {
                     pr.x as f32 + self.pf(5.0),
                     pr.y as f32 + self.pf(11.0),
                     label,
-                    TAG_FG(),
+                    TEXT_3(),
                     pw,
                 );
             }
@@ -1582,8 +1582,8 @@ impl Ui {
                 if on {
                     cv.fill_round(item, self.pf(7.0), BG_SELECT_DIM());
                     cv.fill_round(
-                        Rect::new(item.x, item.y + self.px(8.0), self.px(3.0), item.h - self.px(16.0)),
-                        self.pf(1.5),
+                        Rect::new(item.x, item.y + self.px(8.0), self.px(2.0).max(2), item.h - self.px(16.0)),
+                        self.pf(1.0),
                         ACCENT(),
                     );
                 } else if hot {
@@ -1604,7 +1604,7 @@ impl Ui {
                     item.x as f32 + self.pf(18.0),
                     cy,
                     self.pf(6.0),
-                    if on { ACCENT() } else { TEXT_3() },
+                    if on { TEXT() } else { TEXT_3() },
                 );
                 let font = if on { semi } else { ui };
                 self.te.draw(
@@ -1639,9 +1639,16 @@ impl Ui {
         let (col_x, col_w) = self.settings_column();
         let sr = Rect::new(col_x, head.y + self.px(14.0), (col_w / 2).min(self.px(380.0)), self.px(36.0));
         let focus = view.search_focus;
-        cv.round_border(sr, self.pf(8.0), if focus { ACCENT() } else { BORDER() }, BG_INPUT());
+        let search_hot = self.is_hot(Hot::Setting(hits.len(), 0));
+        if focus {
+            cv.round_border(sr, self.pf(7.0), ACCENT(), BG_INPUT());
+        } else if search_hot {
+            cv.round_border(sr, self.pf(7.0), BORDER_SOFT(), BG_INPUT());
+        } else {
+            cv.fill_round(sr, self.pf(7.0), BG_INPUT());
+        }
         let scy = sr.y as f32 + sr.h as f32 / 2.0;
-        self.glyph(cv, Glyph::Search, sr.x as f32 + self.pf(18.0), scy, self.pf(6.0), TEXT_3());
+        self.glyph(cv, Glyph::Search, sr.x as f32 + self.pf(18.0), scy, self.pf(6.0), TEXT_4());
         let tx = sr.x as f32 + self.pf(34.0);
         let base = (scy + self.pf(4.5)).round();
         if view.search.text().is_empty() {
@@ -1658,9 +1665,9 @@ impl Ui {
         let dl = "Done";
         let dw = self.te.measure(semi, self.pf(12.5), dl) + self.pf(28.0);
         let dr = Rect::new(head.right() - self.px(24.0) - dw as i32, sr.y, dw as i32, sr.h);
-        let (dbg, dborder) = self.control_colors(Hot::Setting(hits.len(), 0), ACCENT_SOFT_HOVER(), ACCENT_BORDER());
-        cv.round_border(dr, self.pf(8.0), dborder, dbg);
-        self.te.draw(cv, semi, self.pf(12.5), dr.x as f32 + self.pf(14.0), base, dl, ACCENT_FG(), dw);
+        let (dbg, dborder) = self.control_colors(Hot::Setting(hits.len(), 0), BG_PANEL(), BORDER_SOFT());
+        cv.round_border(dr, self.pf(7.0), dborder, dbg);
+        self.te.draw(cv, semi, self.pf(12.5), dr.x as f32 + self.pf(14.0), base, dl, TEXT(), dw);
         hits.push((dr, SHit::Close));
         // The scope picker: agent settings apply everywhere or here.
         let agents_on_screen =
@@ -1673,10 +1680,10 @@ impl Ui {
             let pr = Rect::new(dr.x - self.px(12.0) - lw as i32, sr.y, lw as i32, sr.h);
             let (pbg, pborder) = self.control_colors(
                 Hot::Setting(hits.len(), 0),
-                if repo { ACCENT_SOFT() } else { BG_INPUT() },
-                if repo { ACCENT_BORDER() } else { BORDER() },
+                if repo { ACCENT_SOFT() } else { BG_PANEL() },
+                if repo { ACCENT_BORDER() } else { BORDER_SOFT() },
             );
-            cv.round_border(pr, self.pf(8.0), pborder, pbg);
+            cv.round_border(pr, self.pf(7.0), pborder, pbg);
             self.te.draw(
                 cv,
                 semi,
@@ -1711,7 +1718,7 @@ impl Ui {
         }
         for (_, c) in &cards {
             if !c.intersect(content).is_empty() {
-                cv.round_border(*c, self.pf(10.0), BORDER(), BG_PANEL());
+                cv.round_border(*c, self.pf(8.0), BORDER_SOFT(), BG_PANEL());
             }
         }
         let repo_name = self.r.repo_name.clone();
@@ -1840,8 +1847,8 @@ impl Ui {
                     let now = self.choice_now(row);
                     let choices = self.row_choices(row);
                     let label = choices.get(now).map(|v| self.choice_label(row, now, v)).unwrap_or_default();
-                    let (bg, border) = self.control_colors(Hot::Setting(hits.len(), 0), BG_INPUT(), BORDER());
-                    cv.round_border(ctl, self.pf(7.0), border, bg);
+                    let (bg, border) = self.control_colors(Hot::Setting(hits.len(), 0), BG_INPUT(), BORDER_SOFT());
+                    cv.round_border(ctl, self.pf(6.0), border, bg);
                     self.te.draw(
                         cv,
                         ui,
@@ -1864,7 +1871,7 @@ impl Ui {
                     let choices = self.row_choices(row);
                     let now = self.choice_now(row);
                     let seg_w = ctl.w / choices.len().max(1) as i32;
-                    cv.round_border(ctl, self.pf(7.0), BORDER(), BG_INPUT());
+                    cv.fill_round(ctl, self.pf(6.0), BG_SIDEBAR());
                     for (c, name) in choices.iter().enumerate() {
                         let s = Rect::new(ctl.x + c as i32 * seg_w, ctl.y, seg_w, ctl.h);
                         if c == now {
@@ -1902,8 +1909,9 @@ impl Ui {
                             let bl = "Browse…";
                             let bw = (self.te.measure(semi, self.pf(12.5), bl) + self.pf(24.0)) as i32;
                             let b = Rect::new(ctl.right() - bw, ctl.y, bw, ctl.h);
-                            let (bg, border) = self.control_colors(Hot::Setting(hits.len(), 0), BG_BAR(), BORDER());
-                            cv.round_border(b, self.pf(7.0), border, bg);
+                            let (bg, border) =
+                                self.control_colors(Hot::Setting(hits.len(), 0), BG_PANEL(), BORDER_SOFT());
+                            cv.round_border(b, self.pf(6.0), border, bg);
                             self.te.draw(
                                 cv,
                                 semi,
@@ -1911,7 +1919,7 @@ impl Ui {
                                 b.x as f32 + self.pf(12.0),
                                 cbase,
                                 bl,
-                                TEXT(),
+                                TEXT_2(),
                                 bw as f32,
                             );
                             hits.push((b, SHit::Browse(i)));
@@ -1926,9 +1934,9 @@ impl Ui {
                     } else if hot {
                         BORDER_HOVER()
                     } else {
-                        BORDER()
+                        BORDER_SOFT()
                     };
-                    cv.round_border(ctl, self.pf(7.0), border, BG_INPUT());
+                    cv.round_border(ctl, self.pf(6.0), border, BG_INPUT());
                     let tx = ctl.x as f32 + self.pf(12.0);
                     let maxw = ctl.w as f32 - self.pf(24.0);
                     match editing {
@@ -1987,9 +1995,9 @@ impl Ui {
                     };
                     let w = self.te.measure(semi, self.pf(12.5), label) + self.pf(28.0);
                     let b = Rect::new(ctl.right() - w as i32, ctl.y, w as i32, ctl.h);
-                    let (bg, border) = self.control_colors(Hot::Setting(hits.len(), 0), BG_BAR(), BORDER());
-                    cv.round_border(b, self.pf(8.0), border, bg);
-                    self.te.draw(cv, semi, self.pf(12.5), b.x as f32 + self.pf(14.0), cbase, label, TEXT(), w);
+                    let (bg, border) = self.control_colors(Hot::Setting(hits.len(), 0), BG_PANEL(), BORDER_SOFT());
+                    cv.round_border(b, self.pf(6.0), border, bg);
+                    self.te.draw(cv, semi, self.pf(12.5), b.x as f32 + self.pf(14.0), cbase, label, TEXT_2(), w);
                     hits.push((b, SHit::Button(i)));
                 }
             }

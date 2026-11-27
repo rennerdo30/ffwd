@@ -390,9 +390,10 @@ impl Ui {
     pub(super) fn paint_op_banner(&mut self, cv: &mut Canvas, r: Rect, hits: &mut Vec<(Rect, changes_view::CHit)>) {
         let Some(kind) = self.r.changes.in_progress else { return };
         let (ui, semi) = (self.f.ui, self.f.semi);
-        cv.fill(r, TAG_BG());
-        cv.fill(Rect::new(r.x, r.bottom() - 1, r.w, 1), BORDER());
         let conflicts = self.r.changes.conflicts;
+        cv.fill(r, BG_PANEL());
+        cv.fill(Rect::new(r.x, r.y, self.px(3.0).max(2), r.h), if conflicts > 0 { DEL() } else { MOD() });
+        cv.fill(Rect::new(r.x, r.bottom() - 1, r.w, 1), BORDER_SOFT());
         // Two rows: the state on top, the buttons below, right-aligned.
         let two = r.h > self.px(50.0);
         let (row1, row2) = if two {
@@ -419,15 +420,15 @@ impl Ui {
             // Continue is the primary action, Abort the dangerous one; the
             // all-files choices are plain buttons (they ask first anyway).
             let (bg, border, fg) = match (enabled, hit, hot) {
-                (false, _, _) => (BG_BAR(), BORDER(), TEXT_4()),
+                (false, _, _) => (BG_PANEL(), BORDER_SOFT(), TEXT_4()),
                 (true, KHit::Continue, true) => (ACCENT(), ACCENT(), ACCENT_TEXT()),
                 (true, KHit::Continue, false) => (ACCENT_SOFT_HOVER(), ACCENT_BORDER(), ACCENT_FG()),
                 (true, KHit::Abort, true) => (DEL_BG(), DEL(), DEL_TEXT()),
-                (true, KHit::Abort, false) => (BG_BAR(), DANGER_BORDER(), DEL_TEXT()),
+                (true, KHit::Abort, false) => (BG_PANEL(), DANGER_BORDER(), DEL()),
                 (true, _, true) => (CONTROL_HOVER(), BORDER_HOVER(), TEXT()),
-                (true, _, false) => (BG_BAR(), BORDER(), TEXT_2()),
+                (true, _, false) => (BG_PANEL(), BORDER_SOFT(), TEXT_2()),
             };
-            cv.round_border(b, self.pf(6.0), border, bg);
+            cv.round_border(b, self.pf(5.0), border, bg);
             self.te.draw(
                 cv,
                 semi,
@@ -457,7 +458,7 @@ impl Ui {
             .into_iter()
             .find(|t| self.te.measure(semi, self.pf(12.5), t) <= room)
             .unwrap_or_default();
-        self.te.draw(cv, semi, self.pf(12.5), tx, base, &text, TAG_FG(), room.max(0.0));
+        self.te.draw(cv, semi, self.pf(12.5), tx, base, &text, TEXT(), room.max(0.0));
         let _ = ui;
     }
 
@@ -483,9 +484,7 @@ impl Ui {
             return;
         };
         let n = v.choices.len();
-        let title = format!("{} · {} of {n} resolved", v.path, v.resolved());
-        self.te.draw(cv, semi, self.pf(12.5), r.x as f32 + self.pf(16.0), base, &title, TEXT(), r.w as f32 * 0.45);
-        // File buttons, right to left.
+        // File buttons first, right to left, so the title fits cleanly into the remaining room.
         let mut x = r.right() - self.px(10.0);
         let all = v.resolved() == n;
         for (label, hit, primary, enabled) in [
@@ -496,19 +495,34 @@ impl Ui {
             let w = (self.te.measure(semi, self.pf(11.5), label) + self.pf(20.0)) as i32;
             let b = Rect::new(x - w, bar.y + self.px(4.0), w, bar.h - self.px(8.0));
             let hot = self.is_hot(Hot::Change(hits.len()));
-            let (bg, border, fg) = match (enabled, primary, hot) {
-                (false, _, _) => (BG_BAR(), BORDER_SOFT(), TEXT_4()),
-                (true, true, true) => (ACCENT(), ACCENT(), ACCENT_TEXT()),
-                (true, true, false) => (ACCENT_SOFT_HOVER(), ACCENT_BORDER(), ACCENT_FG()),
-                (true, false, true) => (CONTROL_HOVER(), BORDER_HOVER(), TEXT()),
-                (true, false, false) => (BG_BAR(), BORDER(), TEXT_2()),
+            let fg = if !enabled {
+                TEXT_4()
+            } else {
+                let (bg, border, fg) = match (primary, hot) {
+                    (true, true) => (ACCENT(), ACCENT(), ACCENT_TEXT()),
+                    (true, false) => (ACCENT_SOFT_HOVER(), ACCENT_BORDER(), ACCENT_FG()),
+                    (false, true) => (CONTROL_HOVER(), BORDER_HOVER(), TEXT()),
+                    (false, false) => (BG_PANEL(), BORDER_SOFT(), TEXT_2()),
+                };
+                cv.round_border(b, self.pf(5.0), border, bg);
+                fg
             };
-            cv.round_border(b, self.pf(6.0), border, bg);
             self.te.draw(cv, semi, self.pf(11.5), b.x as f32 + self.pf(10.0), base - self.pf(0.5), label, fg, w as f32);
             if enabled {
                 hits.push((b, changes_view::CHit::Conflict(hit)));
             }
             x = b.x - self.px(6.0);
+        }
+        let tx = r.x as f32 + self.pf(14.0);
+        let room = (x as f32 - tx - self.pf(10.0)).max(0.0);
+        let count_s = format!(" · {}/{n}", v.resolved());
+        let cw = self.te.measure(ui, self.pf(12.0), &count_s);
+        let path_w = (room - cw).max(0.0);
+        let fs = self.pf(12.0);
+        let path_s = super::fit_middle(&mut self.te, semi, fs, &v.path, path_w);
+        let end = self.te.draw(cv, semi, fs, tx, base, &path_s, TEXT(), path_w + 2.0);
+        if room >= cw + self.pf(24.0) {
+            self.te.draw(cv, ui, self.pf(12.0), end, base, &count_s, TEXT_3(), cw + 2.0);
         }
         // Rows.
         let body = Rect::new(r.x, bar.bottom(), r.w, r.bottom() - bar.bottom());
@@ -555,9 +569,9 @@ impl Ui {
                     let b = blocks[*k];
                     let on = *k == v.cur;
                     cv.fill(rr, HUNK_BG());
-                    cv.fill(Rect::new(rr.x, rr.y, rr.w, 1), BORDER());
+                    cv.fill(Rect::new(rr.x, rr.y, rr.w, 1), BORDER_SOFT());
                     if on {
-                        cv.fill(Rect::new(rr.x, rr.y, self.px(4.0), rr.h), ACCENT());
+                        cv.fill(Rect::new(rr.x, rr.y, self.px(2.0).max(2), rr.h), ACCENT());
                     }
                     let edited = v.manual.get(*k).is_some_and(|m| m.is_some());
                     let editing = v.editing.as_ref().is_some_and(|x| x.0 == *k);
@@ -578,30 +592,30 @@ impl Ui {
                         ("Both (b)".to_string(), Choice::OursThenTheirs),
                         ("Both, theirs first".to_string(), Choice::TheirsThenOurs),
                     ] {
-                        let w = self.te.measure(semi, self.pf(11.5), &label) + self.pf(18.0);
+                        let w = self.te.measure(semi, self.pf(11.5), &label) + self.pf(16.0);
                         let br = Rect::new(bx as i32, y + self.px(1.0), w as i32, lh - self.px(2.0));
                         let sel = chosen == Some(c);
                         let hot = self.is_hot(Hot::Change(hits.len()));
-                        // Ours and theirs carry their rows' colours.
+                        // Ours and theirs carry their rows' colours calmly.
                         let side = match c {
                             Choice::Ours => OURS_FG(),
                             Choice::Theirs => THEIRS_FG(),
                             _ => TEXT_2(),
                         };
                         let (bg, border, fg) = match (sel, hot) {
-                            (true, _) => (ACCENT(), ACCENT(), ACCENT_TEXT()),
+                            (true, _) => (ACCENT_SOFT_HOVER(), ACCENT_BORDER(), ACCENT_FG()),
                             (false, true) => (CONTROL_HOVER(), BORDER_HOVER(), TEXT()),
-                            _ => (BG_INPUT(), BORDER_STRONG(), side),
+                            _ => (BG_PANEL(), BORDER_SOFT(), side),
                         };
-                        cv.round_border(br, self.pf(5.0), border, bg);
-                        self.te.draw(cv, semi, self.pf(11.5), br.x as f32 + self.pf(9.0), lb, &label, fg, w);
+                        cv.round_border(br, self.pf(4.0), border, bg);
+                        self.te.draw(cv, semi, self.pf(11.5), br.x as f32 + self.pf(8.0), lb, &label, fg, w);
                         hits.push((br, changes_view::CHit::Conflict(KHit::Pick(*k, c))));
                         bx += w + self.pf(6.0);
                     }
                 }
                 Row::Edit(i) => {
                     cv.fill(rr, BG_INPUT());
-                    cv.fill(Rect::new(rr.x, rr.y, self.px(3.0), rr.h), ACCENT());
+                    cv.fill(Rect::new(rr.x, rr.y, self.px(2.0).max(2), rr.h), ACCENT());
                     if let Some((_, area)) = &v.editing {
                         let line = area.lines().get(*i).cloned().unwrap_or_default();
                         let shown = line.replace('\t', "    ");
@@ -624,7 +638,7 @@ impl Ui {
                         _ => (ADD_BG(), "", ADD()),
                     };
                     cv.fill(rr, bg);
-                    cv.fill(Rect::new(rr.x, rr.y, self.px(4.0), rr.h), fg);
+                    cv.fill(Rect::new(rr.x, rr.y, self.px(2.0).max(2), rr.h), fg);
                     // The side's name on the first row of its block.
                     let first = j == 0
                         || !matches!(

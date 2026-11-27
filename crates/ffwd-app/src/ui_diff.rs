@@ -202,7 +202,7 @@ impl Ui {
         let clip = cv.clip();
         let fit = (body.h / lh + 1) as usize;
         // Divider between the sides.
-        cv.fill(Rect::new(body.x + half, body.y, 1, body.h), BORDER());
+        cv.fill(Rect::new(body.x + half, body.y, 1, body.h), BORDER_SOFT());
         for (k, &(l, r)) in rows.iter().enumerate().skip(top).take(fit) {
             let y = body.y + (k - top) as i32 * lh;
             let row = Rect::new(body.x, y, body.w, lh);
@@ -225,9 +225,19 @@ impl Ui {
                         lh - self.px(4.0),
                     );
                     let hot = Hot::Change(hit_base + buttons.len());
-                    let (bg, border) = self.control_colors(hot, BG_BAR(), HUNK_BORDER());
-                    cv.round_border(b, self.pf(5.0), border, bg);
-                    self.te.draw(cv, semi, self.pf(11.0), b.x as f32 + self.pf(9.0), lb, label, HUNK_TEXT(), w);
+                    let is_hot = self.is_hot(hot);
+                    let (bg, border) = self.control_colors(hot, BG_PANEL(), BORDER_SOFT());
+                    cv.round_border(b, self.pf(metrics().radius_sm), border, bg);
+                    self.te.draw(
+                        cv,
+                        semi,
+                        self.pf(11.0),
+                        b.x as f32 + self.pf(9.0),
+                        lb,
+                        label,
+                        if is_hot { TEXT() } else { TEXT_2() },
+                        w,
+                    );
                     buttons.push((hunk - 1, b));
                     text_w -= w + self.pf(12.0);
                 }
@@ -376,6 +386,7 @@ impl Ui {
         let y = bar.y + self.px(4.0);
         let base = (bar.y as f32 + bar.h as f32 / 2.0 + self.pf(4.0)).round();
         let mut x = bar.right() - self.px(10.0);
+        let rad = self.pf(metrics().radius_sm);
         let seg = |ui_: &mut Ui,
                    cv: &mut Canvas,
                    x: &mut i32,
@@ -383,21 +394,23 @@ impl Ui {
                    on: bool,
                    hit: DiffBar,
                    hits: &mut Vec<(Rect, DiffBar)>| {
-            let w = (ui_.te.measure(semi, ui_.pf(11.5), label) + ui_.pf(16.0)) as i32;
+            let w = (ui_.te.measure(semi, ui_.pf(11.5), label) + ui_.pf(14.0)) as i32;
             let r = Rect::new(*x - w, y, w, h);
+            let hot = ui_.is_hot(Hot::DiffBar(hits.len()));
             if on {
-                cv.fill_round(r, ui_.pf(5.0), BG_CHOSEN());
-            } else if ui_.is_hot(Hot::DiffBar(hits.len())) {
-                cv.fill_round(r, ui_.pf(5.0), CONTROL_HOVER());
+                cv.fill_round(r, rad, BG_CHOSEN());
+            } else if hot {
+                cv.fill_round(r, rad, CONTROL_HOVER());
             }
+            let fg = if on || hot { TEXT() } else { TEXT_3() };
             ui_.te.draw(
                 cv,
-                semi,
+                if on { semi } else { ui },
                 ui_.pf(11.5),
-                r.x as f32 + ui_.pf(8.0),
+                r.x as f32 + ui_.pf(7.0),
                 base,
                 label,
-                if on { TEXT() } else { TEXT_2() },
+                fg,
                 w as f32,
             );
             hits.push((r, hit));
@@ -416,30 +429,34 @@ impl Ui {
         ] {
             let r = Rect::new(x - h, y, h, h);
             let on = hit == DiffBar::Find && self.diff_find.is_some();
+            let hot = self.is_hot(Hot::DiffBar(hits.len()));
             if on {
-                cv.fill_round(r, self.pf(5.0), BG_CHOSEN());
-            } else if self.is_hot(Hot::DiffBar(hits.len())) {
-                cv.fill_round(r, self.pf(5.0), CONTROL_HOVER());
+                cv.fill_round(r, rad, BG_CHOSEN());
+            } else if hot {
+                cv.fill_round(r, rad, CONTROL_HOVER());
             }
-            let c = if on { TEXT() } else { TEXT_2() };
-            self.glyph(cv, g, r.x as f32 + r.w as f32 / 2.0, r.y as f32 + r.h as f32 / 2.0, self.pf(6.5), c);
+            let c = if on || hot { TEXT() } else { TEXT_3() };
+            self.glyph(cv, g, r.x as f32 + r.w as f32 / 2.0, r.y as f32 + r.h as f32 / 2.0, self.pf(6.0), c);
             hits.push((r, hit));
             x = r.x - self.px(2.0);
         }
-        // The text options come in groups, and a group shows whole or not
-        // at all: on a narrow pane the whitespace switch goes first;
-        // Unified / Side by side stays longest. The context presets live in
-        // the `…` menu (and `c` cycles them): a calm bar (FF-59). A context
-        // other than the default shows as a chosen segment that resets it.
+        // Only show the Whitespace pill in the bar when non-default (ignored),
+        // keeping the default bar uncluttered and giving the file path room.
+        // The `…` menu and `w` still toggle it anytime.
         let ws = self.diff_opts.ignore_whitespace;
-        let ws_label = if ws { "Whitespace ignored" } else { "Whitespace shown" };
+        let ws_label = "WS ignored";
         let segw =
-            |ui_: &mut Ui, label: &str| (ui_.te.measure(semi, ui_.pf(11.5), label) + ui_.pf(16.0)) as i32 + ui_.px(2.0);
-        let sep = self.px(11.0);
-        let w_ws = segw(self, ws_label) + sep;
-        let w_split = segw(self, "Side by side") + segw(self, "Unified") + sep;
-        // Room for the controls, keeping some for the file name on the left.
-        let mut room = x - bar.x - self.px(60.0);
+            |ui_: &mut Ui, label: &str| (ui_.te.measure(semi, ui_.pf(11.5), label) + ui_.pf(14.0)) as i32 + ui_.px(2.0);
+        let sep = self.px(9.0);
+        let w_ws = if ws { segw(self, ws_label) + sep } else { 0 };
+        let w_split_s = (self.te.measure(semi, self.pf(11.5), "Split") + self.pf(14.0)) as i32;
+        let w_split_u = (self.te.measure(semi, self.pf(11.5), "Unified") + self.pf(14.0)) as i32;
+        let track_pad = self.px(2.0);
+        let track_gap = self.px(2.0);
+        let w_split_track = w_split_u + track_gap + w_split_s + track_pad * 2;
+        let w_split = w_split_track + sep;
+        // Room for the controls, keeping generous space for the file name on the left.
+        let mut room = x - bar.x - self.px(120.0);
         let mut fits = |w: i32| {
             let ok = room >= w;
             if ok {
@@ -449,15 +466,15 @@ impl Ui {
         };
         let ctx = CONTEXTS.iter().find(|c| c.0 == self.diff_opts.context && c.0 != 3).map(|c| c.1);
         let w_ctx = ctx.map_or(0, |l| segw(self, l) + sep);
-        let (show_split, show_ws, show_ctx) = (fits(w_split), fits(w_ws), ctx.is_some() && fits(w_ctx));
+        let (show_split, show_ws, show_ctx) = (fits(w_split), ws && fits(w_ws), ctx.is_some() && fits(w_ctx));
         let divider = |ui_: &Ui, cv: &mut Canvas, x: &mut i32| {
-            *x -= ui_.px(5.0);
-            cv.fill(Rect::new(*x, y + ui_.px(4.0), 1, h - ui_.px(8.0)), BORDER());
-            *x -= ui_.px(5.0);
+            *x -= ui_.px(4.0);
+            cv.fill(Rect::new(*x, y + ui_.px(5.0), 1, h - ui_.px(10.0)), BORDER_SOFT());
+            *x -= ui_.px(4.0);
         };
         if show_ws {
             divider(self, cv, &mut x);
-            seg(self, cv, &mut x, ws_label, ws, DiffBar::Whitespace, &mut hits);
+            seg(self, cv, &mut x, ws_label, true, DiffBar::Whitespace, &mut hits);
         }
         if let Some(label) = ctx.filter(|_| show_ctx) {
             divider(self, cv, &mut x);
@@ -465,11 +482,41 @@ impl Ui {
         }
         if show_split {
             divider(self, cv, &mut x);
+            // Quiet borderless recessed track containing the Unified | Split segments.
+            let track = Rect::new(x - w_split_track, y, w_split_track, h);
+            cv.fill_round(track, rad, BG_INPUT());
+            let inner_y = y + track_pad;
+            let inner_h = (h - track_pad * 2).max(1);
+            let inner_rad = (rad - self.pf(1.0)).max(2.0);
             let split = self.diff_split;
-            seg(self, cv, &mut x, "Side by side", split, DiffBar::Split, &mut hits);
-            seg(self, cv, &mut x, "Unified", !split, DiffBar::Unified, &mut hits);
+            let r_s = Rect::new(track.right() - track_pad - w_split_s, inner_y, w_split_s, inner_h);
+            let r_u = Rect::new(r_s.x - track_gap - w_split_u, inner_y, w_split_u, inner_h);
+            for (r, label, on, hit) in
+                [(r_s, "Split", split, DiffBar::Split), (r_u, "Unified", !split, DiffBar::Unified)]
+            {
+                let hot = self.is_hot(Hot::DiffBar(hits.len()));
+                if on {
+                    cv.fill_round(r, inner_rad, BG_CHOSEN());
+                } else if hot {
+                    cv.fill_round(r, inner_rad, CONTROL_HOVER());
+                }
+                let font = if on { semi } else { ui };
+                let fg = if on || hot { TEXT() } else { TEXT_3() };
+                let tw = self.te.measure(font, self.pf(11.5), label);
+                self.te.draw(
+                    cv,
+                    font,
+                    self.pf(11.5),
+                    r.x as f32 + (r.w as f32 - tw) / 2.0,
+                    base,
+                    label,
+                    fg,
+                    r.w as f32,
+                );
+                hits.push((r, hit));
+            }
+            x = track.x - self.px(2.0);
         }
-        let _ = ui;
         // Controls pushed past the pane's left edge are clipped away; they
         // must not take clicks there either.
         hits.retain(|(r, _)| r.x >= bar.x);

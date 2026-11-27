@@ -194,7 +194,7 @@ impl Ui {
                     let row =
                         Rect::new(list.x + self.px(8.0), y + self.px(2.0), list.w - self.px(16.0), rh - self.px(4.0));
                     if k == self.r.reflog.sel {
-                        cv.fill_round(row, self.pf(6.0), BG_SELECT());
+                        cv.fill_round(row, self.pf(6.0), BG_SELECT_DIM());
                     } else if self.is_hot(Hot::Reflog(hits.len())) {
                         cv.fill_round(row, self.pf(6.0), BG_HOVER());
                     }

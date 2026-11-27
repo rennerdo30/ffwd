@@ -1,15 +1,162 @@
-//! Offscreen rendering of the real UI into a PNG. Same state, same paint
-//! code as the window; no window, no desktop disturbance.
+//! Offscreen rendering of the real UI into PNGs: single repo snapshots
+//! (`--snapshot`), zero-git synthetic snapshots (`--demo`), single-process
+//! multi-screen batches (`--snapshot-ui <dir>`), and programmatic UI audits
+//! (`--audit`). Same state, same paint code as the window; no desktop impact.
 
+use crate::audit;
+use crate::demo;
+use crate::theme;
 use crate::ui::{Focus, Key, Ui, load_fonts};
 use crate::work::{self, Msg, Sink};
 use crate::{Args, trace};
 use ffwd_render::{Canvas, TextEngine};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
+/// Builds a hot `Ui` pre-populated with the in-memory synthetic demo repo
+/// (zero `git.exe` spawns, zero disk reads beyond the 3 font files).
+pub fn build_demo_ui(args: &Args) -> Result<Ui, String> {
+    let mut te = TextEngine::new();
+    let fonts = load_fonts(&mut te).ok_or_else(|| "no usable UI font found".to_string())?;
+    let (w, h) = args.size;
+    let layout = args.layout.as_deref().unwrap_or("below");
+    let settings = crate::settings::Settings::parse(&format!("[ui]\nlayout = \"{layout}\"\n"));
+    let state = crate::settings::Settings::parse("");
+    let sinks: crate::ui::SinkFactory = Arc::new(|_| Arc::new(|_| {}));
+    let mut ui = Ui::new(
+        te,
+        fonts,
+        settings,
+        state,
+        Some((1, PathBuf::from("/demo/ffwd"))),
+        sinks,
+        w,
+        h,
+        args.scale.unwrap_or(1.25),
+    );
+    if let Some(st) = &args.sidebar {
+        ui.set_side_style(st);
+    }
+    demo::populate(&mut ui);
+    Ok(ui)
+}
+
+/// Single-process batch capture of all built-in demo screens (`--snapshot-ui <dir>`).
+pub fn run_batch(args: &Args, t0: Instant) -> i32 {
+    let Some(dir) = &args.snapshot_ui else { return 2 };
+    if let Some(tokens) = &args.tokens
+        && let Err(e) = theme::load_tokens_file(tokens)
+    {
+        eprintln!("ffwd: {e}");
+        return 1;
+    }
+    if let Err(e) = std::fs::create_dir_all(dir) {
+        eprintln!("ffwd: could not create {}: {e}", dir.display());
+        return 1;
+    }
+    let mut ui = match build_demo_ui(args) {
+        Ok(u) => u,
+        Err(e) => {
+            eprintln!("ffwd: {e}");
+            return 1;
+        }
+    };
+    let fonts_ms = t0.elapsed().as_secs_f64() * 1000.0;
+    let themes: &[&str] = match args.themes.as_deref() {
+        Some("dark") => &["dark"],
+        Some("light") => &["light"],
+        _ => &["dark", "light"],
+    };
+    let mut px = vec![0u32; ui.w * ui.h];
+    let mut audits: Vec<String> = Vec::new();
+    let mut count = 0usize;
+    let mut paint_total_ms = 0.0f64;
+    let mut png_total_ms = 0.0f64;
+    let mut audit_failed = false;
+
+    for &screen in demo::SCREENS {
+        if let Some(only) = &args.only
+            && !screen.contains(only.as_str())
+        {
+            continue;
+        }
+        let is_sheet = match demo::apply_screen(&mut ui, screen) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("ffwd: {e}");
+                return 1;
+            }
+        };
+        for &th in themes {
+            ui.settings.set_string("ui.theme", th);
+            ui.apply_theme_now();
+            ui.te.reset_ellipsis_count();
+            let tp = Instant::now();
+            {
+                let mut cv = Canvas::new(&mut px, ui.w, ui.h);
+                if is_sheet {
+                    demo::paint_sheet(&mut ui, &mut cv);
+                } else {
+                    ui.paint(&mut cv, true);
+                }
+            }
+            let pms = tp.elapsed().as_secs_f64() * 1000.0;
+            paint_total_ms += pms;
+
+            if args.audit.is_some() {
+                let rep = audit::run(&mut ui, screen, &px, pms, !is_sheet && screen == "history");
+                if !rep.ok() {
+                    audit_failed = true;
+                }
+                audits.push(rep.to_json());
+            }
+
+            let tw = Instant::now();
+            let out = dir.join(format!("{screen}-{th}.png"));
+            if let Err(e) = write_png_fast(&out, &px, ui.w, ui.h) {
+                eprintln!("ffwd: could not write {}: {e}", out.display());
+                return 1;
+            }
+            png_total_ms += tw.elapsed().as_secs_f64() * 1000.0;
+            count += 1;
+        }
+    }
+
+    if let Some(audit_out) = &args.audit {
+        let json = format!("[{}]\n", audits.join(","));
+        if audit_out.as_os_str().is_empty() {
+            println!("{json}");
+        } else if let Err(e) = std::fs::write(audit_out, &json) {
+            eprintln!("ffwd: could not write audit {}: {e}", audit_out.display());
+            return 1;
+        }
+    }
+
+    let total_ms = t0.elapsed().as_secs_f64() * 1000.0;
+    eprintln!(
+        "snapshot-ui: {} screens in {:.1} ms (setup {:.1} ms, paint {:.1} ms, png {:.1} ms, {:.1} ms/screen)",
+        count,
+        total_ms,
+        fonts_ms,
+        paint_total_ms,
+        png_total_ms,
+        if count > 0 { total_ms / count as f64 } else { 0.0 }
+    );
+    if audit_failed { 1 } else { 0 }
+}
+
 pub fn run(args: &Args, t0: Instant) -> i32 {
     let Some(out) = &args.snapshot else { return 2 };
+    if let Some(tokens) = &args.tokens
+        && let Err(e) = theme::load_tokens_file(tokens)
+    {
+        eprintln!("ffwd: {e}");
+        return 1;
+    }
+    if args.demo {
+        return run_demo_single(args, out, t0);
+    }
     let (tx, rx) = mpsc::channel::<(u64, Msg)>();
     let tx = Arc::new(Mutex::new(tx));
     let sinks: crate::ui::SinkFactory = Arc::new(move |id| {
@@ -289,10 +436,20 @@ pub fn run(args: &Args, t0: Instant) -> i32 {
         ui.paint(&mut cv, true);
         ui.pointer(x, y);
     }
+    ui.te.reset_ellipsis_count();
     let t = Instant::now();
     ui.paint(&mut cv, true);
     let full_ms = t.elapsed().as_secs_f64() * 1000.0;
     trace(t0, &format!("full paint {full_ms:.2} ms"));
+    if let Some(audit_out) = &args.audit {
+        let rep = audit::run(&mut ui, "snapshot", &px, full_ms, true);
+        let json = rep.to_json();
+        if audit_out.as_os_str().is_empty() {
+            println!("{json}");
+        } else {
+            let _ = std::fs::write(audit_out, format!("{json}\n"));
+        }
+    }
     // One selection step, to report what a key press costs.
     ui.key(Key::Down);
     let mut scratch = px.clone();
@@ -309,7 +466,7 @@ pub fn run(args: &Args, t0: Instant) -> i32 {
         ui.stats.last_paint_ms,
     );
     let _ = step;
-    match write_png(out, &px, w, h) {
+    match write_png_fast(out, &px, w, h) {
         Ok(()) => 0,
         Err(e) => {
             eprintln!("ffwd: could not write {}: {e}", out.display());
@@ -318,15 +475,117 @@ pub fn run(args: &Args, t0: Instant) -> i32 {
     }
 }
 
-fn write_png(path: &std::path::Path, px: &[u32], w: usize, h: usize) -> Result<(), String> {
+/// Fast single-screen synthetic snapshot (`--demo --snapshot out.png`).
+fn run_demo_single(args: &Args, out: &std::path::Path, t0: Instant) -> i32 {
+    let mut ui = match build_demo_ui(args) {
+        Ok(u) => u,
+        Err(e) => {
+            eprintln!("ffwd: {e}");
+            return 1;
+        }
+    };
+    if let Some(t) = &args.theme {
+        ui.settings.set_string("ui.theme", t);
+        ui.apply_theme_now();
+    }
+    let screen = if let Some(s) = &args.only {
+        s.as_str()
+    } else if args.changes {
+        "changes"
+    } else if args.settings {
+        "settings"
+    } else if args.agents_demo || args.agents_page.is_some() {
+        "agents"
+    } else if args.diff_split {
+        "diff-split"
+    } else if args.palette.is_some() {
+        "palette"
+    } else if args.files.is_some() {
+        "files"
+    } else if args.activity {
+        "activity"
+    } else {
+        "history"
+    };
+    let is_sheet = match demo::apply_screen(&mut ui, screen) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("ffwd: {e}");
+            return 1;
+        }
+    };
+    if let Some(s) = &args.settings_section {
+        ui.open_settings_named(s);
+    }
+    if let Some(q) = &args.palette {
+        ui.open_palette_with(q);
+    }
+    if let Some(s) = args.code_size {
+        ui.set_code_size(s);
+    }
+    if args.diff_wrap {
+        ui.diff_wrap = true;
+    }
+    if args.diff_ws {
+        ui.diff_show_ws = true;
+    }
+    let mut px = vec![0u32; ui.w * ui.h];
+    if let Some((x, y)) = args.hover {
+        let mut cv = Canvas::new(&mut px, ui.w, ui.h);
+        ui.paint(&mut cv, true);
+        ui.pointer(x, y);
+    }
+    ui.te.reset_ellipsis_count();
+    let t = Instant::now();
+    {
+        let mut cv = Canvas::new(&mut px, ui.w, ui.h);
+        if is_sheet {
+            demo::paint_sheet(&mut ui, &mut cv);
+        } else {
+            ui.paint(&mut cv, true);
+        }
+    }
+    let full_ms = t.elapsed().as_secs_f64() * 1000.0;
+    let mut audit_failed = false;
+    if let Some(audit_out) = &args.audit {
+        let rep = audit::run(&mut ui, screen, &px, full_ms, !is_sheet && screen == "history");
+        audit_failed = !rep.ok();
+        let json = rep.to_json();
+        if audit_out.as_os_str().is_empty() {
+            println!("{json}");
+        } else if let Err(e) = std::fs::write(audit_out, format!("{json}\n")) {
+            eprintln!("ffwd: could not write audit {}: {e}", audit_out.display());
+            return 1;
+        }
+    }
+    let tw = Instant::now();
+    if let Err(e) = write_png_fast(out, &px, ui.w, ui.h) {
+        eprintln!("ffwd: could not write {}: {e}", out.display());
+        return 1;
+    }
+    let png_ms = tw.elapsed().as_secs_f64() * 1000.0;
+    let total_ms = t0.elapsed().as_secs_f64() * 1000.0;
+    eprintln!(
+        "demo snapshot ({screen}): total {total_ms:.1} ms (paint {full_ms:.2} ms, png {png_ms:.1} ms, ellipsis {})",
+        ui.te.ellipsis_count()
+    );
+    if audit_failed { 1 } else { 0 }
+}
+
+/// Fast RGB PNG writer (`Compression::Fast` + `FilterType::Sub`): 4–6× faster
+/// than default zlib compression for UI screenshots while keeping small files.
+pub fn write_png_fast(path: &std::path::Path, px: &[u32], w: usize, h: usize) -> Result<(), String> {
     let file = std::fs::File::create(path).map_err(|e| e.to_string())?;
-    let mut enc = png::Encoder::new(std::io::BufWriter::new(file), w as u32, h as u32);
+    let mut enc = png::Encoder::new(std::io::BufWriter::with_capacity(1 << 16, file), w as u32, h as u32);
     enc.set_color(png::ColorType::Rgb);
     enc.set_depth(png::BitDepth::Eight);
+    enc.set_compression(png::Compression::Fastest);
     let mut wr = enc.write_header().map_err(|e| e.to_string())?;
-    let mut rgb = Vec::with_capacity(w * h * 3);
-    for &p in px {
-        rgb.extend_from_slice(&[(p >> 16) as u8, (p >> 8) as u8, p as u8]);
+    let mut rgb = vec![0u8; w * h * 3];
+    for (dst, &p) in rgb.as_chunks_mut::<3>().0.iter_mut().zip(px.iter()) {
+        dst[0] = (p >> 16) as u8;
+        dst[1] = (p >> 8) as u8;
+        dst[2] = p as u8;
     }
     wr.write_image_data(&rgb).map_err(|e| e.to_string())
 }

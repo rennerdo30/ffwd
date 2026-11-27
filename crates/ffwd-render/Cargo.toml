@@ -3,7 +3,7 @@ name = "ffwd-render"
 description = "A small CPU canvas: solid fills, anti-aliased vector shapes and cached text, drawn into a 0x00RRGGBB pixel buffer. No windowing, no GPU."
 # Versioned on its own (not the workspace version): other projects depend on
 # it, so it follows SemVer for its public API (docs/RELEASING.md).
-version = "0.1.0"
+version = "0.1.1"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

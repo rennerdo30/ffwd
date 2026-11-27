@@ -57,6 +57,55 @@ pub enum Glyph {
     Swatch(u32),
 }
 
+impl Glyph {
+    /// Every named icon, for the component reference sheet (`--snapshot-ui`).
+    pub const ALL: &'static [(&'static str, Glyph)] = &[
+        ("Branch", Glyph::Branch),
+        ("Tag", Glyph::Tag),
+        ("Remote", Glyph::Remote),
+        ("Head", Glyph::Head),
+        ("Commit", Glyph::Commit),
+        ("Merge", Glyph::Merge),
+        ("Rebase", Glyph::Rebase),
+        ("Plan", Glyph::Plan),
+        ("CherryPick", Glyph::CherryPick),
+        ("Revert", Glyph::Revert),
+        ("Reset", Glyph::Reset),
+        ("Checkout", Glyph::Checkout),
+        ("Copy", Glyph::Copy),
+        ("Patch", Glyph::Patch),
+        ("Changes", Glyph::Changes),
+        ("Save", Glyph::Save),
+        ("Edit", Glyph::Edit),
+        ("Trash", Glyph::Trash),
+        ("Folder", Glyph::Folder),
+        ("Terminal", Glyph::Terminal),
+        ("Editor", Glyph::Editor),
+        ("Search", Glyph::Search),
+        ("Up", Glyph::Up),
+        ("Down", Glyph::Down),
+        ("Undo", Glyph::Undo),
+        ("Fetch", Glyph::Fetch),
+        ("Pull", Glyph::Pull),
+        ("Push", Glyph::Push),
+        ("Stash", Glyph::Stash),
+        ("Plus", Glyph::Plus),
+        ("Gear", Glyph::Gear),
+        ("Link", Glyph::Link),
+        ("DiffTool", Glyph::DiffTool),
+        ("Update", Glyph::Update),
+        ("Ignore", Glyph::Ignore),
+        ("Clock", Glyph::Clock),
+        ("PullRequest", Glyph::PullRequest),
+        ("Submodule", Glyph::Submodule),
+        ("Close", Glyph::Close),
+        ("Check", Glyph::Check),
+        ("Expand", Glyph::Expand),
+        ("Collapse", Glyph::Collapse),
+        ("Text", Glyph::Text),
+    ];
+}
+
 impl Ui {
     /// Draws `g` centred at (cx, cy), `s` pixels from the centre to the
     /// edge of its box.
