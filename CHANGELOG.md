@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.2.0-beta.12
+
+Cleaner contrast, a calmer layout, and a fix for sidebar view selection across tab switches and reloads.
+
+- **Fix, view pre-selection:** switching repository tabs or reloading after a fetch, pull or push no longer resets the sidebar highlight back to All Commits while Local Changes, Files, Activity or Reflog is open.
+- **Higher contrast, less visual clutter:** deeper dark canvas with distinct sidebar, toolbar, tab strip and details surfaces, crisper text contrast for metadata and controls, tighter default typography scale, steady single-weight commit subjects, unified ref chips with coloured icons (HEAD stays accented), desaturated author avatars, and a 55/45 History-to-Details split.
+- **Decluttered sidebar & secondary views:** default List sidebar keeps Local Changes and All Commits at the top and tucks Files, Activity, Reflog and Agents into a compact footer strip; softer commit-box inputs, clearer checkboxes, non-overlapping conflict headers, and calmer diff bars.
+- **UI iteration tooling:** offline `--demo` mode, multi-screen `--snapshot-ui`, `--audit` (contrast, overlap and partial-paint checks), live `--tokens` / `--dump-tokens`, persistent `--serve` renderer, and `dev-ui` build profile.
+
 ## 0.2.0-beta.11
 
 ffwd is on crates.io: `cargo install --locked ffwd@0.2.0-beta.11` builds it from source.
