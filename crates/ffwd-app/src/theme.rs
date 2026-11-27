@@ -63,11 +63,11 @@ pub struct Metrics {
 }
 
 pub const DEFAULT_METRICS: Metrics = Metrics {
-    type_scale: 1.04,
-    row_h: 24.0,
-    side_row_h: 24.0,
-    top_bar_h: 40.0,
-    tab_bar_h: 30.0,
+    type_scale: 0.92,
+    row_h: 22.0,
+    side_row_h: 22.0,
+    top_bar_h: 38.0,
+    tab_bar_h: 27.0,
     status_bar_h: 22.0,
     radius_sm: 4.0,
     radius_md: 6.0,
@@ -163,84 +163,83 @@ macro_rules! define_palette {
 }
 
 define_palette! {
-    BG(bg) = 0x1f2023, 0xf8f8f6;
-    BG_SIDEBAR(bg_sidebar) = 0x1a1b1e, 0xf1f0ec;
-    BG_BAR(bg_bar) = 0x242529, 0xf4f3ef;
-    BG_PANEL(bg_panel) = 0x222326, 0xfcfbfa;
-    BG_INPUT(bg_input) = 0x1b1c1f, 0xffffff;
+    BG(bg) = 0x141519, 0xfafafa;
+    BG_SIDEBAR(bg_sidebar) = 0x1b1d22, 0xf0f1f4;
+    BG_BAR(bg_bar) = 0x21232a, 0xf4f5f7;
+    BG_PANEL(bg_panel) = 0x181a1f, 0xffffff;
+    BG_INPUT(bg_input) = 0x0e0f12, 0xe8eaef;
     /// Under the pointer.
-    BG_HOVER(bg_hover) = 0x27282d, 0xebeae5;
+    BG_HOVER(bg_hover) = 0x23262f, 0xe8ebf0;
     /// A button or field under the pointer (one step brighter than rows).
-    CONTROL_HOVER(control_hover) = 0x2f3137, 0xe4e3dd;
+    CONTROL_HOVER(control_hover) = 0x2d313d, 0xe0e3ea;
     /// While the mouse button is down.
-    BG_PRESS(bg_press) = 0x363840, 0xdcdad3;
-    BG_SELECT(bg_select) = 0x2d3038, 0xe2e6ee;
-    BG_SELECT_DIM(bg_select_dim) = 0x26282e, 0xebeae6;
+    BG_PRESS(bg_press) = 0x383e4e, 0xd4d8e2;
+    BG_SELECT(bg_select) = 0x263348, 0xdbe6f6;
+    BG_SELECT_DIM(bg_select_dim) = 0x1f2532, 0xe7ebf2;
     /// A chosen segment of a segmented control.
-    BG_CHOSEN(bg_chosen) = 0x32343b, 0xe5e4de;
+    BG_CHOSEN(bg_chosen) = 0x313644, 0xdce0e8;
     /// Selected text in a field.
-    BG_TEXT_SELECT(bg_text_select) = 0x334056, 0xc8d6eb;
-    BORDER(border) = 0x2a2c31, 0xe1e0db;
-    BORDER_SOFT(border_soft) = 0x242529, 0xeae9e5;
+    BG_TEXT_SELECT(bg_text_select) = 0x2d4466, 0xc2d6f2;
+    BORDER(border) = 0x313542, 0xd4d7df;
+    BORDER_SOFT(border_soft) = 0x262934, 0xe4e6ec;
     /// Outline of floating panels (palette, settings, agents).
-    BORDER_STRONG(border_strong) = 0x373940, 0xcac8c0;
+    BORDER_STRONG(border_strong) = 0x454b5c, 0xb8bcc8;
     /// A control's border under the pointer.
-    BORDER_HOVER(border_hover) = 0x484b54, 0xa8a59c;
+    BORDER_HOVER(border_hover) = 0x586075, 0x9499a8;
     /// Menus, the palette and other floating panels: a step above everything.
-    BG_FLOAT(bg_float) = 0x28292d, 0xffffff;
+    BG_FLOAT(bg_float) = 0x242730, 0xffffff;
     /// Whitespace marks in diffs: present, but quieter than comments.
-    WS_MARK(ws_mark) = 0x4a4d55, 0xbab8b0;
-    TEXT(text) = 0xd5d4d0, 0x232427;
-    TEXT_2(text_2) = 0xa4a5a8, 0x4b4d52;
-    TEXT_3(text_3) = 0x898b90, 0x676970;
-    TEXT_4(text_4) = 0x6d7077, 0x767880;
+    WS_MARK(ws_mark) = 0x4b5160, 0xb5bac6;
+    TEXT(text) = 0xedf0f5, 0x181a20;
+    TEXT_2(text_2) = 0xc6cbd6, 0x3e424d;
+    TEXT_3(text_3) = 0x9aa1b0, 0x5c6170;
+    TEXT_4(text_4) = 0x7e8596, 0x6f7585;
     /// ffwd's one accent (the logo's colour).
-    ACCENT(accent) = 0xc9923e, 0xbd7d1f;
+    ACCENT(accent) = 0xe0a23e, 0xc27d18;
     /// Text on an accent fill.
-    ACCENT_TEXT(accent_text) = 0x1b150a, 0x1b150a;
+    ACCENT_TEXT(accent_text) = 0x171108, 0x171108;
     /// Accent-coloured text on dark backgrounds.
-    ACCENT_FG(accent_fg) = 0xd6aa66, 0x87530f;
+    ACCENT_FG(accent_fg) = 0xedb860, 0x8c550b;
     /// A faint accent tint (the primary button at rest).
-    ACCENT_SOFT(accent_soft) = 0x2a241b, 0xf6ebd8;
-    ACCENT_SOFT_HOVER(accent_soft_hover) = 0x332b20, 0xf0dec0;
-    ACCENT_BORDER(accent_border) = 0x4d402b, 0xd5b37c;
-    ADD(add) = 0x6aa67b, 0x2e7d45;
-    ADD_BG(add_bg) = 0x1d2821, 0xe9f3ec;
-    ADD_TEXT(add_text) = 0xc6dccb, 0x1a3822;
-    ADD_GUTTER(add_gutter) = 0x5f8b6c, 0x478759;
-    DEL(del) = 0xc77474, 0xad4040;
-    DEL_BG(del_bg) = 0x2b2022, 0xf7eaea;
-    DEL_TEXT(del_text) = 0xe3c7c7, 0x4a2020;
-    DEL_GUTTER(del_gutter) = 0x996569, 0xac6565;
-    DANGER_BORDER(danger_border) = 0x4a2f33, 0xdda8a8;
-    DIFF_ADD_LINE(diff_add_line) = 0x1c251f, 0xe1efe5;
-    DIFF_DEL_LINE(diff_del_line) = 0x281e20, 0xf3e1e1;
-    HUNK_BG(hunk_bg) = 0x23252a, 0xedf0f5;
-    HUNK_TEXT(hunk_text) = 0x8898b2, 0x435a82;
-    HUNK_BORDER(hunk_border) = 0x384254, 0xb3c0d8;
-    MOD(mod_color) = 0xbfa05c, 0x8c6816;
+    ACCENT_SOFT(accent_soft) = 0x292115, 0xf8ecd8;
+    ACCENT_SOFT_HOVER(accent_soft_hover) = 0x342919, 0xf2dfc0;
+    ACCENT_BORDER(accent_border) = 0x5c4828, 0xd9b378;
+    ADD(add) = 0x64c481, 0x237a3e;
+    ADD_BG(add_bg) = 0x13261b, 0xe8f5ec;
+    ADD_TEXT(add_text) = 0xd4ecd9, 0x163820;
+    ADD_GUTTER(add_gutter) = 0x58a36f, 0x3c8252;
+    DEL(del) = 0xe06c75, 0xb83737;
+    DEL_BG(del_bg) = 0x2b161a, 0xfaeaea;
+    DEL_TEXT(del_text) = 0xf2d2d5, 0x4d1c1c;
+    DEL_GUTTER(del_gutter) = 0xb86168, 0xb55959;
+    DANGER_BORDER(danger_border) = 0x593138, 0xe0a4a4;
+    DIFF_ADD_LINE(diff_add_line) = 0x102117, 0xdff0e4;
+    DIFF_DEL_LINE(diff_del_line) = 0x241216, 0xf5dfdf;
+    HUNK_BG(hunk_bg) = 0x1b212e, 0xebf0f7;
+    HUNK_TEXT(hunk_text) = 0x91b4e6, 0x3b598a;
+    HUNK_BORDER(hunk_border) = 0x35435c, 0xb0c2de;
+    MOD(mod_color) = 0xdab259, 0x946b10;
     /// The changed words inside a changed line (word highlights).
-    ADD_WORD(add_word) = 0x284733, 0xc3e4cc;
-    DEL_WORD(del_word) = 0x4e2d33, 0xecc4c4;
-    /// Syntax colours: muted, readable on the plain, added and deleted
-    /// backgrounds alike.
-    SYN_KEYWORD(syn_keyword) = 0xb896c2, 0x7a428a;
-    SYN_TYPE(syn_type) = 0x82a7c7, 0x296290;
-    SYN_STRING(syn_string) = 0x92b58b, 0x3a6c30;
-    SYN_NUMBER(syn_number) = 0xcca46a, 0x8c5714;
-    SYN_COMMENT(syn_comment) = 0x7a7e86, 0x73767e;
-    REN(ren) = 0x829ec4, 0x355c96;
-    LOCAL_FG(local_fg) = 0x8cb397, 0x265c3a;
-    REMOTE_BG(remote_bg) = 0x242830, 0xe4eaf3;
-    REMOTE_FG(remote_fg) = 0x93a8c7, 0x305080;
-    TAG_BG(tag_bg) = 0x2b2820, 0xf4ecdc;
-    TAG_FG(tag_fg) = 0xc2ae7c, 0x735618;
-    STASH_FG(stash_fg) = 0xa99bbd, 0x5c4478;
+    ADD_WORD(add_word) = 0x1f4a30, 0xbee6c9;
+    DEL_WORD(del_word) = 0x54232c, 0xf0c0c0;
+    /// Syntax colours: crisp and readable on the deep dark and light canvases.
+    SYN_KEYWORD(syn_keyword) = 0xc69ae0, 0x7c3b91;
+    SYN_TYPE(syn_type) = 0x7db8e8, 0x216299;
+    SYN_STRING(syn_string) = 0x93c987, 0x316e26;
+    SYN_NUMBER(syn_number) = 0xe0b06b, 0x91560e;
+    SYN_COMMENT(syn_comment) = 0x7c8494, 0x6f7582;
+    REN(ren) = 0x82aae0, 0x2e5c9e;
+    LOCAL_FG(local_fg) = 0x7cc994, 0x216339;
+    REMOTE_BG(remote_bg) = 0x1d2432, 0xe4ebf5;
+    REMOTE_FG(remote_fg) = 0x8ab2e6, 0x29508a;
+    TAG_BG(tag_bg) = 0x2b2519, 0xf5ecda;
+    TAG_FG(tag_fg) = 0xd6ba78, 0x7d5a12;
+    STASH_FG(stash_fg) = 0xb59fd6, 0x5d4182;
     /// The conflict resolver's two sides: rows and their edge stripe.
-    OURS_BG(ours_bg) = 0x1f2a38, 0xe3ebf5;
-    OURS_FG(ours_fg) = 0x84a0c4, 0x345b96;
-    THEIRS_BG(theirs_bg) = 0x282334, 0xede7f5;
-    THEIRS_FG(theirs_fg) = 0xa897be, 0x5c4478;
+    OURS_BG(ours_bg) = 0x162438, 0xe3ecf7;
+    OURS_FG(ours_fg) = 0x82ade0, 0x2d5a99;
+    THEIRS_BG(theirs_bg) = 0x241c34, 0xede6f7;
+    THEIRS_FG(theirs_fg) = 0xb29ad4, 0x5c4180;
     /// Windows' own caption colours for close (hover, press).
     CLOSE_HOVER(close_hover) = 0xc42b1c, 0xc42b1c;
     CLOSE_PRESS(close_press) = 0x9e2a1f, 0x9e2a1f;

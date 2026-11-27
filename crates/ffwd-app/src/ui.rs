@@ -1468,7 +1468,7 @@ impl Ui {
                 let list_w = (wi - side_w).max(0);
                 let list_h = match self.split_get(Split::List) {
                     Some(f) => ((mid_h as f32 * f) as i32).max(self.px(120.0)).min((mid_h - self.px(160.0)).max(0)),
-                    None => ((mid_h as f32 * 0.46) as i32).max(self.px(150.0)).min(mid_h),
+                    None => ((mid_h as f32 * 0.55) as i32).max(self.px(150.0)).min(mid_h),
                 };
                 (list_w, list_h, Rect::new(list_x, top_h + list_h, list_w, mid_h - list_h))
             }
@@ -3500,18 +3500,18 @@ impl Ui {
         if self.palette.is_some() {
             cv.round_border(search, srad, ACCENT(), BG_INPUT());
         } else if self.is_hot(Hot::Search) {
-            cv.round_border(search, srad, BORDER(), BG_INPUT());
+            cv.round_border(search, srad, BORDER_HOVER(), BG_INPUT());
         } else {
-            cv.fill_round(search, srad, BG_INPUT());
+            cv.round_border(search, srad, BORDER(), BG_INPUT());
         }
         controls.push((search.x, search.right()));
         self.search_rect = search;
         let sx = search.x as f32 + self.pf(12.0);
-        cv.ring(sx + self.pf(4.0), cy - self.pf(1.0), self.pf(4.2), self.pf(1.3), TEXT_4());
+        cv.ring(sx + self.pf(4.0), cy - self.pf(1.0), self.pf(4.2), self.pf(1.3), TEXT_3());
         cv.stroke(
             &[(sx + self.pf(7.2), cy + self.pf(2.2)), (sx + self.pf(9.8), cy + self.pf(4.8))],
             self.pf(1.3),
-            TEXT_4(),
+            TEXT_3(),
         );
         self.te.draw(
             cv,
@@ -3520,7 +3520,7 @@ impl Ui {
             sx + self.pf(18.0),
             base - self.pf(0.3),
             "Jump to branch, commit or command",
-            TEXT_4(),
+            TEXT_3(),
             sw as f32 - self.pf(86.0),
         );
         let kw = self.te.measure(ui, self.pf(11.0), "Ctrl K");
@@ -3531,7 +3531,7 @@ impl Ui {
             search.right() as f32 - kw - self.pf(10.0),
             base - self.pf(0.5),
             "Ctrl K",
-            TEXT_4(),
+            TEXT_3(),
             kw + 2.0,
         );
         self.title_controls = controls;
@@ -3566,7 +3566,7 @@ impl Ui {
 
     fn paint_tabs(&mut self, cv: &mut Canvas) {
         let r = self.lay.tabs;
-        cv.fill(r, BG_SIDEBAR());
+        cv.fill(r, BG_INPUT());
         cv.fill(Rect::new(r.x, r.bottom() - 1, r.w, 1), BORDER());
         let (rects, plus) = self.tab_rects();
         let (ui, semi) = (self.f.ui, self.f.semi);
@@ -3577,11 +3577,11 @@ impl Ui {
             let active = i == self.cur_tab;
             let hover = self.tab_hover == Some(i);
             let bg = if active {
-                BG()
+                BG_SIDEBAR()
             } else if hover {
                 BG_HOVER()
             } else {
-                BG_SIDEBAR()
+                BG_INPUT()
             };
             // Active tab lifts via matte surface elevation seamlessly into content (no bright top stripe).
             cv.fill(Rect::new(t.x, t.y, t.w, t.h + if active { 1 } else { 0 }), bg);
@@ -3895,7 +3895,7 @@ impl Ui {
             let (bg, _) = self.control_colors(h, BG_BAR(), BORDER());
             cv.fill_round(r, self.pf(metrics().radius_md), bg);
         }
-        let icon_c = if hot { TEXT() } else { TEXT_3() };
+        let icon_c = if hot { TEXT() } else { TEXT_2() };
         let fg = if hot { TEXT() } else { TEXT_2() };
         if accent {
             // The AI button's sparkle.
@@ -4160,13 +4160,20 @@ impl Ui {
         }
         let merge = c.parents.len() > 1;
         let subj_color = if merge { TEXT_3() } else { TEXT() };
-        // A conventional-commit prefix ("feat:", "fix(ui)!:") in semibold,
-        // the rest regular (quiet monochrome hierarchy).
+        // Steady single-weight subject: calm conventional prefix in secondary
+        // tone instead of bold weight jitter on every row.
         let (prefix, rest) = split_prefix(&c.subject);
+        let prefix_color = if merge {
+            TEXT_3()
+        } else if selected {
+            TEXT()
+        } else {
+            TEXT_2()
+        };
         let x = if prefix.is_empty() {
             x
         } else {
-            self.te.draw(cv, semi, self.pf(12.5), x, base, prefix, subj_color, max_x - x)
+            self.te.draw(cv, ui, self.pf(12.5), x, base, prefix, prefix_color, max_x - x)
         };
         let end = self.te.draw(cv, ui, self.pf(12.5), x, base, rest, subj_color, max_x - x);
         if c.has_body && end + self.pf(16.0) < max_x {
@@ -4176,11 +4183,12 @@ impl Ui {
                 cv.fill_circle(mx + k as f32 * self.pf(3.2), base - self.pf(3.2), self.pf(1.0), TEXT_4());
             }
         }
-        let dim = if selected { TEXT_2() } else { TEXT_3() };
-        self.te.draw(cv, ui, self.pf(12.0), author_x, base, &c.author, dim, date_x - author_x - self.pf(12.0));
+        let author_c = if selected { TEXT() } else { TEXT_2() };
+        let meta_c = if selected { TEXT_2() } else { TEXT_3() };
+        self.te.draw(cv, ui, self.pf(12.0), author_x, base, &c.author, author_c, date_x - author_x - self.pf(12.0));
         let when = fmt::relative(c.time, self.now, self.r.tz);
-        self.te.draw(cv, ui, self.pf(11.5), date_x, base, &when, TEXT_4(), sha_x - date_x - self.pf(10.0));
-        self.te.draw(cv, self.f.mono, self.pf(11.5), sha_x, base, &c.id.short(8), TEXT_4(), self.pf(76.0));
+        self.te.draw(cv, ui, self.pf(11.5), date_x, base, &when, meta_c, sha_x - date_x - self.pf(10.0));
+        self.te.draw(cv, self.f.mono, self.pf(11.5), sha_x, base, &c.id.short(8), meta_c, self.pf(76.0));
         // CI status before the SHA: quiet muted dot.
         if let Some((st, _)) = self.r.ci.get(&c.id) {
             let color = match st {
@@ -4229,13 +4237,13 @@ impl Ui {
     }
 
     fn header_h(&self) -> i32 {
-        self.px(164.0) + self.details_extra
+        self.px(140.0) + self.details_extra
     }
 
     /// Body lines shown at most, and the default room (two lines).
-    const BODY_LINES: usize = 5;
+    const BODY_LINES: usize = 3;
     /// From the end of the description to the author row's centre.
-    const BODY_GAP: f32 = 26.0;
+    const BODY_GAP: f32 = 20.0;
 
     /// Recomputes the details header's extra height for the selected
     /// commit's message (on new details and on resize, never mid-paint).
@@ -4275,13 +4283,13 @@ impl Ui {
         let loaded = self.r.details.as_ref().is_some_and(|d| d.id == c.id);
         let no_body = compare.is_some() || if loaded { body.is_empty() } else { !has_body };
         if no_body {
-            return (y + self.pf(22.0) - self.pf(116.0)).round().min(0.0) as i32;
+            return (y + self.pf(22.0) - self.pf(96.0)).round().min(0.0) as i32;
         }
         let s12 = self.pf(12.0);
         let lines: usize = body.iter().map(|p| wrap(&mut self.te, ui, s12, p, maxw).len().max(1)).sum();
         let shown = if loaded { lines.clamp(1, Self::BODY_LINES) } else { 2 };
         let meta = y + shown as f32 * self.pf(17.0) + self.pf(Self::BODY_GAP);
-        (meta - self.pf(116.0)).round() as i32
+        (meta - self.pf(96.0)).round() as i32
     }
 
     fn file_rows_visible(&self) -> usize {
@@ -4383,7 +4391,7 @@ impl Ui {
         };
         // The body gets the lines that fit above the author row; the last
         // visible line ends in an ellipsis when more text follows.
-        let meta_y = d.y as f32 + self.pf(116.0) + self.details_extra as f32;
+        let meta_y = d.y as f32 + self.pf(96.0) + self.details_extra as f32;
         let lh = self.pf(17.0);
         let fit = ((meta_y - self.pf(Self::BODY_GAP) - y) / lh).round().max(0.0) as usize;
         let lines: Vec<String> = body
@@ -4395,8 +4403,10 @@ impl Ui {
             .collect();
         for (k, line) in lines.iter().take(fit).enumerate() {
             let more = k + 1 == fit && lines.len() > fit;
-            let text = if more { format!("{line} …") } else { line.clone() };
-            self.te.draw(cv, ui, s12, x0, y + self.pf(2.0), &text, TEXT_2(), maxw);
+            let text = if more && !line.is_empty() { format!("{line} …") } else { line.clone() };
+            if !text.is_empty() {
+                self.te.draw(cv, ui, s12, x0, y + self.pf(2.0), &text, TEXT_2(), maxw);
+            }
             y += lh;
         }
         // Calm airier meta block with desaturated avatar and matte initials.
@@ -4420,7 +4430,7 @@ impl Ui {
         );
         let when = format!("{}  ·  {}", fmt::date_time(c.time, self.r.tz), fmt::relative(c.time, self.now, self.r.tz));
         self.te.draw(cv, ui, self.pf(11.5), mx, meta_y + self.pf(12.0), &when, TEXT_3(), maxw);
-        let sha_y = meta_y + self.pf(34.0);
+        let sha_y = meta_y + self.pf(28.0);
         let mut sx = self.te.draw(cv, mono, self.pf(11.5), x0, sha_y, &c.id.short(12), TEXT_3(), maxw);
         for p in c.parents.iter().take(2) {
             sx = self.te.draw(cv, ui, self.pf(11.5), sx + self.pf(12.0), sha_y, "parent", TEXT_4(), maxw);
@@ -4428,7 +4438,7 @@ impl Ui {
         }
         // Files.
         let fh_y = d.y + self.header_h();
-        cv.fill(Rect::new(d.x + 1, fh_y, d.w - 1, 1), BORDER_SOFT());
+        cv.fill(Rect::new(d.x + 1, fh_y, d.w - 1, 1), BORDER());
         let fbase = fh_y as f32 + self.pf(23.0);
         let focus_files = self.focus == Focus::Files;
         match &self.r.details {
@@ -4597,10 +4607,11 @@ impl Ui {
             return;
         }
         let (ui, semi) = (self.f.ui, self.f.semi);
+        cv.fill(Rect::new(r.x, r.y, 1, r.h), BORDER());
         cv.fill(Rect::new(r.x + 1, r.y, r.w - 1, r.h), BG());
-        let bar = Rect::new(r.x + 1, r.y, r.w - 1, self.px(32.0));
+        let bar = Rect::new(r.x + 1, r.y, r.w - 1, self.px(30.0));
         cv.fill(bar, BG_BAR());
-        cv.fill(Rect::new(bar.x, bar.bottom() - 1, bar.w, 1), BORDER_SOFT());
+        cv.fill(Rect::new(bar.x, bar.bottom() - 1, bar.w, 1), BORDER());
         let base = (bar.y as f32 + bar.h as f32 / 2.0 + self.pf(4.5)).round();
         let pad = self.pf(16.0);
         let Some(diff) = self.r.diff.clone() else {

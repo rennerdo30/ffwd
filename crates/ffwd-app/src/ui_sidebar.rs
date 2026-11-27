@@ -211,9 +211,15 @@ impl Ui {
 
     /// Where you are, at the top of the sidebar (FF-57, calmed in FF-65):
     /// one quiet borderless line with the current branch and its sync state.
+    /// Compact branch/conflict status line at the top of the sidebar.
+    /// In `List` style, hidden when idle (branch already lives in the top bar
+    /// and under Branches) and shown only when a merge/rebase needs attention.
     pub(super) fn side_here_rect(&self) -> Rect {
+        if self.side_style() == SideStyle::List && self.r.changes.in_progress.is_none() {
+            return Rect::default();
+        }
         let p = self.side_panel();
-        Rect::new(p.x + self.px(8.0), p.y + self.px(6.0), p.w - self.px(16.0), self.px(30.0))
+        Rect::new(p.x + self.px(8.0), p.y + self.px(6.0), p.w - self.px(16.0), self.px(28.0))
     }
 
     /// The views, with their live figures (FF-57).
@@ -320,13 +326,38 @@ impl Ui {
             .collect()
     }
 
-    /// The rows under the header (List style: compact 24 px flat rows).
+    /// Compact bottom footer strip holding secondary views in `List` style.
+    fn view_list_footer_rect(&self) -> Rect {
+        let p = self.side_panel();
+        let h = self.px(34.0);
+        Rect::new(p.x, p.bottom() - h, p.w, h)
+    }
+
+    /// List style rects in the exact order of `views()`:
+    /// - Primary workspace views (`Local Changes`, `All Commits`) at the top.
+    /// - Secondary tools (`Files`, `Activity`, `Reflog`, `Agents`) tucked cleanly
+    ///   into the sidebar footer bar so the top stays calm and uncluttered.
     fn view_list_rects(&self) -> Vec<Rect> {
         let p = self.side_panel();
-        let top = self.side_here_rect().bottom() + self.px(4.0);
+        let here = self.side_here_rect();
+        let top = if here.is_empty() { p.y + self.px(6.0) } else { here.bottom() + self.px(4.0) };
         let h = self.px(24.0);
-        let n = self.views().len() as i32;
-        (0..n).map(|k| Rect::new(p.x + self.px(6.0), top + k * h, p.w - self.px(12.0), h)).collect()
+        let n = self.views().len();
+        let primary = n.min(2);
+        let mut rects = Vec::with_capacity(n);
+        for k in 0..primary as i32 {
+            rects.push(Rect::new(p.x + self.px(6.0), top + k * h, p.w - self.px(12.0), h));
+        }
+        let sec = n.saturating_sub(primary) as i32;
+        if sec > 0 {
+            let f = self.view_list_footer_rect().inset(self.px(6.0), self.px(4.0));
+            for k in 0..sec {
+                let x0 = f.x + f.w * k / sec;
+                let x1 = f.x + f.w * (k + 1) / sec;
+                rects.push(Rect::new(x0, f.y, (x1 - x0).max(1), f.h));
+            }
+        }
+        rects
     }
 
     /// The icon bar under the header (Bar style), and its segments.
@@ -476,27 +507,31 @@ impl Ui {
         }
     }
 
-    /// List: one calm flat row per view, showing only meaningful live counts.
+    /// List: `Local Changes` + `All Commits` cleanly at the top, and secondary
+    /// tools (`Files`, `Activity`, `Reflog`, `Agents`) in a crisp footer strip.
     fn paint_view_list(&mut self, cv: &mut Canvas) {
         let (ui, semi) = (self.f.ui, self.f.semi);
         let cur = self.current_view();
-        for (k, (v, r)) in self.views().into_iter().zip(self.view_list_rects()).enumerate() {
+        let views = self.views();
+        let rects = self.view_list_rects();
+        let primary = views.len().min(2);
+        for (k, (v, r)) in views.iter().take(primary).zip(rects.iter().take(primary)).enumerate() {
             let on = v.key == cur;
             let hot = self.side_view_hot == Some(k);
             if on {
-                cv.fill_round(r, self.pf(5.0), BG_SELECT());
+                cv.fill_round(*r, self.pf(5.0), BG_SELECT());
                 cv.fill_round(
                     Rect::new(r.x, r.y + self.px(5.0), self.px(2.0).max(2), r.h - self.px(10.0)),
                     self.pf(1.0),
                     ACCENT(),
                 );
             } else if hot {
-                cv.fill_round(r, self.pf(5.0), BG_HOVER());
+                cv.fill_round(*r, self.pf(5.0), BG_HOVER());
             }
             let cy = r.y as f32 + r.h as f32 / 2.0;
             let base = (cy + self.pf(4.2)).round();
             let gx = r.x as f32 + self.pf(15.0);
-            self.glyph(cv, v.glyph, gx, cy, self.pf(5.2), if on { TEXT() } else { TEXT_3() });
+            self.glyph(cv, v.glyph, gx, cy, self.pf(5.4), if on { TEXT() } else { TEXT_2() });
             let font = if on { semi } else { ui };
             self.te.draw(
                 cv,
@@ -508,7 +543,6 @@ impl Ui {
                 if on { TEXT() } else { TEXT_2() },
                 r.w as f32 - self.pf(56.0),
             );
-            // Only draw real numbers on the right (quiet neutral counts; muted red only for failures/conflicts).
             let right_text = if v.critical {
                 Some((v.count.clone(), DEL(), semi))
             } else if v.alert {
@@ -525,14 +559,55 @@ impl Ui {
                 self.te.draw(cv, f2, fs, sx, base - self.pf(0.5), &txt, col, tw + 2.0);
             }
         }
-        // A quiet hairline between the workspace views and the filter/refs.
-        let rs = self.view_list_rects();
-        if let Some(last) = rs.last() {
+        // Crisp hairline between primary workspace rows and filter/refs.
+        if let Some(last) = rects.get(primary.saturating_sub(1)) {
             let p = self.side_panel();
             cv.fill(
                 Rect::new(p.x + self.px(10.0), last.bottom() + self.px(6.0), p.w - self.px(20.0), 1),
                 BORDER_SOFT(),
             );
+        }
+        // Compact bottom footer strip for secondary views (Files, Activity, Reflog, Agents).
+        if views.len() > primary {
+            let footer = self.view_list_footer_rect();
+            cv.fill(footer, BG_PANEL());
+            cv.fill(Rect::new(footer.x, footer.y, footer.w, 1), BORDER());
+            for (offset, (v, r)) in views.iter().skip(primary).zip(rects.iter().skip(primary)).enumerate() {
+                let k = primary + offset;
+                let on = v.key == cur;
+                let hot = self.side_view_hot == Some(k);
+                if on {
+                    cv.fill_round(*r, self.pf(5.0), BG_SELECT());
+                } else if hot {
+                    cv.fill_round(*r, self.pf(5.0), BG_HOVER());
+                }
+                let cy = r.y as f32 + r.h as f32 / 2.0;
+                let cx = r.x as f32 + r.w as f32 / 2.0 - if v.alert { self.pf(5.0) } else { 0.0 };
+                let gc = if on {
+                    TEXT()
+                } else if v.critical {
+                    DEL()
+                } else if hot {
+                    TEXT()
+                } else {
+                    TEXT_3()
+                };
+                self.glyph(cv, v.glyph, cx, cy, self.pf(5.8), gc);
+                if v.alert {
+                    let fs = self.pf(10.0);
+                    let col = if v.critical { DEL() } else { TEXT_2() };
+                    self.te.draw(
+                        cv,
+                        if v.critical { semi } else { ui },
+                        fs,
+                        cx + self.pf(8.5),
+                        (cy + self.pf(3.4)).round(),
+                        &v.count,
+                        col,
+                        self.pf(20.0),
+                    );
+                }
+            }
         }
     }
 
@@ -641,7 +716,11 @@ impl Ui {
         let p = self.side_panel();
         let top = match self.side_style() {
             SideStyle::Rail | SideStyle::Tabs => self.side_here_rect().bottom() + self.px(8.0),
-            SideStyle::List => self.view_list_rects().last().map_or(0, |r| r.bottom()) + self.px(12.0),
+            SideStyle::List => {
+                let rs = self.view_list_rects();
+                let primary_last = rs.len().min(2).saturating_sub(1);
+                rs.get(primary_last).map_or(p.y, |r| r.bottom()) + self.px(12.0)
+            }
             SideStyle::Bar => self.view_bar_rect().bottom() + self.px(24.0),
         };
         Rect::new(p.x + self.px(8.0), top, p.w - self.px(16.0), self.px(24.0))
@@ -650,7 +729,12 @@ impl Ui {
     pub(super) fn side_list_rect(&self) -> Rect {
         let p = self.side_panel();
         let top = self.side_filter_rect().bottom() + self.px(8.0);
-        Rect::new(p.x, top, p.w, (p.bottom() - top).max(0))
+        let bottom = if self.side_style() == SideStyle::List && self.views().len() > 2 {
+            self.view_list_footer_rect().y
+        } else {
+            p.bottom()
+        };
+        Rect::new(p.x, top, p.w, (bottom - top).max(0))
     }
 
     /// Compact borderless repository/branch status line at the top of the sidebar.
@@ -659,6 +743,9 @@ impl Ui {
     fn paint_side_here(&mut self, cv: &mut Canvas) {
         let semi = self.f.semi;
         let r = self.side_here_rect();
+        if r.is_empty() {
+            return;
+        }
         if self.side_here_hot {
             cv.fill_round(r, self.pf(5.0), BG_HOVER());
         }
@@ -1142,29 +1229,30 @@ impl Ui {
         self.paint_side_here(cv);
         self.paint_views(cv);
         let (ui, semi) = (self.f.ui, self.f.semi);
-        // Quiet recessed filter field: borderless at rest, hairline on hover, accent on focus.
+        // Crisp recessed filter field: visible BORDER at rest, stronger on hover, accent on focus.
         let fr = self.side_filter_rect();
         let typing = self.focus == Focus::SideFilter;
         let filter_hot = self.pointer_at.is_some_and(|(px, py)| fr.contains(px, py));
-        if typing {
-            cv.round_border(fr, self.pf(5.0), ACCENT(), BG_INPUT());
+        let border = if typing {
+            ACCENT()
         } else if filter_hot {
-            cv.round_border(fr, self.pf(5.0), BORDER_SOFT(), BG_INPUT());
+            BORDER_HOVER()
         } else {
-            cv.fill_round(fr, self.pf(5.0), BG_INPUT());
-        }
+            BORDER()
+        };
+        cv.round_border(fr, self.pf(5.0), border, BG_INPUT());
         let fcy = fr.y as f32 + fr.h as f32 / 2.0;
         let fx = fr.x as f32 + self.pf(10.0);
-        cv.ring(fx + self.pf(3.2), fcy - self.pf(1.0), self.pf(3.6), self.pf(1.3), TEXT_4());
+        cv.ring(fx + self.pf(3.2), fcy - self.pf(1.0), self.pf(3.6), self.pf(1.3), TEXT_3());
         cv.stroke(
             &[(fx + self.pf(6.0), fcy + self.pf(1.8)), (fx + self.pf(8.2), fcy + self.pf(4.0))],
             self.pf(1.3),
-            TEXT_4(),
+            TEXT_3(),
         );
         let fb = (fcy + self.pf(4.2)).round();
         let tx = fx + self.pf(15.0);
         if self.side_filter.is_empty() && !typing {
-            self.te.draw(cv, ui, self.pf(12.0), tx, fb, "Filter", TEXT_4(), fr.w as f32 - self.pf(34.0));
+            self.te.draw(cv, ui, self.pf(12.0), tx, fb, "Filter", TEXT_3(), fr.w as f32 - self.pf(34.0));
         } else {
             let filt = self.side_filter.clone();
             let end = self.te.draw(cv, ui, self.pf(12.5), tx, fb, &filt, TEXT(), fr.w as f32 - self.pf(40.0));
