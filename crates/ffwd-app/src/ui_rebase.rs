@@ -354,10 +354,10 @@ impl Ui {
             }
             hits.push((r, RHit::Row(row)));
             let b = (r.y as f32 + r.h as f32 / 2.0 + self.pf(4.5)).round();
-            // The action as a pill (click cycles it).
+            // The action as a calm matte pill (click cycles it).
             let (label, fg, bg) = match &s.action {
-                Action::Pick => ("pick", TEXT_2(), BG_BAR()),
-                Action::Reword(_) => ("reword", ACCENT_TEXT(), ACCENT()),
+                Action::Pick => ("pick", TEXT_2(), BG_PANEL()),
+                Action::Reword(_) => ("reword", ACCENT_FG(), ACCENT_SOFT()),
                 Action::Squash => ("squash", TAG_FG(), TAG_BG()),
                 Action::Fixup => ("fixup", TAG_FG(), TAG_BG()),
                 Action::Drop => ("drop", DEL_TEXT(), DEL_BG()),
@@ -424,8 +424,8 @@ impl Ui {
                         self.px(24.0),
                         r.h - self.px(12.0),
                     );
-                    let (bg, _) = self.control_colors(Hot::Rebase(hits.len()), BG_BAR(), BORDER());
-                    cv.fill_round(ar, self.pf(5.0), bg);
+                    let (bg, border) = self.control_colors(Hot::Rebase(hits.len()), BG_PANEL(), BORDER_SOFT());
+                    cv.round_border(ar, self.pf(5.0), border, bg);
                     let (cx, cy, s) = (ar.x as f32 + ar.w as f32 / 2.0, ar.y as f32 + ar.h as f32 / 2.0, self.pf(4.0));
                     let pts = if up {
                         [(cx - s, cy + s / 2.0), (cx, cy - s / 2.0), (cx + s, cy + s / 2.0)]
@@ -450,15 +450,14 @@ impl Ui {
             let h = Hot::Rebase(hits.len());
             if primary {
                 let enabled = problem.is_none();
-                let bg = if !enabled {
-                    BG_BAR()
+                let (bg, border, c) = if !enabled {
+                    (BG_INPUT(), BORDER_SOFT(), TEXT_4())
                 } else if self.is_hot(h) {
-                    ACCENT_FG()
+                    (ACCENT(), ACCENT(), ACCENT_TEXT())
                 } else {
-                    ACCENT()
+                    (ACCENT_SOFT_HOVER(), ACCENT_BORDER(), ACCENT_FG())
                 };
-                cv.fill_round(r, self.pf(7.0), bg);
-                let c = if enabled { ACCENT_TEXT() } else { TEXT_4() };
+                cv.round_border(r, self.pf(6.0), border, bg);
                 self.te.draw(
                     cv,
                     semi,
@@ -470,8 +469,8 @@ impl Ui {
                     w as f32,
                 );
             } else {
-                let (bg, border) = self.control_colors(h, BG_BAR(), BORDER());
-                cv.round_border(r, self.pf(7.0), border, bg);
+                let (bg, border) = self.control_colors(h, BG_PANEL(), BORDER_SOFT());
+                cv.round_border(r, self.pf(6.0), border, bg);
                 self.te.draw(
                     cv,
                     semi,
@@ -479,7 +478,7 @@ impl Ui {
                     r.x as f32 + self.pf(14.0),
                     (fy as f32 + self.pf(21.0)).round(),
                     label,
-                    TEXT(),
+                    if self.is_hot(h) { TEXT() } else { TEXT_2() },
                     w as f32,
                 );
             }

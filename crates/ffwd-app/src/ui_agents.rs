@@ -958,15 +958,15 @@ impl Ui {
         cv.fill(Rect::new(head.x, head.bottom() - 1, head.w, 1), BORDER_SOFT());
         let hb = head.y as f32 + self.pf(38.0);
         let e = self.te.draw(cv, semi, self.pf(18.0), r.x as f32 + self.pf(24.0), hb, "Agents", TEXT(), 200.0);
-        let e = self.pill(cv, e + self.pf(10.0), hb - self.pf(6.0), "EXPERIMENTAL", TAG_BG(), TAG_FG());
+        let e = self.pill(cv, e + self.pf(10.0), hb - self.pf(6.0), "EXPERIMENTAL", BG_PANEL(), TEXT_3());
         let repo = self.r.repo_name.clone();
         self.te.draw(cv, ui, self.pf(13.0), e + self.pf(12.0), hb, &repo, TEXT_3(), self.pf(300.0));
         let done_w = (self.te.measure(semi, self.pf(12.5), "Done") + self.pf(28.0)) as i32;
         let done = Rect::new(head.right() - self.px(24.0) - done_w, head.y + self.px(14.0), done_w, self.px(36.0));
-        let (dbg, dborder) = self.control_colors(Hot::Agent(hits.len()), ACCENT_SOFT_HOVER(), ACCENT_BORDER());
-        cv.round_border(done, self.pf(8.0), dborder, dbg);
+        let (dbg, dborder) = self.control_colors(Hot::Agent(hits.len()), BG_PANEL(), BORDER_SOFT());
+        cv.round_border(done, self.pf(7.0), dborder, dbg);
         let db = (done.y as f32 + done.h as f32 / 2.0 + self.pf(4.5)).round();
-        self.te.draw(cv, semi, self.pf(12.5), done.x as f32 + self.pf(14.0), db, "Done", ACCENT_FG(), done_w as f32);
+        self.te.draw(cv, semi, self.pf(12.5), done.x as f32 + self.pf(14.0), db, "Done", TEXT(), done_w as f32);
         hits.push((done, Hit::Close));
         // The chip: tool · sandbox · network, or why it cannot run.
         let tool_name = cfg.preset.map_or_else(|| "Custom".to_string(), |p| p.name.to_string());
@@ -990,8 +990,8 @@ impl Ui {
         let max_chip = (done.x - self.px(12.0) - (e as i32 + self.px(60.0))).max(self.px(120.0));
         let cw = ((self.te.measure(ui, self.pf(12.5), &chip) + self.pf(60.0)) as i32).min(max_chip);
         let cr = Rect::new(done.x - self.px(12.0) - cw, done.y, cw, done.h);
-        let (cbg, cborder) = self.control_colors(Hot::Agent(hits.len()), BG_INPUT(), BORDER());
-        cv.round_border(cr, self.pf(8.0), cborder, cbg);
+        let (cbg, cborder) = self.control_colors(Hot::Agent(hits.len()), BG_PANEL(), BORDER_SOFT());
+        cv.round_border(cr, self.pf(7.0), cborder, cbg);
         cv.fill_circle(cr.x as f32 + self.pf(16.0), cr.y as f32 + cr.h as f32 / 2.0, self.pf(4.0), dot);
         self.te.draw(cv, ui, self.pf(12.5), cr.x as f32 + self.pf(28.0), db, &chip, chip_fg, cw as f32 - self.pf(44.0));
         self.glyph(
@@ -1011,9 +1011,13 @@ impl Ui {
         let rx = rail.x + self.px(16.0);
         let rw = rail.w - self.px(32.0);
         let comp = Rect::new(rx, rail.y + self.px(16.0), rw, self.px(110.0));
-        cv.round_border(comp, self.pf(10.0), if view.field { ACCENT_BORDER() } else { BORDER() }, BG_PANEL());
+        cv.fill_round(comp, self.pf(8.0), BG_PANEL());
         let fr = Rect::new(comp.x + self.px(12.0), comp.y + self.px(12.0), comp.w - self.px(24.0), self.px(42.0));
-        cv.round_border(fr, self.pf(8.0), if view.field { ACCENT() } else { BORDER() }, BG_INPUT());
+        if view.field {
+            cv.round_border(fr, self.pf(6.0), ACCENT(), BG_INPUT());
+        } else {
+            cv.fill_round(fr, self.pf(6.0), BG_INPUT());
+        }
         let fx = fr.x as f32 + self.pf(12.0);
         let fb = (fr.y as f32 + fr.h as f32 / 2.0 + self.pf(4.5)).round();
         let fmax = fr.w as f32 - self.pf(24.0);
@@ -1056,8 +1060,8 @@ impl Ui {
         let tl = view.tool.and_then(ffwd_agent::presets::find).map_or(tool_name.clone(), |p| p.name.to_string());
         let tw = ((self.te.measure(semi, self.pf(12.5), &tl) + self.pf(52.0)) as i32).min(comp.w - self.px(220.0));
         let tr = Rect::new(fr.x, by, tw, bh);
-        let (tbg, tborder) = self.control_colors(Hot::Agent(hits.len()), BG_INPUT(), BORDER());
-        cv.round_border(tr, self.pf(7.0), tborder, tbg);
+        let tbg = if self.is_hot(Hot::Agent(hits.len())) { CONTROL_HOVER() } else { BG_INPUT() };
+        cv.fill_round(tr, self.pf(6.0), tbg);
         let tb = (tr.y as f32 + tr.h as f32 / 2.0 + self.pf(4.5)).round();
         self.glyph(
             cv,
@@ -1067,7 +1071,16 @@ impl Ui {
             self.pf(5.5),
             TEXT_3(),
         );
-        self.te.draw(cv, semi, self.pf(12.5), tr.x as f32 + self.pf(28.0), tb, &tl, TEXT(), tw as f32 - self.pf(44.0));
+        self.te.draw(
+            cv,
+            semi,
+            self.pf(12.5),
+            tr.x as f32 + self.pf(28.0),
+            tb,
+            &tl,
+            TEXT_2(),
+            tw as f32 - self.pf(44.0),
+        );
         self.chevron_small(cv, tr.right() as f32 - self.pf(13.0), tr.y as f32 + tr.h as f32 / 2.0, TEXT_3());
         hits.push((tr, Hit::Tool));
         let can = !view.input.text().trim().is_empty() && refusal.is_none();
@@ -1075,44 +1088,29 @@ impl Ui {
         let sw = (self.te.measure(semi, self.pf(12.5), sl) + self.pf(40.0)) as i32;
         let sr = Rect::new(fr.right() - sw, by, sw, bh);
         let hot = self.is_hot(Hot::Agent(hits.len()));
-        let (sbg, sfg) = match (can, hot) {
-            (false, _) => (BG_HOVER(), TEXT_4()),
-            (true, true) => (ACCENT_TEXT(), ACCENT()),
-            (true, false) => (ACCENT(), ACCENT_TEXT()),
+        let (sbg, sborder, sfg) = match (can, hot) {
+            (false, _) => (BG_INPUT(), BORDER_SOFT(), TEXT_4()),
+            (true, true) => (ACCENT(), ACCENT(), ACCENT_TEXT()),
+            (true, false) => (ACCENT_SOFT_HOVER(), ACCENT_BORDER(), ACCENT_FG()),
         };
-        cv.fill_round(sr, self.pf(7.0), if can && hot { ACCENT_FG() } else { sbg });
-        let _ = sfg;
-        self.te.draw(
-            cv,
-            semi,
-            self.pf(12.5),
-            sr.x as f32 + self.pf(14.0),
-            tb,
-            sl,
-            if can { ACCENT_TEXT() } else { TEXT_4() },
-            sw as f32,
-        );
-        self.play(
-            cv,
-            sr.right() as f32 - self.pf(15.0),
-            sr.y as f32 + sr.h as f32 / 2.0,
-            if can { ACCENT_TEXT() } else { TEXT_4() },
-        );
+        cv.round_border(sr, self.pf(6.0), sborder, sbg);
+        self.te.draw(cv, semi, self.pf(12.5), sr.x as f32 + self.pf(14.0), tb, sl, sfg, sw as f32);
+        self.play(cv, sr.right() as f32 - self.pf(15.0), sr.y as f32 + sr.h as f32 / 2.0, sfg);
         hits.push((sr, Hit::Start));
         let ol = "Terminal";
         let ow = (self.te.measure(semi, self.pf(12.5), ol) + self.pf(40.0)) as i32;
         let orr = Rect::new(sr.x - self.px(8.0) - ow, by, ow, bh);
-        let (obg, oborder) = self.control_colors(Hot::Agent(hits.len()), BG_INPUT(), BORDER());
-        cv.round_border(orr, self.pf(7.0), oborder, obg);
+        let obg = if self.is_hot(Hot::Agent(hits.len())) { CONTROL_HOVER() } else { BG_INPUT() };
+        cv.fill_round(orr, self.pf(6.0), obg);
         self.glyph(
             cv,
             Glyph::Terminal,
             orr.x as f32 + self.pf(15.0),
             orr.y as f32 + bh as f32 / 2.0,
             self.pf(5.5),
-            TEXT_2(),
+            TEXT_3(),
         );
-        self.te.draw(cv, semi, self.pf(12.5), orr.x as f32 + self.pf(28.0), tb, ol, TEXT(), ow as f32);
+        self.te.draw(cv, semi, self.pf(12.5), orr.x as f32 + self.pf(28.0), tb, ol, TEXT_2(), ow as f32);
         hits.push((orr, Hit::Terminal));
         let mut y = comp.bottom() + self.px(8.0);
         if let Some((ok, m)) = view.msg.clone() {
@@ -1173,7 +1171,14 @@ impl Ui {
             } else {
                 BG_PANEL()
             };
-            cv.round_border(cr, self.pf(9.0), if sel { ACCENT_BORDER() } else { BORDER_SOFT() }, bg);
+            cv.fill_round(cr, self.pf(8.0), bg);
+            if sel {
+                cv.fill_round(
+                    Rect::new(cr.x, cr.y + self.px(10.0), self.px(2.0).max(2), cr.h - self.px(20.0)),
+                    self.pf(1.0),
+                    ACCENT(),
+                );
+            }
             let a = &self.agents[i];
             let rec = a.rec.clone();
             let phase = a.phase.clone();
@@ -1239,7 +1244,7 @@ impl Ui {
             // Status pill, branch, base, when, sandbox.
             let color = status_color(rec.status);
             let word = rec.status.word().to_uppercase();
-            let e = self.pill(cv, dx as f32, yy - self.pf(4.0), &word, BG_HOVER(), color);
+            let e = self.pill(cv, dx as f32, yy - self.pf(4.0), &word, BG_PANEL(), color);
             let base = if rec.base.is_empty() {
                 String::new()
             } else {
@@ -1407,7 +1412,7 @@ impl Ui {
             }
             let br = Rect::new(dx, ly + self.px(38.0), dw, dr.bottom() - pad - (ly + self.px(38.0)));
             if br.h > self.px(30.0) {
-                cv.round_border(br, self.pf(9.0), BORDER_SOFT(), BG_SIDEBAR());
+                cv.fill_round(br, self.pf(8.0), BG_INPUT());
                 if view.tab == 0 {
                     self.agents_log(cv, br, i, active, &mut view);
                 } else {
@@ -1539,15 +1544,15 @@ impl Ui {
         yy += self.pf(10.0);
         for (k, ex) in EXAMPLES.iter().enumerate() {
             let er = Rect::new(x, yy as i32, w, self.px(40.0));
-            let (bg, border) = self.control_colors(Hot::Agent(hits.len()), BG_PANEL(), BORDER_SOFT());
-            cv.round_border(er, self.pf(9.0), border, bg);
+            let bg = if self.is_hot(Hot::Agent(hits.len())) { BG_HOVER() } else { BG_PANEL() };
+            cv.fill_round(er, self.pf(8.0), bg);
             self.glyph(
                 cv,
                 Glyph::Plus,
                 er.x as f32 + self.pf(18.0),
                 er.y as f32 + er.h as f32 / 2.0,
                 self.pf(5.0),
-                ACCENT(),
+                TEXT_3(),
             );
             self.te.draw(
                 cv,
@@ -1573,7 +1578,7 @@ impl Ui {
         for (k, (n, head, sub)) in steps.iter().enumerate() {
             let sx = x + k as i32 * (col + self.px(12.0));
             let sr = Rect::new(sx, yy as i32 + self.px(12.0), col, self.px(96.0));
-            cv.round_border(sr, self.pf(9.0), BORDER_SOFT(), BG_SIDEBAR());
+            cv.fill_round(sr, self.pf(8.0), BG_SIDEBAR());
             cv.fill_circle(sr.x as f32 + self.pf(22.0), sr.y as f32 + self.pf(24.0), self.pf(11.0), ACCENT_SOFT());
             self.te.draw(
                 cv,
@@ -1623,16 +1628,16 @@ impl Ui {
         let h = Hot::Agent(hit);
         let (border, bg, fg) = match (enabled, primary, danger) {
             (false, _, _) => (BORDER_SOFT(), BG_PANEL(), TEXT_4()),
-            (true, true, _) if self.is_hot(h) => (ACCENT_FG(), ACCENT_FG(), ACCENT_TEXT()),
-            (true, true, _) => (ACCENT(), ACCENT(), ACCENT_TEXT()),
+            (true, true, _) if self.is_hot(h) => (ACCENT(), ACCENT(), ACCENT_TEXT()),
+            (true, true, _) => (ACCENT_BORDER(), ACCENT_SOFT_HOVER(), ACCENT_FG()),
             (true, false, true) if self.is_hot(h) => (DEL(), DEL_BG(), DEL_TEXT()),
-            (true, false, true) => (DANGER_BORDER(), BG_PANEL(), DEL_TEXT()),
+            (true, false, true) => (DANGER_BORDER(), BG_PANEL(), DEL()),
             (true, false, false) => {
-                let (bg, border) = self.control_colors(h, BG_BAR(), BORDER());
-                (border, bg, TEXT())
+                let (bg, border) = self.control_colors(h, BG_PANEL(), BORDER_SOFT());
+                (border, bg, if self.is_hot(h) { TEXT() } else { TEXT_2() })
             }
         };
-        cv.round_border(r, self.pf(8.0), border, bg);
+        cv.round_border(r, self.pf(7.0), border, bg);
         self.te.draw(cv, semi, self.pf(12.5), x as f32 + self.pf(14.0), y as f32 + self.pf(21.5), label, fg, w as f32);
         r
     }

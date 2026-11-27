@@ -1837,6 +1837,7 @@ impl Ui {
         self.side_here_hot = false;
         self.side_view_hot = None;
         self.focus = Focus::List;
+        self.update_details_extra();
         self.damage.full = true;
     }
 
@@ -1903,6 +1904,7 @@ impl Ui {
     /// Snapshots: apply `ui.theme` after changing it.
     pub fn apply_theme_now(&mut self) {
         self.apply_theme();
+        self.update_details_extra();
     }
 
     /// The window says whether the system uses light mode.
@@ -2591,6 +2593,7 @@ impl Ui {
 
     pub fn open_palette(&mut self) {
         self.palette = Some(Palette { input: TextField::default(), items: Vec::new(), sel: 0, mode: PMode::Jump });
+        self.damage.rects.push(self.search_rect.inset(-2, -2));
         self.filter_palette();
     }
 
@@ -2605,6 +2608,7 @@ impl Ui {
     fn close_palette(&mut self) {
         if self.palette.take().is_some() {
             self.damage.rects.push(self.palette_rect(10));
+            self.damage.rects.push(self.search_rect.inset(-2, -2));
         }
     }
 
@@ -3351,17 +3355,40 @@ impl Ui {
         }
     }
 
+    /// Calm matte version of the ffwd mark for the window top bar: soft warm
+    /// badge with muted amber logo geometry (no bright solid-orange square).
+    fn draw_top_mark(&self, cv: &mut Canvas, r: Rect) {
+        // Keep `icon::draw_mark` referenced while the top bar uses the calm matte variant.
+        let _ = crate::icon::draw_mark;
+        let n = r.w.min(r.h) as f32;
+        let tile = Rect::new(r.x, r.y, n as i32, n as i32);
+        cv.fill_round(tile, self.pf(metrics().radius_sm).max(n * 0.22), ACCENT_SOFT());
+        let s = n / 512.0;
+        let k = 0.96;
+        let (x0, y0) = (r.x as f32, r.y as f32);
+        let t = |x: f32, y: f32| (x0 + (256.0 + (x - 260.0) * k) * s, y0 + (256.0 + (y - 256.0) * k) * s);
+        let fg = ACCENT_FG();
+        let (cx, cy) = t(116.0, 256.0);
+        cv.fill_circle(cx, cy, 30.0 * k * s, fg);
+        cv.stroke(&[t(146.0, 256.0), t(190.0, 256.0)], 26.0 * k * s, fg);
+        for xa in [196.0, 306.0] {
+            let (a, b, c) = (t(xa, 162.0), t(xa + 98.0, 256.0), t(xa, 350.0));
+            cv.fill_triangle(a, b, c, fg);
+            cv.stroke(&[a, b, c, a], 26.0 * k * s, fg);
+        }
+    }
+
     fn paint_top(&mut self, cv: &mut Canvas) {
         let r = self.lay.top;
         cv.fill(r, BG_BAR());
         cv.fill(Rect::new(r.x, r.bottom() - 1, r.w, 1), BORDER());
         let cy = r.y as f32 + r.h as f32 / 2.0;
-        // App mark: the logo itself (icon.rs), the same as the window icon.
+        // App mark: calm matte variant of the logo in the top bar.
         // macOS keeps its traffic lights at the left of the bar.
         let left = if self.chrome == Chrome::MacInset { self.pf(80.0) } else { self.pf(12.0) };
         let mut controls = Vec::new();
         let mark = Rect::new(left as i32, (cy - self.pf(11.0)) as i32, self.px(22.0), self.px(22.0));
-        crate::icon::draw_mark(cv, mark);
+        self.draw_top_mark(cv, mark);
         let (ui, semi, mono) = (self.f.ui, self.f.semi, self.f.mono);
         let base = (cy + self.pf(4.5)).round();
         let mut buttons = Vec::new();
@@ -3370,8 +3397,8 @@ impl Ui {
             && let Some(&(nr, _)) = self.top_buttons.iter().find(|(_, a)| *a == TopAction::Repo)
         {
             let (bg, _) = self.control_colors(Hot::Top(TopAction::Repo), BG_BAR(), BORDER());
-            cv.fill_round(nr.inset(-self.px(4.0), 0), self.pf(6.0), bg);
-            crate::icon::draw_mark(cv, mark);
+            cv.fill_round(nr.inset(-self.px(4.0), 0), self.pf(metrics().radius_md), bg);
+            self.draw_top_mark(cv, mark);
         }
         x = self.te.draw(cv, semi, self.pf(13.5), x, base, &self.r.repo_name.clone(), TEXT(), self.pf(200.0));
         // Clicking the name (or the mark) opens another repository.
@@ -3393,7 +3420,7 @@ impl Ui {
         let pill = Rect::new(x as i32, (cy - self.pf(13.0)) as i32, bw as i32, self.px(26.0));
         if self.is_hot(Hot::Top(TopAction::Branch)) {
             let (pbg, _) = self.control_colors(Hot::Top(TopAction::Branch), BG_BAR(), BORDER());
-            cv.fill_round(pill, self.pf(6.0), pbg);
+            cv.fill_round(pill, self.pf(metrics().radius_md), pbg);
         }
         controls.push((pill.x, pill.right()));
         buttons.push((pill, TopAction::Branch));
@@ -3405,17 +3432,17 @@ impl Ui {
         let (ahead, behind) = head.map_or((0, 0), |h| (h.ahead, h.behind));
         let right = if self.lay.caption.is_empty() { r.right() } else { self.lay.caption.x };
         // Gear: settings.
-        let gs = self.px(28.0);
-        let gear = Rect::new((right as f32 - self.pf(8.0)) as i32 - gs, (cy - self.pf(14.0)) as i32, gs, gs);
+        let gs = self.px(26.0);
+        let gear = Rect::new((right as f32 - self.pf(8.0)) as i32 - gs, (cy - self.pf(13.0)) as i32, gs, gs);
         if self.is_hot(Hot::Top(TopAction::Settings)) {
             let (gbg, _) = self.control_colors(Hot::Top(TopAction::Settings), BG_BAR(), BORDER());
-            cv.fill_round(gear, self.pf(6.0), gbg);
+            cv.fill_round(gear, self.pf(metrics().radius_md), gbg);
         }
         let gc = if self.is_hot(Hot::Top(TopAction::Settings)) { TEXT() } else { TEXT_3() };
         self.gear_icon(cv, gear.x as f32 + gs as f32 / 2.0, cy, gc);
         buttons.push((gear, TopAction::Settings));
         let right = gear.x;
-        let mut bx = right as f32 - self.pf(6.0);
+        let mut bx = right as f32 - self.pf(8.0);
         let running = self.r.op;
         let busy = running.map(Op::button);
         let hot = self.hot;
@@ -3429,7 +3456,7 @@ impl Ui {
         let row = move |l: f32, r: f32| Rect::new(l as i32, row_y, (r - l) as i32, row_h);
         let ai = self.button(cv, bx, cy, "AI", None, true, TopAction::Ai, None);
         buttons.push((row(ai, bx), TopAction::Ai));
-        bx = ai - self.pf(4.0);
+        bx = ai - self.pf(6.0);
         let push = self.button(
             cv,
             bx,
@@ -3441,7 +3468,7 @@ impl Ui {
             Some(Glyph::Push),
         );
         buttons.push((row(push, bx), TopAction::Push));
-        bx = push - self.pf(4.0);
+        bx = push - self.pf(6.0);
         let pull = self.button(
             cv,
             bx,
@@ -3453,31 +3480,37 @@ impl Ui {
             Some(Glyph::Pull),
         );
         buttons.push((row(pull, bx), TopAction::Pull));
-        bx = pull - self.pf(4.0);
+        bx = pull - self.pf(6.0);
         let fetch =
             self.button(cv, bx, cy, &label(Op::Fetch, "Fetch"), None, false, TopAction::Fetch, Some(Glyph::Fetch));
         buttons.push((row(fetch, bx), TopAction::Fetch));
-        bx = fetch - self.pf(4.0);
+        bx = fetch - self.pf(6.0);
         // Stash: the working changes, with a message (also Ctrl+Shift+S).
         let stash = self.button(cv, bx, cy, "Stash", None, false, TopAction::Stash, Some(Glyph::Stash));
         buttons.push((row(stash, bx), TopAction::Stash));
         // Stash to the gear's right edge: the gear is a control too, not
         // part of the title bar's drag area (FF-29).
         controls.push((stash as i32, gear.right()));
-        // Search / command field: calm recessed well with hairline border and borderless hint.
-        let (lo, hi) = (pill.right() + self.px(16.0), stash as i32 - self.px(12.0));
-        let sw = self.px(400.0).min(hi - lo).max(self.px(160.0));
+        // Search / command field: borderless recessed well at rest, quiet border on hover, accent on focus.
+        let (lo, hi) = (pill.right() + self.px(16.0), stash as i32 - self.px(16.0));
+        let sw = self.px(360.0).min(hi - lo).max(self.px(160.0));
         let sx0 = ((r.w - sw) / 2).min(hi - sw).max(lo);
         let search = Rect::new(sx0, (cy - self.pf(13.0)) as i32, sw, self.px(26.0));
-        let sborder = if self.is_hot(Hot::Search) { BORDER_HOVER() } else { BORDER_SOFT() };
-        cv.round_border(search, self.pf(6.0), sborder, BG_INPUT());
+        let srad = self.pf(metrics().radius_md);
+        if self.palette.is_some() {
+            cv.round_border(search, srad, ACCENT(), BG_INPUT());
+        } else if self.is_hot(Hot::Search) {
+            cv.round_border(search, srad, BORDER(), BG_INPUT());
+        } else {
+            cv.fill_round(search, srad, BG_INPUT());
+        }
         controls.push((search.x, search.right()));
         self.search_rect = search;
         let sx = search.x as f32 + self.pf(12.0);
-        cv.ring(sx + self.pf(4.0), cy - self.pf(1.0), self.pf(4.2), self.pf(1.4), TEXT_4());
+        cv.ring(sx + self.pf(4.0), cy - self.pf(1.0), self.pf(4.2), self.pf(1.3), TEXT_4());
         cv.stroke(
             &[(sx + self.pf(7.2), cy + self.pf(2.2)), (sx + self.pf(9.8), cy + self.pf(4.8))],
-            self.pf(1.4),
+            self.pf(1.3),
             TEXT_4(),
         );
         self.te.draw(
@@ -3550,18 +3583,21 @@ impl Ui {
             } else {
                 BG_SIDEBAR()
             };
+            // Active tab lifts via matte surface elevation seamlessly into content (no bright top stripe).
             cv.fill(Rect::new(t.x, t.y, t.w, t.h + if active { 1 } else { 0 }), bg);
             if active {
-                cv.fill(Rect::new(t.x, t.y, t.w, self.px(1.5).max(2)), ACCENT());
-            }
-            // Separator between inactive tabs.
-            if !active && i + 1 != self.cur_tab {
-                cv.fill(Rect::new(t.right() - 1, t.y + self.px(8.0), 1, t.h - self.px(16.0)), BORDER());
+                if t.x > r.x {
+                    cv.fill(Rect::new(t.x, t.y, 1, t.h), BORDER());
+                }
+                cv.fill(Rect::new(t.right() - 1, t.y, 1, t.h), BORDER());
+            } else if i + 1 != self.cur_tab {
+                // Quiet separator between inactive tabs.
+                cv.fill(Rect::new(t.right() - 1, t.y + self.px(7.0), 1, t.h - self.px(14.0)), BORDER());
             }
             let name = self.tabs[i].title().to_string();
-            // The tab's colour: the top bar when active, a thin line otherwise.
+            // User-chosen custom tab colour: subtle thin accent bar only when set.
             if let Some(c) = self.tabs[i].color.and_then(|c| TAB_COLORS.get(c as usize)) {
-                let h = if active { self.px(3.0) } else { self.px(2.0) };
+                let h = if active { self.px(2.0).max(2) } else { self.px(1.5).max(1) };
                 cv.fill(Rect::new(t.x, t.y, t.w, h), c.1);
             }
             let base = (t.y as f32 + t.h as f32 / 2.0 + self.pf(4.5)).round();
@@ -3577,12 +3613,12 @@ impl Ui {
                 self.te.draw(cv, font, self.pf(12.5), tx, base, &name, if active { TEXT() } else { TEXT_3() }, max);
             // An agent runs (accent) or finished unseen (green, red).
             if let Some(c) = self.agent_badge(&self.tabs[i].path.clone()) {
-                cv.fill_circle(end + self.pf(7.0), base - self.pf(4.0), self.pf(3.0), c);
+                cv.fill_circle(end + self.pf(7.0), base - self.pf(4.0), self.pf(2.8), c);
             } else {
-                // Uncommitted changes (FF-35): quiet muted dot.
+                // Uncommitted changes (FF-35): quiet small dirty indicator dot.
                 let st = if active { self.r.status } else { self.tabs[i].state.as_ref().and_then(|s| s.status) };
                 if st.is_some_and(|s| s.total() > 0) {
-                    cv.fill_circle(end + self.pf(7.0), base - self.pf(3.8), self.pf(2.2), MOD());
+                    cv.fill_circle(end + self.pf(7.0), base - self.pf(3.8), self.pf(2.0), MOD());
                 }
             }
             if active || hover {
@@ -3594,9 +3630,9 @@ impl Ui {
             }
         }
         // "+" opens another repository.
-        let (cx, cy, s) = (plus.x as f32 + plus.w as f32 / 2.0, plus.y as f32 + plus.h as f32 / 2.0, self.pf(5.0));
-        cv.stroke(&[(cx - s, cy), (cx + s, cy)], self.pf(1.5), TEXT_2());
-        cv.stroke(&[(cx, cy - s), (cx, cy + s)], self.pf(1.5), TEXT_2());
+        let (cx, cy, s) = (plus.x as f32 + plus.w as f32 / 2.0, plus.y as f32 + plus.h as f32 / 2.0, self.pf(4.8));
+        cv.stroke(&[(cx - s, cy), (cx + s, cy)], self.pf(1.4), TEXT_3());
+        cv.stroke(&[(cx, cy - s), (cx, cy + s)], self.pf(1.4), TEXT_3());
     }
 
     /// Middle click closes the tab under the pointer, as in browsers.
@@ -3844,35 +3880,35 @@ impl Ui {
         action: TopAction,
         glyph: Option<Glyph>,
     ) -> f32 {
-        let semi = self.f.semi;
-        let size = self.pf(12.5);
-        let tw = self.te.measure(semi, size, label);
-        let bw_badge = badge.as_ref().map_or(0.0, |b| self.te.measure(semi, self.pf(11.5), b) + self.pf(8.0));
-        let icon = if accent || glyph.is_some() { self.pf(18.0) } else { 0.0 };
-        let w = tw + bw_badge + icon + self.pf(24.0);
-        let r = Rect::new((right - w) as i32, (cy - self.pf(14.0)) as i32, w as i32, self.px(28.0));
+        let ui = self.f.ui;
+        let size = self.pf(12.0);
+        let tw = self.te.measure(ui, size, label);
+        let bw_badge = badge.as_ref().map_or(0.0, |b| self.te.measure(ui, self.pf(11.0), b) + self.pf(7.0));
+        let icon = if accent || glyph.is_some() { self.pf(17.0) } else { 0.0 };
+        let w = tw + bw_badge + icon + self.pf(22.0);
+        let r = Rect::new((right - w) as i32, (cy - self.pf(13.0)) as i32, w as i32, self.px(26.0));
         let h = Hot::Top(action);
         // Quiet at rest: no box, just the icon and the label; the pointer
         // brings a soft fill (calm toolbar, FF-59).
         let hot = self.is_hot(h);
         if hot {
             let (bg, _) = self.control_colors(h, BG_BAR(), BORDER());
-            cv.fill_round(r, self.pf(8.0), bg);
+            cv.fill_round(r, self.pf(metrics().radius_md), bg);
         }
         let icon_c = if hot { TEXT() } else { TEXT_3() };
         let fg = if hot { TEXT() } else { TEXT_2() };
         if accent {
             // The AI button's sparkle.
-            self.sparkle(cv, r.x as f32 + self.pf(15.0), cy, self.pf(5.0), icon_c);
+            self.sparkle(cv, r.x as f32 + self.pf(14.0), cy, self.pf(4.8), icon_c);
         }
         if let Some(g) = glyph {
-            self.glyph(cv, g, r.x as f32 + self.pf(16.0), cy, self.pf(6.2), icon_c);
+            self.glyph(cv, g, r.x as f32 + self.pf(15.0), cy, self.pf(5.8), icon_c);
         }
         let base = (cy + self.pf(4.2)).round();
         let tx = r.x as f32 + self.pf(10.0) + icon;
-        let end = self.te.draw(cv, semi, size, tx, base, label, fg, w);
+        let end = self.te.draw(cv, ui, size, tx, base, label, fg, w);
         if let Some(b) = badge {
-            self.te.draw(cv, semi, self.pf(11.0), end + self.pf(5.0), base, &b, ACCENT_FG(), w);
+            self.te.draw(cv, ui, self.pf(11.0), end + self.pf(5.0), base, &b, ACCENT_FG(), w);
         }
         r.x as f32
     }
@@ -3901,7 +3937,8 @@ impl Ui {
         let size = self.pf(11.0);
         let w = self.te.measure(ui, size, label) + self.pf(12.0);
         let r = Rect::new((right - w) as i32, (cy - self.pf(10.0)) as i32, w as i32, self.px(20.0));
-        cv.round_border(r, self.pf(5.0), BORDER(), if dim { BG_BAR() } else { BG_INPUT() });
+        let bg = if dim || is_light() { BG_BAR() } else { BG_PANEL() };
+        cv.fill_round(r, self.pf(metrics().radius_sm), bg);
         self.te.draw(cv, ui, size, r.x as f32 + self.pf(6.0), (cy + self.pf(4.0)).round(), label, TEXT_3(), w);
         r.x as f32
     }
@@ -3951,33 +3988,42 @@ impl Ui {
             // The title switches all branches / the current branch.
             let head_only = self.tabs.get(self.cur_tab).is_some_and(|t| t.head_only);
             let title = if head_only { format!("Current branch  ·  {n}") } else { format!("All commits  ·  {n}") };
-            let tw = self.te.measure(semi, self.pf(11.5), &title);
+            let tw = self.te.measure(ui, self.pf(11.0), &title);
             let tr = Rect::new(
                 l.x + self.px(6.0),
                 head.y + self.px(4.0),
                 (tw + self.pf(30.0)) as i32,
                 head.h - self.px(8.0),
             );
-            if self.is_hot(Hot::Scope) {
-                cv.fill_round(tr, self.pf(6.0), BG_HOVER());
+            let scope_hot = self.is_hot(Hot::Scope);
+            if scope_hot {
+                cv.fill_round(tr, self.pf(metrics().radius_md), BG_HOVER());
             }
-            let tc = if head_only { ACCENT_FG() } else { TEXT_3() };
-            let e = self.te.draw(cv, semi, self.pf(11.5), l.x as f32 + self.pf(14.0), base, &title, tc, self.pf(260.0));
-            let (cx, cy, s) = (e + self.pf(8.0), head.y as f32 + head.h as f32 / 2.0, self.pf(3.0));
-            cv.stroke(&[(cx - s, cy - s / 2.0), (cx, cy + s / 2.0), (cx + s, cy - s / 2.0)], self.pf(1.3), tc);
+            let tc = if head_only {
+                ACCENT_FG()
+            } else if scope_hot {
+                TEXT()
+            } else {
+                TEXT_3()
+            };
+            let e = self.te.draw(cv, ui, self.pf(11.0), l.x as f32 + self.pf(14.0), base, &title, tc, self.pf(260.0));
+            let (cx, cy, s) = (e + self.pf(8.0), head.y as f32 + head.h as f32 / 2.0, self.pf(2.8));
+            cv.stroke(&[(cx - s, cy - s / 2.0), (cx, cy + s / 2.0), (cx + s, cy - s / 2.0)], self.pf(1.2), TEXT_4());
             self.scope_rect = tr;
             // Find (Ctrl+F), clickable (FF-57).
             let fl = "Find";
-            let fw = self.te.measure(semi, self.pf(11.5), fl) + self.pf(34.0);
-            let fr = Rect::new(tr.right() + self.px(8.0), tr.y, fw as i32, tr.h);
-            if self.is_hot(Hot::HeadFind) {
-                cv.fill_round(fr, self.pf(6.0), BG_HOVER());
+            let fw = self.te.measure(ui, self.pf(11.0), fl) + self.pf(32.0);
+            let fr = Rect::new(tr.right() + self.px(6.0), tr.y, fw as i32, tr.h);
+            let find_hot = self.is_hot(Hot::HeadFind);
+            if find_hot {
+                cv.fill_round(fr, self.pf(metrics().radius_md), BG_HOVER());
             }
-            self.glyph(cv, Glyph::Search, fr.x as f32 + self.pf(12.0), cy, self.pf(6.0), TEXT_2());
-            self.te.draw(cv, semi, self.pf(11.5), fr.x as f32 + self.pf(23.0), base, fl, TEXT_2(), fw);
+            let fc = if find_hot { TEXT() } else { TEXT_3() };
+            self.glyph(cv, Glyph::Search, fr.x as f32 + self.pf(11.0), cy, self.pf(5.4), fc);
+            self.te.draw(cv, ui, self.pf(11.0), fr.x as f32 + self.pf(21.0), base, fl, fc, fw);
             self.head_find_rect = fr;
             for (x, t) in [(author_x, "Author"), (date_x, "Date"), (sha_x, "Commit")] {
-                self.te.draw(cv, semi, self.pf(11.5), x, base, t, TEXT_4(), self.pf(100.0));
+                self.te.draw(cv, ui, self.pf(11.0), x, base, t, TEXT_4(), self.pf(100.0));
             }
         }
         let body = Rect::new(l.x, self.lay.list_body.y, l.w - self.lay.scrollbar.w, self.lay.list_body.h);
@@ -4017,7 +4063,7 @@ impl Ui {
             self.paint_search_marks(cv, sb);
             // Selection marker on the scroll track.
             let my = sb.y + (sb.h as f32 * self.r.sel as f32 / n as f32) as i32;
-            cv.fill(Rect::new(sb.x + self.px(1.0), my, sb.w - self.px(2.0), self.px(2.0)), ACCENT());
+            cv.fill(Rect::new(sb.x + self.px(1.0), my, sb.w - self.px(2.0), self.px(2.0)), ACCENT_FG());
         }
     }
 
@@ -4065,13 +4111,19 @@ impl Ui {
                 break;
             }
             let rf = &self.r.refs.refs[ri as usize];
-            // Calm flat soft-tinted pills (no harsh borders; FF-65).
-            let (cbg, ccolor, cfg) = match rf.kind {
-                _ if rf.is_head => (ACCENT_SOFT(), ACCENT(), ACCENT_FG()),
-                RefKind::Local => (BG_BAR(), LOCAL_FG(), TEXT_2()),
-                RefKind::Remote => (REMOTE_BG(), REMOTE_FG(), REMOTE_FG()),
-                RefKind::Tag => (TAG_BG(), TAG_FG(), TAG_FG()),
-                _ => (BG_BAR(), STASH_FG(), TEXT_3()),
+            // Unified calm matte chips: HEAD stays the single warm anchor; all
+            // other refs share one quiet neutral pill with semantic color only
+            // on the leading glyph.
+            let (cbg, cborder, ccolor, cfg, cfont) = if rf.is_head {
+                (ACCENT_SOFT(), ACCENT_BORDER(), ACCENT_FG(), ACCENT_FG(), semi)
+            } else {
+                let (glyph_c, label_c) = match rf.kind {
+                    RefKind::Local => (LOCAL_FG(), TEXT_2()),
+                    RefKind::Remote => (REMOTE_FG(), TEXT_2()),
+                    RefKind::Tag => (TAG_FG(), TEXT_2()),
+                    _ => (STASH_FG(), TEXT_3()),
+                };
+                (BG_PANEL(), BORDER_SOFT(), glyph_c, label_c, ui)
             };
             let name = rf.name.to_string();
             let glyph = match rf.kind {
@@ -4081,18 +4133,18 @@ impl Ui {
                 RefKind::Tag => Glyph::Tag,
                 _ => Glyph::Stash,
             };
-            let tw = self.te.measure(semi, self.pf(10.5), &name).min(self.pf(150.0));
-            let iw = self.pf(13.0);
+            let tw = self.te.measure(cfont, self.pf(10.5), &name).min(self.pf(150.0));
+            let iw = self.pf(12.5);
             let cw = tw + iw + self.pf(12.0);
             if x + cw > max_x - self.pf(60.0) {
                 break;
             }
             let chip =
-                Rect::new(x as i32, (r.y as f32 + r.h as f32 / 2.0 - self.pf(8.5)) as i32, cw as i32, self.px(17.0));
-            cv.fill_round(chip, self.pf(3.5), cbg);
+                Rect::new(x as i32, (r.y as f32 + r.h as f32 / 2.0 - self.pf(9.0)) as i32, cw as i32, self.px(18.0));
+            cv.round_border(chip, self.pf(metrics().radius_sm), cborder, cbg);
             let cy = r.y as f32 + r.h as f32 / 2.0;
-            self.glyph(cv, glyph, x + self.pf(10.5), cy, self.pf(4.8), ccolor);
-            self.te.draw(cv, semi, self.pf(10.5), x + self.pf(6.0) + iw, base - self.pf(0.5), &name, cfg, tw + 1.0);
+            self.glyph(cv, glyph, x + self.pf(9.5), cy, self.pf(4.4), ccolor);
+            self.te.draw(cv, cfont, self.pf(10.5), x + self.pf(5.5) + iw, base - self.pf(0.6), &name, cfg, tw + 1.0);
             x += cw + self.pf(5.0);
         }
         // To push (↑) or to pull (↓).
@@ -4104,7 +4156,7 @@ impl Ui {
             None
         };
         if let Some((m, color)) = mark {
-            x = self.te.draw(cv, semi, self.pf(11.5), x, base, m, color, self.pf(13.0)) + self.pf(4.0);
+            x = self.te.draw(cv, ui, self.pf(11.0), x, base, m, color, self.pf(13.0)) + self.pf(4.0);
         }
         let merge = c.parents.len() > 1;
         let subj_color = if merge { TEXT_3() } else { TEXT() };
@@ -4129,14 +4181,14 @@ impl Ui {
         let when = fmt::relative(c.time, self.now, self.r.tz);
         self.te.draw(cv, ui, self.pf(11.5), date_x, base, &when, TEXT_4(), sha_x - date_x - self.pf(10.0));
         self.te.draw(cv, self.f.mono, self.pf(11.5), sha_x, base, &c.id.short(8), TEXT_4(), self.pf(76.0));
-        // CI status before the SHA: green passed, amber running, red failed.
+        // CI status before the SHA: quiet muted dot.
         if let Some((st, _)) = self.r.ci.get(&c.id) {
             let color = match st {
                 ffwd_core::hosting::Ci::Passed => ADD(),
                 ffwd_core::hosting::Ci::Running => MOD(),
                 ffwd_core::hosting::Ci::Failed => DEL(),
             };
-            cv.fill_circle(sha_x - self.pf(9.0), base - self.pf(3.8), self.pf(2.8), color);
+            cv.fill_circle(sha_x - self.pf(9.0), base - self.pf(3.8), self.pf(2.5), color);
         }
     }
 
@@ -4177,13 +4229,13 @@ impl Ui {
     }
 
     fn header_h(&self) -> i32 {
-        self.px(154.0) + self.details_extra
+        self.px(164.0) + self.details_extra
     }
 
     /// Body lines shown at most, and the default room (two lines).
     const BODY_LINES: usize = 5;
     /// From the end of the description to the author row's centre.
-    const BODY_GAP: f32 = 22.0;
+    const BODY_GAP: f32 = 26.0;
 
     /// Recomputes the details header's extra height for the selected
     /// commit's message (on new details and on resize, never mid-paint).
@@ -4223,13 +4275,13 @@ impl Ui {
         let loaded = self.r.details.as_ref().is_some_and(|d| d.id == c.id);
         let no_body = compare.is_some() || if loaded { body.is_empty() } else { !has_body };
         if no_body {
-            return (y + self.pf(18.0) - self.pf(112.0)).round().min(0.0) as i32;
+            return (y + self.pf(22.0) - self.pf(116.0)).round().min(0.0) as i32;
         }
         let s12 = self.pf(12.0);
         let lines: usize = body.iter().map(|p| wrap(&mut self.te, ui, s12, p, maxw).len().max(1)).sum();
         let shown = if loaded { lines.clamp(1, Self::BODY_LINES) } else { 2 };
         let meta = y + shown as f32 * self.pf(17.0) + self.pf(Self::BODY_GAP);
-        (meta - self.pf(112.0)).round() as i32
+        (meta - self.pf(116.0)).round() as i32
     }
 
     fn file_rows_visible(&self) -> usize {
@@ -4331,7 +4383,7 @@ impl Ui {
         };
         // The body gets the lines that fit above the author row; the last
         // visible line ends in an ellipsis when more text follows.
-        let meta_y = d.y as f32 + self.pf(112.0) + self.details_extra as f32;
+        let meta_y = d.y as f32 + self.pf(116.0) + self.details_extra as f32;
         let lh = self.pf(17.0);
         let fit = ((meta_y - self.pf(Self::BODY_GAP) - y) / lh).round().max(0.0) as usize;
         let lines: Vec<String> = body
@@ -4347,12 +4399,13 @@ impl Ui {
             self.te.draw(cv, ui, s12, x0, y + self.pf(2.0), &text, TEXT_2(), maxw);
             y += lh;
         }
-        // Compact calm meta block.
+        // Calm airier meta block with desaturated avatar and matte initials.
         let av = self.pf(12.0);
         cv.fill_circle(x0 + av, meta_y, av, avatar(&c.email));
         let ini = fmt::initials(&c.author);
+        let ini_fg = if is_light() { BG_PANEL() } else { TEXT() };
         let iw = self.te.measure(semi, self.pf(10.0), &ini);
-        self.te.draw(cv, semi, self.pf(10.0), x0 + av - iw / 2.0, meta_y + self.pf(3.5), &ini, 0xffffff, av * 2.0);
+        self.te.draw(cv, semi, self.pf(10.0), x0 + av - iw / 2.0, meta_y + self.pf(3.5), &ini, ini_fg, av * 2.0);
         let mx = x0 + av * 2.0 + self.pf(10.0);
         let end = self.te.draw(cv, semi, self.pf(12.0), mx, meta_y - self.pf(2.0), &c.author, TEXT(), maxw * 0.5);
         self.te.draw(
@@ -4367,11 +4420,11 @@ impl Ui {
         );
         let when = format!("{}  ·  {}", fmt::date_time(c.time, self.r.tz), fmt::relative(c.time, self.now, self.r.tz));
         self.te.draw(cv, ui, self.pf(11.5), mx, meta_y + self.pf(12.0), &when, TEXT_3(), maxw);
-        let sha_y = meta_y + self.pf(32.0);
+        let sha_y = meta_y + self.pf(34.0);
         let mut sx = self.te.draw(cv, mono, self.pf(11.5), x0, sha_y, &c.id.short(12), TEXT_3(), maxw);
         for p in c.parents.iter().take(2) {
             sx = self.te.draw(cv, ui, self.pf(11.5), sx + self.pf(12.0), sha_y, "parent", TEXT_4(), maxw);
-            sx = self.te.draw(cv, mono, self.pf(12.0), sx + self.pf(6.0), sha_y, &p.short(8), TEXT_3(), maxw);
+            sx = self.te.draw(cv, mono, self.pf(11.5), sx + self.pf(6.0), sha_y, &p.short(8), TEXT_3(), maxw);
         }
         // Files.
         let fh_y = d.y + self.header_h();
@@ -4380,7 +4433,7 @@ impl Ui {
         let focus_files = self.focus == Focus::Files;
         match &self.r.details {
             None => {
-                self.te.draw(cv, semi, self.pf(11.5), x0, fbase, "CHANGED FILES", TEXT_3(), maxw);
+                self.te.draw(cv, semi, self.pf(11.0), x0, fbase, "CHANGED FILES", TEXT_3(), maxw);
                 let fr = self.files_rect();
                 for k in 0..3 {
                     let yy = fr.y + k * self.px(26.0) + self.px(9.0);
@@ -4401,16 +4454,16 @@ impl Ui {
                 let e = self.te.draw(
                     cv,
                     semi,
-                    self.pf(11.5),
+                    self.pf(11.0),
                     x0,
                     fbase,
                     &title,
-                    if focus_files { ACCENT() } else { TEXT_3() },
+                    if focus_files { ACCENT_FG() } else { TEXT_3() },
                     maxw,
                 );
                 let e = self.te.draw(
                     cv,
-                    semi,
+                    ui,
                     self.pf(11.5),
                     e + self.pf(10.0),
                     fbase,
@@ -4420,7 +4473,7 @@ impl Ui {
                 );
                 let e = self.te.draw(
                     cv,
-                    semi,
+                    ui,
                     self.pf(11.5),
                     e + self.pf(6.0),
                     fbase,
@@ -4436,11 +4489,11 @@ impl Ui {
                     self.te.draw(
                         cv,
                         semi,
-                        self.pf(11.5),
+                        self.pf(11.0),
                         e + self.pf(10.0),
                         fbase,
                         &format!("· {} MATCH{}", fmt::num(nm), if nm == 1 { "" } else { "ES" }),
-                        ACCENT(),
+                        ACCENT_FG(),
                         maxw,
                     );
                 }
@@ -4450,9 +4503,13 @@ impl Ui {
                     let ry = fr.y + (k - self.r.file_top) as i32 * rh;
                     let row = Rect::new(d.x + self.px(10.0), ry, d.w - self.px(20.0), rh);
                     if k == self.r.sel_file {
-                        cv.fill_round(row, self.pf(6.0), if focus_files { BG_SELECT() } else { BG_SELECT_DIM() });
+                        cv.fill_round(
+                            row,
+                            self.pf(metrics().radius_md),
+                            if focus_files { BG_SELECT() } else { BG_SELECT_DIM() },
+                        );
                     } else if self.is_hot(Hot::File(k)) {
-                        cv.fill_round(row, self.pf(6.0), BG_HOVER());
+                        cv.fill_round(row, self.pf(metrics().radius_md), BG_HOVER());
                     }
                     if nm > 0 && matched.iter().any(|p| *p == *f.path) {
                         let m = self.px(5.0);
@@ -4467,14 +4524,13 @@ impl Ui {
                         b'C' => (REN(), "C"),
                         _ => (MOD(), "M"),
                     };
-                    let badge = Rect::new(x0 as i32, (cy - self.pf(8.0)) as i32, self.px(16.0), self.px(16.0));
-                    cv.fill_round(badge, self.pf(4.0), crate::ui::tint(sc));
-                    let lw = self.te.measure(semi, self.pf(10.5), sl);
+                    // Crisp boxless status letter in muted semantic hue.
+                    let lw = self.te.measure(semi, self.pf(11.0), sl);
                     self.te.draw(
                         cv,
                         semi,
-                        self.pf(10.5),
-                        badge.x as f32 + (badge.w as f32 - lw) / 2.0,
+                        self.pf(11.0),
+                        x0 + (self.pf(14.0) - lw) / 2.0,
                         base - self.pf(0.5),
                         sl,
                         sc,
@@ -4489,7 +4545,7 @@ impl Ui {
                         _ => "bin".into(),
                     };
                     let stw = self.te.measure(ui, self.pf(11.5), &stat);
-                    let tx = x0 + self.pf(26.0);
+                    let tx = x0 + self.pf(22.0);
                     let avail = row.right() as f32 - tx - stw - self.pf(18.0);
                     let e = self.te.draw(cv, ui, self.pf(13.0), tx, base, name, TEXT(), avail);
                     if !dir.is_empty() {
@@ -4511,7 +4567,7 @@ impl Ui {
                         row.right() as f32 - stw - self.pf(10.0),
                         base,
                         &stat,
-                        TEXT_3(),
+                        TEXT_4(),
                         stw + 2.0,
                     );
                 }
@@ -4569,7 +4625,7 @@ impl Ui {
                 r.x as f32 + pad,
                 base,
                 &diff.path,
-                if focus { ACCENT() } else { TEXT() },
+                if focus { ACCENT_FG() } else { TEXT() },
                 maxw,
             );
         }
@@ -4627,8 +4683,8 @@ impl Ui {
         }
         for (py, m) in self.marks_of(d, split, strip.h as usize).into_iter().enumerate() {
             let color = match m {
-                1 => ADD(),
-                2 => DEL(),
+                1 => ADD_GUTTER(),
+                2 => DEL_GUTTER(),
                 3 => MOD(),
                 _ => continue,
             };
@@ -4793,9 +4849,19 @@ impl Ui {
                         lh - self.px(4.0),
                     );
                     let hot = Hot::Change(hit_base + buttons.len());
-                    let (bg, border) = self.control_colors(hot, BG_BAR(), HUNK_BORDER());
-                    cv.round_border(b, self.pf(5.0), border, bg);
-                    self.te.draw(cv, semi, self.pf(11.0), b.x as f32 + self.pf(9.0), lb, label, HUNK_TEXT(), w);
+                    let is_hot = self.is_hot(hot);
+                    let (bg, border) = self.control_colors(hot, BG_PANEL(), BORDER_SOFT());
+                    cv.round_border(b, self.pf(metrics().radius_sm), border, bg);
+                    self.te.draw(
+                        cv,
+                        semi,
+                        self.pf(11.0),
+                        b.x as f32 + self.pf(9.0),
+                        lb,
+                        label,
+                        if is_hot { TEXT() } else { TEXT_2() },
+                        w,
+                    );
                     buttons.push((hunk as usize - 1, b));
                     text_w -= w + self.pf(12.0);
                 }
@@ -4987,12 +5053,12 @@ impl Ui {
             .map(|i| (i.label.clone(), i.hint.clone(), i.kind, matches!(i.action, PAction::Command(_))))
             .collect();
         let old = cv.set_clip(clip.intersect(r));
-        cv.round_border(r, self.pf(12.0), BORDER_STRONG(), BG_FLOAT());
+        cv.round_border(r, self.pf(10.0), BORDER(), BG_FLOAT());
         let (ui, semi) = (self.f.ui, self.f.semi);
         let input = Rect::new(r.x, r.y, r.w, self.px(52.0));
         let base = (input.y as f32 + input.h as f32 / 2.0 + self.pf(5.5)).round();
         let ix = r.x as f32 + self.pf(20.0);
-        self.chevrons(cv, ix, input.y as f32 + input.h as f32 / 2.0, self.pf(9.0), ACCENT());
+        self.chevrons(cv, ix, input.y as f32 + input.h as f32 / 2.0, self.pf(9.0), ACCENT_FG());
         let qx = ix + self.pf(24.0);
         let end = if query.is_empty() {
             self.te.draw(
@@ -5029,7 +5095,7 @@ impl Ui {
             qx + self.te.measure(ui, self.pf(15.0), &query[..cursor.min(query.len())])
         };
         cv.fill(Rect::new(end as i32 + 1, input.y + self.px(15.0), self.px(2.0), self.px(22.0)), ACCENT());
-        cv.fill(Rect::new(r.x + 1, input.bottom() - 1, r.w - 2, 1), BORDER());
+        cv.fill(Rect::new(r.x + 1, input.bottom() - 1, r.w - 2, 1), BORDER_SOFT());
         if items.is_empty() {
             self.te.draw(
                 cv,

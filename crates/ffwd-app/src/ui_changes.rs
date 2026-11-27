@@ -1145,15 +1145,15 @@ impl Ui {
             let e = self.te.draw(
                 cv,
                 semi,
-                self.pf(12.5),
+                self.pf(12.0),
                 head.x as f32 + self.pf(14.0),
                 base,
                 title,
-                TEXT(),
+                TEXT_2(),
                 self.pf(120.0),
             );
             let count = if loading { "…".to_string() } else { n_side.to_string() };
-            self.te.draw(cv, ui, self.pf(12.0), e + self.pf(8.0), base, &count, TEXT_3(), self.pf(80.0));
+            self.te.draw(cv, ui, self.pf(11.5), e + self.pf(8.0), base, &count, TEXT_4(), self.pf(80.0));
             // Stage all / Unstage all.
             let (label, hit) =
                 if side == Side::Unstaged { ("Stage all", CHit::StageAll) } else { ("Unstage all", CHit::UnstageAll) };
@@ -1239,13 +1239,12 @@ impl Ui {
                     _ => MOD(),
                 };
                 let badge = Rect::new(row.x + self.px(8.0), (cy - self.pf(8.0)) as i32, self.px(16.0), self.px(16.0));
-                cv.fill_round(badge, self.pf(4.0), crate::ui::tint(sc));
                 let ls = (letter as char).to_string();
-                let lw = self.te.measure(semi, self.pf(10.5), &ls);
+                let lw = self.te.measure(semi, self.pf(11.0), &ls);
                 self.te.draw(
                     cv,
                     semi,
-                    self.pf(10.5),
+                    self.pf(11.0),
                     badge.x as f32 + (badge.w as f32 - lw) / 2.0,
                     b - self.pf(0.5),
                     &ls,
@@ -1256,7 +1255,7 @@ impl Ui {
                     Some((d, n)) => (d.to_string(), n.to_string()),
                     None => (String::new(), en.path.to_string()),
                 };
-                let nx = badge.right() as f32 + self.pf(10.0);
+                let nx = badge.right() as f32 + self.pf(8.0);
                 let e2 =
                     self.te.draw(cv, ui, self.pf(12.5), nx, b, &name, TEXT(), row.right() as f32 - nx - self.pf(8.0));
                 if !dir.is_empty() {
@@ -1295,7 +1294,7 @@ impl Ui {
     fn paint_commit_box(&mut self, cv: &mut Canvas, r: Rect, hits: &mut Vec<(Rect, CHit)>) {
         let (ui, semi) = (self.f.ui, self.f.semi);
         cv.fill(r, BG_PANEL());
-        cv.fill(Rect::new(r.x, r.y, r.w - 1, 1), BORDER());
+        cv.fill(Rect::new(r.x, r.y, r.w - 1, 1), BORDER_SOFT());
         let pad = self.px(12.0);
         let focus = self.r.changes.focus;
         // When the checkboxes, AI and Commit don't fit in one line, the
@@ -1318,9 +1317,9 @@ impl Ui {
         } else if self.change_hot(hits.len()) {
             BORDER_HOVER()
         } else {
-            BORDER()
+            BORDER_SOFT()
         };
-        cv.round_border(sf, self.pf(7.0), border, BG_INPUT());
+        cv.round_border(sf, self.pf(6.0), border, BG_INPUT());
         let sb = (sf.y as f32 + sf.h as f32 / 2.0 + self.pf(4.5)).round();
         let tx = sf.x as f32 + self.pf(10.0);
         let maxw = sf.w as f32 - self.pf(60.0);
@@ -1375,9 +1374,9 @@ impl Ui {
         } else if self.change_hot(hits.len()) {
             BORDER_HOVER()
         } else {
-            BORDER()
+            BORDER_SOFT()
         };
-        cv.round_border(df, self.pf(7.0), border, BG_INPUT());
+        cv.round_border(df, self.pf(6.0), border, BG_INPUT());
         let desc = self.r.changes.desc.clone();
         let lh = self.pf(18.0);
         let old = cv.set_clip(cv.clip().intersect(df.inset(self.px(2.0), self.px(2.0))));
@@ -1458,7 +1457,7 @@ impl Ui {
         let label = if ax as f32 + full + self.pf(8.0) <= commit_x { "AI draft" } else { "AI" };
         let aw = self.te.measure(semi, self.pf(12.0), label) + self.pf(20.0);
         let air = Rect::new(ax, by, aw as i32, self.px(30.0));
-        let (bg, border) = if hot { (CONTROL_HOVER(), ACCENT_BORDER()) } else { (BG_PANEL(), BORDER_SOFT()) };
+        let (bg, border) = if hot { (CONTROL_HOVER(), BORDER_HOVER()) } else { (BG_PANEL(), BORDER_SOFT()) };
         cv.round_border(air, self.pf(6.0), border, bg);
         self.te.draw(
             cv,
@@ -1467,7 +1466,7 @@ impl Ui {
             air.x as f32 + self.pf(10.0),
             (air.y as f32 + self.pf(20.0)).round(),
             label,
-            if hot { ACCENT_FG() } else { TEXT_2() },
+            if hot { TEXT() } else { TEXT_3() },
             aw,
         );
         hits.push((air, CHit::Ai));
@@ -1496,7 +1495,7 @@ impl Ui {
         } else {
             (ACCENT_SOFT_HOVER(), ACCENT_BORDER(), ACCENT_FG())
         };
-        cv.round_border(cb, self.pf(7.0), border, bg);
+        cv.round_border(cb, self.pf(6.0), border, bg);
         self.te.draw(
             cv,
             semi,
@@ -1517,7 +1516,7 @@ impl Ui {
             if can && hot {
                 ACCENT_TEXT()
             } else if can {
-                TAG_FG()
+                TEXT_3()
             } else {
                 TEXT_4()
             },
@@ -1550,8 +1549,9 @@ impl Ui {
             cv.fill_round(r, self.pf(6.0), BG_HOVER());
         }
         let bx = Rect::new(r.x + self.px(8.0), r.y + self.px(8.0), self.px(14.0), self.px(14.0));
+        let rad = self.pf(crate::theme::metrics().radius_sm);
         if on {
-            cv.fill_round(bx, self.pf(3.0), ACCENT());
+            cv.fill_round(bx, rad, ACCENT());
             let (x0, y0) = (bx.x as f32, bx.y as f32);
             cv.stroke(
                 &[
@@ -1563,10 +1563,11 @@ impl Ui {
                 ACCENT_TEXT(),
             );
         } else {
-            cv.round_border(bx, self.pf(3.0), BORDER_HOVER(), BG_INPUT());
+            cv.round_border(bx, rad, if hot { BORDER_HOVER() } else { BORDER_STRONG() }, BG_INPUT());
         }
         let b = (r.y as f32 + self.pf(20.0)).round();
-        self.te.draw(cv, ui, self.pf(12.5), bx.right() as f32 + self.pf(8.0), b, label, TEXT_2(), tw + 2.0);
+        let lc = if on || hot { TEXT() } else { TEXT_3() };
+        self.te.draw(cv, ui, self.pf(12.5), bx.right() as f32 + self.pf(8.0), b, label, lc, tw + 2.0);
         r
     }
 

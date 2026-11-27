@@ -80,8 +80,10 @@ pub(super) struct View {
     /// The figure as a count for a badge; empty when calm.
     pub count: String,
     pub color: u32,
-    /// The figure asks for attention.
+    /// The figure has a live count to display.
     pub alert: bool,
+    /// Real failure or conflict that earns muted red attention.
+    pub critical: bool,
 }
 
 impl SideItem {
@@ -224,8 +226,9 @@ impl Ui {
             count: String::new(),
             color: TEXT_4(),
             alert: false,
+            critical: false,
         };
-        let loud = |key, name, glyph, stat: String, n: usize, color| View {
+        let counted = |key, name, glyph, stat: String, n: usize, color, critical| View {
             key,
             name,
             glyph,
@@ -233,15 +236,32 @@ impl Ui {
             count: fmt::num(n),
             color,
             alert: true,
+            critical,
         };
         let changes = match self.r.status {
             Some(s) if s.conflicted > 0 => {
                 let n = s.conflicted as usize;
-                loud("changes", "Local Changes", Glyph::Changes, format!("{} conflicts", fmt::num(n)), n, DEL())
+                counted(
+                    "changes",
+                    "Local Changes",
+                    Glyph::Changes,
+                    format!("{} conflicts", fmt::num(n)),
+                    n,
+                    DEL(),
+                    true,
+                )
             }
             Some(s) if s.total() > 0 => {
                 let n = s.total() as usize;
-                loud("changes", "Local Changes", Glyph::Changes, format!("{} changed", fmt::num(n)), n, MOD())
+                counted(
+                    "changes",
+                    "Local Changes",
+                    Glyph::Changes,
+                    format!("{} changed", fmt::num(n)),
+                    n,
+                    TEXT_3(),
+                    false,
+                )
             }
             Some(_) => calm("changes", "Local Changes", Glyph::Changes, "clean"),
             None => calm("changes", "Local Changes", Glyph::Changes, "…"),
@@ -250,7 +270,7 @@ impl Ui {
         let history = if self.r.log_done { format!("{} commits", fmt::num(n)) } else { format!("{}…", fmt::num(n)) };
         let activity = match self.activity.unseen_failures {
             0 => calm("activity", "Activity", Glyph::Text, "all fine"),
-            f => loud("activity", "Activity", Glyph::Text, format!("{f} failed"), f as usize, DEL()),
+            f => counted("activity", "Activity", Glyph::Text, format!("{f} failed"), f as usize, DEL(), true),
         };
         let mut list = vec![
             changes,
@@ -263,8 +283,8 @@ impl Ui {
         if self.agent_config().0.enabled || self.agent_view.is_some() {
             let agents = match self.agent_counts() {
                 (0, 0) => calm("agents", "Agents", Glyph::Terminal, "idle"),
-                (0, r) => loud("agents", "Agents", Glyph::Terminal, format!("{r} to review"), r, ADD()),
-                (n, _) => loud("agents", "Agents", Glyph::Terminal, format!("{n} running"), n, ACCENT_FG()),
+                (0, r) => counted("agents", "Agents", Glyph::Terminal, format!("{r} to review"), r, TEXT_2(), false),
+                (n, _) => counted("agents", "Agents", Glyph::Terminal, format!("{n} running"), n, TEXT_2(), false),
             };
             list.push(agents);
         }
@@ -387,7 +407,8 @@ impl Ui {
         self.views().into_iter().find(|t| t.key == key).map(|t| t.stat)
     }
 
-    /// A count badge: a pill in the view's colour.
+    /// A count badge: calm neutral pill for normal counts, muted red only for
+    /// real failures or conflicts.
     fn view_badge(&mut self, cv: &mut Canvas, right: f32, cy: f32, v: &View) {
         let semi = self.f.semi;
         let fs = self.pf(10.0);
@@ -395,8 +416,12 @@ impl Ui {
         let h = self.pf(15.0);
         let w = (tw + self.pf(9.0)).max(h);
         let r = Rect::new((right - w) as i32, (cy - h / 2.0) as i32, w as i32, h as i32);
-        cv.fill_round(r, h / 2.0, v.color);
-        let fg = if crate::theme::is_light() { 0xffffff } else { BG() };
+        let (bg, fg) = if v.critical {
+            (DEL(), if crate::theme::is_light() { 0xffffff } else { BG() })
+        } else {
+            (BG_CHOSEN(), TEXT())
+        };
+        cv.fill_round(r, h / 2.0, bg);
         self.te.draw(cv, semi, fs, right - w + (w - tw) / 2.0, cy + self.pf(3.5), &v.count, fg, w);
     }
 
@@ -410,7 +435,7 @@ impl Ui {
     }
 
     /// Rail: a labelled icon per view down the left edge; the open one
-    /// lit, with an accent bar at the edge; counts as pills on the icon.
+    /// lit calmly, with a thin accent bar at the edge; counts as quiet pills.
     fn paint_rail(&mut self, cv: &mut Canvas) {
         let s = self.lay.side;
         let rw = self.rail_w();
@@ -422,21 +447,21 @@ impl Ui {
             let on = v.key == cur;
             let hot = self.side_view_hot == Some(k);
             if on {
-                cv.fill_round(r, self.pf(9.0), ACCENT_SOFT());
+                cv.fill_round(r, self.pf(7.0), BG_SELECT());
                 cv.fill_round(
-                    Rect::new(s.x, r.y + self.px(12.0), self.px(3.0), r.h - self.px(24.0)),
-                    self.pf(1.5),
+                    Rect::new(s.x, r.y + self.px(12.0), self.px(2.0).max(2), r.h - self.px(24.0)),
+                    self.pf(1.0),
                     ACCENT(),
                 );
             } else if hot {
-                cv.fill_round(r, self.pf(9.0), BG_HOVER());
+                cv.fill_round(r, self.pf(7.0), BG_HOVER());
             }
             let cx = r.x as f32 + r.w as f32 / 2.0;
             let gy = r.y as f32 + self.pf(18.0);
             let gc = if on {
-                ACCENT_FG()
-            } else if hot {
                 TEXT()
+            } else if hot {
+                TEXT_2()
             } else {
                 TEXT_3()
             };
@@ -446,7 +471,7 @@ impl Ui {
             }
             let fs = self.pf(10.5);
             let tw = self.te.measure(ui, fs, v.name);
-            let tc = if on { ACCENT_FG() } else { TEXT_3() };
+            let tc = if on { TEXT() } else { TEXT_3() };
             self.te.draw(cv, ui, fs, cx - tw / 2.0, r.y as f32 + self.pf(41.0), v.name, tc, r.w as f32);
         }
     }
@@ -483,11 +508,13 @@ impl Ui {
                 if on { TEXT() } else { TEXT_2() },
                 r.w as f32 - self.pf(56.0),
             );
-            // Only draw real numbers on the right (quiet count, no filler sentences).
-            let right_text = if v.alert {
-                Some((v.count.clone(), v.color, semi))
+            // Only draw real numbers on the right (quiet neutral counts; muted red only for failures/conflicts).
+            let right_text = if v.critical {
+                Some((v.count.clone(), DEL(), semi))
+            } else if v.alert {
+                Some((v.count.clone(), v.color, ui))
             } else if v.key == "all" && !self.r.commits.is_empty() {
-                Some((fmt::num(self.r.commits.len()), TEXT_4(), ui))
+                Some((fmt::num(self.r.commits.len()), TEXT_3(), ui))
             } else {
                 None
             };
@@ -536,14 +563,15 @@ impl Ui {
             self.glyph(cv, v.glyph, cx, cy, self.pf(6.0), gc);
             if v.alert {
                 let fs = self.pf(10.0);
+                let col = if v.critical { DEL() } else { TEXT_2() };
                 self.te.draw(
                     cv,
-                    semi,
+                    if v.critical { semi } else { ui },
                     fs,
                     cx + self.pf(8.5),
                     (cy + self.pf(3.5)).round(),
                     &v.count,
-                    v.color,
+                    col,
                     self.pf(22.0),
                 );
             }
@@ -555,12 +583,12 @@ impl Ui {
             let end = self.te.draw(cv, semi, self.pf(11.5), x, base, v.name, TEXT_2(), bar.w as f32);
             self.te.draw(
                 cv,
-                if v.alert { semi } else { ui },
+                if v.critical { semi } else { ui },
                 self.pf(11.5),
                 end + self.pf(8.0),
                 base,
                 &v.stat,
-                v.color,
+                if v.critical { DEL() } else { TEXT_3() },
                 bar.right() as f32 - end - self.pf(8.0),
             );
         }
@@ -574,24 +602,20 @@ impl Ui {
         }
         let (ui, semi) = (self.f.ui, self.f.semi);
         cv.fill(v, BG_BAR());
-        cv.fill(Rect::new(v.x, v.bottom() - 1, v.w, 1), BORDER());
+        cv.fill(Rect::new(v.x, v.bottom() - 1, v.w, 1), BORDER_SOFT());
         let cur = self.current_view();
         for (k, (t, r)) in self.views().into_iter().zip(self.view_tab_rects()).enumerate() {
             let on = t.key == cur;
             let hot = self.side_view_hot == Some(k);
-            let inner = Rect::new(r.x + self.px(2.0), r.y + self.px(5.0), r.w - self.px(4.0), r.h - self.px(10.0));
+            let inner = Rect::new(r.x + self.px(2.0), r.y + self.px(4.0), r.w - self.px(4.0), r.h - self.px(8.0));
             if on {
-                cv.fill_round(inner, self.pf(7.0), BG());
-                cv.fill(
-                    Rect::new(r.x + self.px(10.0), r.bottom() - self.px(2.0), r.w - self.px(20.0), self.px(2.0)),
-                    ACCENT(),
-                );
+                cv.fill_round(inner, self.pf(6.0), BG());
             } else if hot {
-                cv.fill_round(inner, self.pf(7.0), BG_HOVER());
+                cv.fill_round(inner, self.pf(6.0), BG_HOVER());
             }
             let cy = r.y as f32 + r.h as f32 / 2.0;
             let gx = r.x as f32 + self.pf(18.0);
-            self.glyph(cv, t.glyph, gx, cy, self.pf(5.5), if on { ACCENT() } else { TEXT_3() });
+            self.glyph(cv, t.glyph, gx, cy, self.pf(5.5), if on { TEXT() } else { TEXT_3() });
             let font = if on { semi } else { ui };
             let right = r.right() as f32 - self.pf(8.0);
             let end = self.te.draw(
@@ -645,13 +669,17 @@ impl Ui {
         let right = r.right() as f32 - self.pf(8.0);
 
         // Right-aligned quiet sync state (or stopped-op warning).
+        let ui = self.f.ui;
         let mut cx = right;
         if let Some(op) = self.r.changes.in_progress {
-            let conflicts = self.r.status.map_or(0, |s| s.conflicted as usize);
-            let tag = if conflicts > 0 { format!("{op} · {conflicts}") } else { format!("{op}…") };
+            let conflicts = self.r.status.map_or(0, |s| s.conflicted as usize).max(self.r.changes.conflicts);
+            let mut chars = op.chars();
+            let op_cap =
+                chars.next().map_or_else(String::new, |f| f.to_uppercase().collect::<String>() + chars.as_str());
+            let tag = if conflicts > 0 { format!("{op_cap} {conflicts}") } else { op_cap };
             let tw = self.te.measure(semi, self.pf(11.0), &tag);
             cx -= tw + self.pf(4.0);
-            self.te.draw(cv, semi, self.pf(11.0), cx + self.pf(4.0), base - self.pf(0.5), &tag, DEL(), tw + 2.0);
+            self.te.draw(cv, semi, self.pf(11.0), cx + self.pf(4.0), base - self.pf(0.5), &tag, DEL(), tw + 8.0);
             cx -= self.pf(6.0);
         } else if let Some(h) = &head {
             let mut parts: Vec<(String, u32)> = Vec::new();
@@ -659,16 +687,16 @@ impl Ui {
                 parts.push(("gone".into(), DEL()));
             } else {
                 if h.behind > 0 {
-                    parts.push((format!("↓{}", h.behind), REMOTE_FG()));
+                    parts.push((format!("↓{}", h.behind), TEXT_3()));
                 }
                 if h.ahead > 0 {
-                    parts.push((format!("↑{}", h.ahead), ACCENT_FG()));
+                    parts.push((format!("↑{}", h.ahead), TEXT_2()));
                 }
             }
             for (t, fg) in parts.iter().rev() {
-                let tw = self.te.measure(semi, self.pf(11.0), t);
+                let tw = self.te.measure(ui, self.pf(11.0), t);
                 cx -= tw;
-                self.te.draw(cv, semi, self.pf(11.0), cx, base - self.pf(0.5), t, *fg, tw + 2.0);
+                self.te.draw(cv, ui, self.pf(11.0), cx, base - self.pf(0.5), t, *fg, tw + 6.0);
                 cx -= self.pf(6.0);
             }
         }
@@ -1114,10 +1142,17 @@ impl Ui {
         self.paint_side_here(cv);
         self.paint_views(cv);
         let (ui, semi) = (self.f.ui, self.f.semi);
-        // Quiet recessed filter field.
+        // Quiet recessed filter field: borderless at rest, hairline on hover, accent on focus.
         let fr = self.side_filter_rect();
         let typing = self.focus == Focus::SideFilter;
-        cv.round_border(fr, self.pf(5.0), if typing { ACCENT() } else { BORDER_SOFT() }, BG_INPUT());
+        let filter_hot = self.pointer_at.is_some_and(|(px, py)| fr.contains(px, py));
+        if typing {
+            cv.round_border(fr, self.pf(5.0), ACCENT(), BG_INPUT());
+        } else if filter_hot {
+            cv.round_border(fr, self.pf(5.0), BORDER_SOFT(), BG_INPUT());
+        } else {
+            cv.fill_round(fr, self.pf(5.0), BG_INPUT());
+        }
         let fcy = fr.y as f32 + fr.h as f32 / 2.0;
         let fx = fr.x as f32 + self.pf(10.0);
         cv.ring(fx + self.pf(3.2), fcy - self.pf(1.0), self.pf(3.6), self.pf(1.3), TEXT_4());
@@ -1157,12 +1192,15 @@ impl Ui {
             }
             let selected = it.key == self.r.side_sel;
             let picked = self.r.side_multi.contains(&it.key);
+            let head_pad = if it.kind == SideKind::Header && k > 0 { self.px(5.0) } else { 0 };
+            let bg_row =
+                if head_pad > 0 { Rect::new(row.x, row.y + head_pad, row.w, (row.h - head_pad).max(1)) } else { row };
             if selected {
-                cv.fill_round(row, self.pf(6.0), if focus { BG_SELECT() } else { BG_SELECT_DIM() });
+                cv.fill_round(bg_row, self.pf(6.0), if focus { BG_SELECT() } else { BG_SELECT_DIM() });
             } else if picked {
-                cv.fill_round(row, self.pf(6.0), BG_SELECT_DIM());
+                cv.fill_round(bg_row, self.pf(6.0), BG_SELECT_DIM());
             } else if self.side_hover == Some(k) {
-                cv.fill_round(row, self.pf(6.0), BG_HOVER());
+                cv.fill_round(bg_row, self.pf(6.0), BG_HOVER());
             }
             if picked {
                 // Picked for a batch: an accent bar on the left edge.
@@ -1176,35 +1214,23 @@ impl Ui {
             let base = (cy + self.pf(4.5)).round();
             let indent = it.depth as f32 * self.pf(14.0);
             let cx = row.x as f32 + self.pf(12.0) + indent;
-            if let Some(open) = it.expander {
-                self.chevron(cv, cx, cy, open, TEXT_3());
-            }
             if it.kind == SideKind::Header {
-                // Sentence case, quiet; the count only when the section is
-                // closed, to say what it hides (calm sidebar, FF-59).
-                let e = self.te.draw(
-                    cv,
-                    semi,
-                    self.pf(12.0),
-                    cx + self.pf(10.0),
-                    base - self.pf(0.5),
-                    &it.label,
-                    TEXT_3(),
-                    row.w as f32,
-                );
+                // Quiet uppercase section header with top breathing room (except first).
+                let hcy = bg_row.y as f32 + bg_row.h as f32 / 2.0 + if head_pad > 0 { self.pf(1.0) } else { 0.0 };
+                let hbase = (hcy + self.pf(3.6)).round();
+                let hcol = if selected || self.side_hover == Some(k) { TEXT_3() } else { TEXT_4() };
+                if let Some(open) = it.expander {
+                    self.chevron(cv, cx, hcy, open, TEXT_4());
+                }
+                let upper = it.label.to_uppercase();
+                let e = self.te.draw(cv, semi, self.pf(10.5), cx + self.pf(10.0), hbase, &upper, hcol, row.w as f32);
                 if !it.badge.is_empty() && it.expander == Some(false) {
-                    self.te.draw(
-                        cv,
-                        ui,
-                        self.pf(11.5),
-                        e + self.pf(7.0),
-                        base - self.pf(0.5),
-                        &it.badge,
-                        TEXT_4(),
-                        row.w as f32,
-                    );
+                    self.te.draw(cv, ui, self.pf(10.5), e + self.pf(6.0), hbase, &it.badge, TEXT_4(), row.w as f32);
                 }
                 continue;
+            }
+            if let Some(open) = it.expander {
+                self.chevron(cv, cx, cy, open, TEXT_3());
             }
             let ix = cx + if it.expander.is_some() { self.pf(16.0) } else { self.pf(4.0) };
             // Neutral icons: the sidebar is a calm index, colour is kept for
@@ -1325,17 +1351,23 @@ impl Ui {
                 );
             }
             if it.kind == SideKind::Branch && !it.badge.is_empty() {
-                // Quiet inline sync counts (no loud filled pill boxes on every branch).
+                // Quiet inline sync counts (calm neutral text; muted red only for gone upstream).
                 let mut x = row.right() as f32 - self.pf(8.0);
+                let bf = if it.current { semi } else { ui };
                 for part in it.badge.split_whitespace().collect::<Vec<_>>().into_iter().rev() {
                     let fg = match part {
-                        p if p.starts_with('↑') => ACCENT_FG(),
-                        p if p.starts_with('↓') => REMOTE_FG(),
+                        p if p.starts_with('↑') || p.starts_with('↓') => {
+                            if it.current {
+                                TEXT_2()
+                            } else {
+                                TEXT_3()
+                            }
+                        }
                         _ => DEL(),
                     };
-                    let w = self.te.measure(semi, self.pf(10.5), part);
+                    let w = self.te.measure(bf, self.pf(10.5), part);
                     x -= w;
-                    self.te.draw(cv, semi, self.pf(10.5), x, base - self.pf(0.5), part, fg, w + 2.0);
+                    self.te.draw(cv, bf, self.pf(10.5), x, base - self.pf(0.5), part, fg, w + 4.0);
                     x -= self.pf(6.0);
                 }
             } else if !it.badge.is_empty() && !quiet {
@@ -1344,10 +1376,10 @@ impl Ui {
                 let color = match it.kind {
                     // A gone upstream reads as a warning.
                     SideKind::Branch if it.badge.starts_with("gone") => DEL(),
-                    SideKind::Branch => ACCENT(),
+                    SideKind::Branch => TEXT_3(),
                     _ => TEXT_4(),
                 };
-                self.te.draw(cv, semi, self.pf(11.0), bx, base - self.pf(0.5), &it.badge, color, bw + 8.0);
+                self.te.draw(cv, ui, self.pf(11.0), bx, base - self.pf(0.5), &it.badge, color, bw + 8.0);
             }
         }
         // Scroll thumb when the list is longer than the panel.
